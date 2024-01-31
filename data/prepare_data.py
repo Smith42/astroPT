@@ -1,7 +1,7 @@
 """
-This file translates clearsky to sequences ready for our eogpt model to train on.
+This file translates galaxy imagery to sequences ready for our astroPT model to train on.
 
-2023-02 mike.smith@aspiaspace.com
+2024-01 mike.smith@aspiaspace.com
 """
 import numpy as np
 import h5py as h5
@@ -11,67 +11,37 @@ from datetime import datetime
 from tqdm import tqdm
 from pathlib import Path
 
-BASENAME = "TL_CS"
-
-def get_h5(fname, next_fname):
+def get_fits(fname):
     """
-    Convert h5 file to numpy array.
+    Convert fits file to numpy array.
     """
-    # THIS ASSUMES ONLY ONE INSTANCE OF DATE!!
-    def _get_embedding(_fname):
-        toy = re.search('....-..-..\.h5', _fname.name).group(0)[:-3]
-        toy = datetime.strptime(toy, '%Y-%m-%d')
-        day = (toy - datetime(toy.year, 1, 1)).days
-        embedding = (np.sin((day/365)*2*np.pi), np.cos((day/365)*2*np.pi))
-        return embedding
 
-    embedding = _get_embedding(fname[0])
-    next_embedding = _get_embedding(next_fname[0])
-
-    with h5.File(fname[0], "r") as f:
+    # TODO get this working with the fits files
+    with fits.File(fname[0], "r") as f:
         cs = np.stack([f[fname[0].name[:4]][ch] 
-            for ch in [
-                "Blue",
-                "Green",
-                "Red",
-                "Red Edge 1",
-                "Red Edge 2",
-                "Red Edge 3",
-                "NIR",
-                "Red Edge 4",
-                "SWIR 1",
-                "SWIR 2",
-            ]])
+            for ch in [ "g", "r", "z", ]])
 
-    days_sin = np.ones_like(cs[:1])*embedding[0]
-    days_cos = np.ones_like(cs[:1])*embedding[1]
-    next_days_sin = np.ones_like(cs[:1])*next_embedding[0]
-    next_days_cos = np.ones_like(cs[:1])*next_embedding[1]
-    return np.concatenate([(cs/1000)*2-1, days_sin, days_cos, next_days_sin, next_days_cos], axis=0)
+    # TODO figure out normalisation
+    return (cs/1000)*2-1
 
 if __name__ == "__main__":
     grid = int(sys.argv[1])
     tile = f"TL{grid:02d}"
 
     for split in ["train", "test"]:
-        fnames = np.array(sorted(Path(f"./TL_CS/").glob(f"{tile}_clearsky_????-??-??.h5")))
-        dates = np.array(list(map(
-            lambda f: datetime.strptime(re.search('....-..-..\.h5', f.name).group(0)[:-3], '%Y-%m-%d'),
-            fnames,
-        )))
+        fnames = np.array(sorted(Path(f"./galaxies/").glob("*.fits")))
 
+        splitpoint = int(len(fnames)*0.8) 
         if split == "train":
-            train_dates = dates < datetime.strptime('2022-12-31', '%Y-%m-%d')
-            fnames_cs = fnames_cs[train_dates]
-            fnames_sar = fnames_sar[train_dates]
+            fnames = fnames[:splitpoint]
         else:
-            test_dates = dates > datetime.strptime('2022-12-31', '%Y-%m-%d')
-            fnames_cs = fnames_cs[test_dates]
-            fnames_sar = fnames_sar[test_dates]
+            fnames = fnames[splitpoint:]
 
         print(f"{tile}: processing {len(fnames)} frames")
 
-        bigar = np.zeros((1024*1024, len(fnames)-1, 18))
+        # TODO how do we want to structure bigar? 
+        # We will probably want this to be [16*16*len(fnames), 1024*3]
+        bigar = np.zeros((len(fnames)-1, 512, 512, 3))
         for i, fname, next_fname in tqdm(zip(
                                       range(len(fnames)-1), 
                                       fnames,
