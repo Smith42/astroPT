@@ -32,8 +32,8 @@ from tqdm import trange
 from model import GPTConfig, GPT
 
 # -----------------------------------------------------------------------------
-# default config values designed to train EarthPT-700M on Aspia's ClearSky time series data
-out_dir = 'logs/earthpt'
+# default config values designed to train astroPT-700M on DESI galaxies
+out_dir = 'logs/astropt'
 eval_interval = 5000
 log_interval = 10
 eval_iters = 200
@@ -44,17 +44,17 @@ init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
 batch_size = 16 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 256
-# EarthPT-700M model
+# astroPT-700M model
 n_layer = 36
 n_head = 20
 n_embd = 1280
-n_chan = 14 # 10 ClearSky, 4 time channels
+n_chan = 3 # 3 imagery bands: r, i, z
 dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 bias = False # do we use bias inside LayerNorm and Linear layers?
 # adamw optimizer
 # we follow the same schedule here as Chinchilla
 learning_rate = 2e-5 # max learning rate
-max_iters = 90010 # total number of training iterations to match chinchilla optimal 14B tokens
+max_iters = 90010 # total number of training iterations for one pass over our dataset
 weight_decay = 1e-1
 beta1 = 0.9
 beta2 = 0.95
@@ -148,7 +148,7 @@ if init_from == 'scratch':
     print("Initializing a new model from scratch")
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf)
-elif init_from == 'resume':
+if init_from == 'resume':
     print(f"Resuming training from {out_dir}")
     # resume training from a checkpoint.
     ckpt_path = os.path.join(out_dir, 'ckpt.pt')
@@ -172,14 +172,7 @@ elif init_from == 'resume':
     model.load_state_dict(state_dict)
     iter_num = checkpoint['iter_num']
     best_val_loss = checkpoint['best_val_loss']
-elif init_from.startswith('gpt2'):
-    print(f"Initializing from OpenAI GPT-2 weights: {init_from}")
-    # initialize from OpenAI GPT-2 weights
-    override_args = dict(dropout=dropout)
-    model = GPT.from_pretrained(init_from, override_args)
-    # read off the created config params, so we can store them into checkpoint correctly
-    for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias']:
-        model_args[k] = getattr(model.config, k)
+
 # crop down the model block size if desired, using model surgery
 if block_size < model.config.block_size:
     model.crop_block_size(block_size)
