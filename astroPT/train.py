@@ -26,7 +26,9 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.distributed import init_process_group, destroy_process_group
+from torch.utils.data import Dataset, DataLoader
+from torchvision import datasets
+from torch.distributed import init_process_group, destroy_process_group, DistributedSampler
 from tqdm import trange
 
 from model import GPTConfig, GPT
@@ -107,34 +109,16 @@ device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.aut
 ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
-# poor man's data loader
-data_dir = os.path.abspath('/data/astroml/mjsmith/eopt_dataset_mirror/')
-train_data = [
-    np.load(os.path.join(data_dir, f'TL{i:02d}_train_sar_float16.npy'), mmap_mode="r+")
-    for i in range(100)
-]
-val_data = [
-    np.load(os.path.join(data_dir, f'TL{i:02d}_train_sar_float16.npy'), mmap_mode="r+")
-    for i in range(100)
-]
-
-def get_batch(split):
-    if split == 'train':
-        data = train_data[np.random.randint(len(train_data))]
-        ii = torch.randint(0, data.shape[0] - 10000, (batch_size,))
-    else:
-        data = train_data[np.random.randint(len(val_data))]
-        ii = torch.randint(data.shape[0] - 10000, data.shape[0], (batch_size,))
-    jj = torch.randint(data.shape[1] - block_size, (batch_size,))
-    # A little hard to read but this concatenates the x (CS) and t files to make a file of shape [batch, 256, 14]
-    # It is a bit faster than first making copies etc.
-    x = torch.cat((
-            torch.stack([torch.from_numpy((data[i, j:(j + block_size), :10]).astype(float)) for i, j in zip(ii, jj)]),
-            torch.stack([torch.from_numpy((data[i, j:(j + block_size), 14:18]).astype(float)) for i, j in zip(ii, jj)])
-    ), dim=-1)
-    y = torch.stack([torch.from_numpy((data[i, (j + 1):(j + block_size + 1), :10]).astype(float)) for i, j in zip(ii, jj)])
-    x, y = x.to(device).float(), y.to(device).float()
-    return x, y
+datadir = "./data/raws/"
+dataset = datasets.ImageFolder(datadir)
+sampler = DistributedSampler(dataset)
+get_batch = DataLoader(
+    dataset,
+    sampler=sampler,
+    batch_size=batch_size,
+    num_workers=num_workers,
+    pin_memory=True,
+)
 
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
 iter_num = 0
@@ -207,7 +191,6 @@ def estimate_loss():
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
             X, Y = get_batch(split)
-            #Y = Y[:, :, :10]
             with ctx:
                 logits, loss = model(X, Y)
             losses[k] = loss.item()
@@ -221,7 +204,6 @@ def validate(iter_num, out_dir):
     for split in ['train', 'val']:
         f, axs = plt.subplots(4, n_chan - 4, figsize=(10*4, 2*4))
         X, Y = get_batch(split)
-        #Y = Y[:, :, :10]
         with ctx:
             logits, loss = model(X, Y)
         for i, logit, y in zip(range(4), logits.to(float).cpu().numpy(), Y.cpu().numpy()):
@@ -247,7 +229,6 @@ def get_lr(it):
 
 # training loop
 X, Y = get_batch('train') # fetch the very first batch
-#Y = Y[:, :, :10]
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
@@ -305,7 +286,6 @@ while True:
             loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
         X, Y = get_batch('train')
-        #Y = Y[:, :, :10]
         # backward pass, with gradient scaling if training in fp16
         scaler.scale(loss).backward()
     # clip the gradient
