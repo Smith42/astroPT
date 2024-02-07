@@ -8,6 +8,8 @@ https://github.com/karpathy/nanoGPT
 https://github.com/openai/gpt-2/blob/master/src/model.py
 2) huggingface/transformers PyTorch implementation:
 https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
+3) Aspia Space's earthPT code:
+https://github.com/aspiaspace/earthpt
 """
 
 import math
@@ -144,7 +146,13 @@ class GPT(nn.Module):
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
-        self.lm_head = nn.Linear(config.n_embd, config.n_chan - 4, bias=False) # 4 channels of time
+        self.lm_head = nn.Sequential(
+                      nn.Linear(config.n_embd, config.n_embd*2),
+                      nn.ReLU(),
+                      nn.Linear(config.n_embd*2, config.n_embd),
+                      nn.ReLU(),
+                      nn.Linear(config.n_embd, config.n_chan),
+        ),
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
         # This behavior is deprecated and will be an error in future versions"
