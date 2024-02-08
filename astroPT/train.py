@@ -41,23 +41,24 @@ from model import GPTConfig, GPT
 # default config values designed to train astroPT-700M on DESI galaxies
 out_dir = 'logs/astropt'
 eval_interval = 5000
-log_interval = 10
-eval_iters = 200
+log_interval = 1
+eval_iters = 10
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = False # if True, always save a checkpoint after each eval
-init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
+init_from = 'scratch' # 'scratch' or 'resume'
 # data
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
 batch_size = 16 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
 num_workers = 0
 # astroPT model
-n_layer = 10 
-n_head = 10
-n_embd = 780 
+n_layer = 4
+n_head = 4
+n_embd = 256 
 n_chan = 3 # 3 imagery bands: r, i, z
 dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 bias = False # do we use bias inside LayerNorm and Linear layers?
+patch_size = 16 # size of image patches for ViT tokenisation
 # adamw optimizer
 # we follow the same schedule here as Chinchilla
 learning_rate = 2e-5 # max learning rate
@@ -123,7 +124,7 @@ def data_transforms():
 datadir = "./data/raws/"
 class GalaxyImageDataset(Dataset):
 
-    def __init__(self, rootdir, transform=None, patch_size=16):
+    def __init__(self, rootdir, transform=None, stochastic=True, patch_size=16):
         """
         Arguments:
             root_dir (string): Directory with all the galaxies.
@@ -132,13 +133,17 @@ class GalaxyImageDataset(Dataset):
         self.paths = sorted(Path(rootdir).glob("**/*.jpg"))
         self.transform = transform
         self.patch_size = patch_size
+        self.stochastic = stochastic
 
     def __len__(self):
-        return len(self.paths)
+        return int(1e10) # len(self.paths)
 
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
             idx = idx.tolist()
+
+        if self.stochastic == True:
+            idx = np.random.randint(len(self.paths))
 
         raw_galaxy = io.read_image(str(self.paths[idx]))
         raster_galaxy = einops.rearrange(
@@ -152,9 +157,21 @@ class GalaxyImageDataset(Dataset):
 
         return raster_galaxy[:-1], raster_galaxy[1:]
 
+# training dataset and dataloader
 dataset = GalaxyImageDataset(datadir, transform=data_transforms())
 sampler = DistributedSampler(dataset) if ddp else None
-get_batch = iter(DataLoader(
+tdl = iter(DataLoader(
+    dataset,
+    sampler=sampler,
+    batch_size=batch_size,
+    num_workers=num_workers,
+    pin_memory=True,
+))
+
+# validation dataset and dataloader
+dataset = GalaxyImageDataset(datadir, transform=data_transforms())
+sampler = DistributedSampler(dataset) if ddp else None
+vdl = iter(DataLoader(
     dataset,
     sampler=sampler,
     batch_size=batch_size,
@@ -230,10 +247,10 @@ def estimate_loss():
     out = {}
     model.eval()
     # TODO get splits working with new dataloader
-    for split in ['train', 'val']:
+    for dl, split in zip([tdl, vdl], ["train", "val"]):
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
-            X, Y = next(get_batch)
+            X, Y = next(dl)
             with ctx:
                 logits, loss = model(X, Y)
             losses[k] = loss.item()
@@ -244,16 +261,27 @@ def estimate_loss():
 @torch.no_grad()
 def validate(iter_num, out_dir):
     model.eval()
-    for split in ['train', 'val']:
-        f, axs = plt.subplots(4, n_chan - 4, figsize=(10*4, 2*4))
-        X, Y = next(get_batch)
+    for dl, split in zip([tdl, vdl], ["train", "val"]):
+        f, axs = plt.subplots(2, 8, figsize=(12, 3), constrained_layout=True)
+        X, Y = next(dl)
         with ctx:
-            logits, loss = model(X, Y)
-        for i, logit, y in zip(range(4), logits.to(float).cpu().numpy(), Y.cpu().numpy()):
-            for j in range(n_chan - 4):
-                axs[i,j].plot(y[:, j])
-                axs[i,j].plot(logit[:, j])
-        f.savefig(os.path.join(out_dir, f"{iter_num:08d}_{split}.jpg"))
+            P, _ = model(X, Y)
+        b, t, c = Y.size()
+        zero_block = torch.zeros((b, 1, c))
+        Y = torch.cat((Y, zero_block), dim=1)
+        Y = einops.rearrange(Y, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=32, w=32)
+        P = torch.cat((P, zero_block), dim=1)
+        P = einops.rearrange(P, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=32, w=32)
+        for ax, p, y in zip(axs.T, P.to(float).cpu().numpy(), Y.cpu().numpy()):
+            ax[0].imshow(y)
+            ax[1].imshow(p)
+            ax[0].axis("off")
+            ax[1].axis("off")
+        f.savefig(
+            os.path.join(out_dir, f"{iter_num:08d}_{split}.jpg"), 
+            bbox_inches="tight", 
+            pad_inches=0
+        )
     model.train()
 
 # learning rate decay scheduler (cosine with warmup)
@@ -271,7 +299,7 @@ def get_lr(it):
     return min_lr + coeff * (learning_rate - min_lr)
 
 # training loop
-X, Y = next(get_batch) # fetch the very first batch
+X, Y = next(tdl) # fetch the very first batch
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
@@ -328,7 +356,7 @@ while True:
             logits, loss = model(X, Y)
             loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
-        X, Y = get_batch('train')
+        X, Y = next(tdl)
         # backward pass, with gradient scaling if training in fp16
         scaler.scale(loss).backward()
     # clip the gradient
