@@ -20,15 +20,19 @@ import os
 import time
 import math
 import pickle
+from pathlib import Path
 from contextlib import nullcontext
+import einops
 
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Dataset, DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from torchvision import datasets
-from torch.distributed import init_process_group, destroy_process_group, DistributedSampler
+from torch.distributed import init_process_group, destroy_process_group
+from torchvision import transforms, io
 from tqdm import trange
 
 from model import GPTConfig, GPT
@@ -45,11 +49,12 @@ init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 # data
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
 batch_size = 16 # if gradient_accumulation_steps > 1, this is the micro-batch size
-block_size = 256
-# astroPT-700M model
-n_layer = 36
-n_head = 20
-n_embd = 1280
+block_size = 1024
+num_workers = 0
+# astroPT model
+n_layer = 10 
+n_head = 10
+n_embd = 780 
 n_chan = 3 # 3 imagery bands: r, i, z
 dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 bias = False # do we use bias inside LayerNorm and Linear layers?
@@ -69,12 +74,12 @@ min_lr = 2e-6 # minimum learning rate, should be ~= learning_rate/10 per Chinchi
 # DDP settings
 backend = 'nccl' # 'nccl', 'gloo', etc.
 # system
-device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
+device = 'cpu' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
 dtype = 'bfloat16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
 compile = False # use PyTorch 2.0 to compile the model to be faster
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
-exec(open('configurator.py').read()) # overrides from command line or config file
+exec(open('astroPT/configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
 
@@ -109,16 +114,53 @@ device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.aut
 ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
+def data_transforms():
+    transform = transforms.Compose([
+        transforms.Lambda(lambda x: x/255.),
+    ])
+    return transform
+
 datadir = "./data/raws/"
-dataset = datasets.ImageFolder(datadir)
-sampler = DistributedSampler(dataset)
-get_batch = DataLoader(
+class GalaxyImageDataset(Dataset):
+
+    def __init__(self, rootdir, transform=None, patch_size=16):
+        """
+        Arguments:
+            root_dir (string): Directory with all the galaxies.
+            transform (callable, optional): Optional transform to be applied on a sample.
+        """
+        self.paths = sorted(Path(rootdir).glob("**/*.jpg"))
+        self.transform = transform
+        self.patch_size = patch_size
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        raw_galaxy = io.read_image(str(self.paths[idx]))
+        raster_galaxy = einops.rearrange(
+            raw_galaxy,
+            'c (h p1) (w p2) -> (h w) (p1 p2 c)', 
+            p1=self.patch_size, p2=self.patch_size
+        )
+
+        if self.transform:
+            raster_galaxy = self.transform(raster_galaxy)
+
+        return raster_galaxy[:-1], raster_galaxy[1:]
+
+dataset = GalaxyImageDataset(datadir, transform=data_transforms())
+sampler = DistributedSampler(dataset) if ddp else None
+get_batch = iter(DataLoader(
     dataset,
     sampler=sampler,
     batch_size=batch_size,
     num_workers=num_workers,
     pin_memory=True,
-)
+))
 
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
 iter_num = 0
@@ -187,10 +229,11 @@ if ddp:
 def estimate_loss():
     out = {}
     model.eval()
+    # TODO get splits working with new dataloader
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
-            X, Y = get_batch(split)
+            X, Y = next(get_batch)
             with ctx:
                 logits, loss = model(X, Y)
             losses[k] = loss.item()
@@ -203,7 +246,7 @@ def validate(iter_num, out_dir):
     model.eval()
     for split in ['train', 'val']:
         f, axs = plt.subplots(4, n_chan - 4, figsize=(10*4, 2*4))
-        X, Y = get_batch(split)
+        X, Y = next(get_batch)
         with ctx:
             logits, loss = model(X, Y)
         for i, logit, y in zip(range(4), logits.to(float).cpu().numpy(), Y.cpu().numpy()):
@@ -228,7 +271,7 @@ def get_lr(it):
     return min_lr + coeff * (learning_rate - min_lr)
 
 # training loop
-X, Y = get_batch('train') # fetch the very first batch
+X, Y = next(get_batch) # fetch the very first batch
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
