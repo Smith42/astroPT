@@ -41,20 +41,20 @@ from model import GPTConfig, GPT
 # default config values designed to train astroPT-700M on DESI galaxies
 out_dir = 'logs/astropt'
 eval_interval = 5000
-log_interval = 1
+log_interval = 10
 eval_iters = 10
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = False # if True, always save a checkpoint after each eval
 init_from = 'scratch' # 'scratch' or 'resume'
 # data
-gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
+gradient_accumulation_steps = 5 #* 8 # used to simulate larger batch sizes
 batch_size = 16 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
-num_workers = 0
+num_workers = 64 
 # astroPT model
-n_layer = 4
-n_head = 4
-n_embd = 256 
+n_layer = 8 
+n_head = 16 
+n_embd = 768
 n_chan = 3 # 3 imagery bands: r, i, z
 dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 bias = False # do we use bias inside LayerNorm and Linear layers?
@@ -75,7 +75,7 @@ min_lr = 2e-6 # minimum learning rate, should be ~= learning_rate/10 per Chinchi
 # DDP settings
 backend = 'nccl' # 'nccl', 'gloo', etc.
 # system
-device = 'cpu' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
+device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
 dtype = 'bfloat16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
 compile = False # use PyTorch 2.0 to compile the model to be faster
 # -----------------------------------------------------------------------------
@@ -121,16 +121,16 @@ def data_transforms():
     ])
     return transform
 
-datadir = "./data/raws/"
+paths = "./sorted_files.txt"
 class GalaxyImageDataset(Dataset):
 
-    def __init__(self, rootdir, transform=None, stochastic=True, patch_size=16):
+    def __init__(self, paths, transform=None, stochastic=True, patch_size=16):
         """
         Arguments:
             root_dir (string): Directory with all the galaxies.
             transform (callable, optional): Optional transform to be applied on a sample.
         """
-        self.paths = sorted(Path(rootdir).glob("**/*.jpg"))
+        self.paths = np.genfromtxt(paths, dtype=str)
         self.transform = transform
         self.patch_size = patch_size
         self.stochastic = stochastic
@@ -145,7 +145,12 @@ class GalaxyImageDataset(Dataset):
         if self.stochastic == True:
             idx = np.random.randint(len(self.paths))
 
-        raw_galaxy = io.read_image(str(self.paths[idx]))
+        while True:
+            try:
+                raw_galaxy = io.read_image(str(self.paths[idx]))
+                break
+            except Exception as err:
+                idx = np.random.randint(len(self.paths))
         raster_galaxy = einops.rearrange(
             raw_galaxy,
             'c (h p1) (w p2) -> (h w) (p1 p2 c)', 
@@ -158,7 +163,7 @@ class GalaxyImageDataset(Dataset):
         return raster_galaxy[:-1], raster_galaxy[1:]
 
 # training dataset and dataloader
-dataset = GalaxyImageDataset(datadir, transform=data_transforms())
+dataset = GalaxyImageDataset(paths, transform=data_transforms())
 sampler = DistributedSampler(dataset) if ddp else None
 tdl = iter(DataLoader(
     dataset,
@@ -169,7 +174,7 @@ tdl = iter(DataLoader(
 ))
 
 # validation dataset and dataloader
-dataset = GalaxyImageDataset(datadir, transform=data_transforms())
+dataset = GalaxyImageDataset(paths, transform=data_transforms())
 sampler = DistributedSampler(dataset) if ddp else None
 vdl = iter(DataLoader(
     dataset,
@@ -251,6 +256,8 @@ def estimate_loss():
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
             X, Y = next(dl)
+            X = X.to(device)
+            Y = Y.to(device)
             with ctx:
                 logits, loss = model(X, Y)
             losses[k] = loss.item()
@@ -264,10 +271,12 @@ def validate(iter_num, out_dir):
     for dl, split in zip([tdl, vdl], ["train", "val"]):
         f, axs = plt.subplots(2, 8, figsize=(12, 3), constrained_layout=True)
         X, Y = next(dl)
+        X = X.to(device)
+        Y = Y.to(device)
         with ctx:
             P, _ = model(X, Y)
         b, t, c = Y.size()
-        zero_block = torch.zeros((b, 1, c))
+        zero_block = torch.zeros((b, 1, c)).to(device)
         Y = torch.cat((Y, zero_block), dim=1)
         Y = einops.rearrange(Y, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=32, w=32)
         P = torch.cat((P, zero_block), dim=1)
@@ -300,6 +309,8 @@ def get_lr(it):
 
 # training loop
 X, Y = next(tdl) # fetch the very first batch
+X = X.to(device)
+Y = Y.to(device)
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
@@ -357,6 +368,8 @@ while True:
             loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
         X, Y = next(tdl)
+        X = X.to(device)
+        Y = Y.to(device)
         # backward pass, with gradient scaling if training in fp16
         scaler.scale(loss).backward()
     # clip the gradient
