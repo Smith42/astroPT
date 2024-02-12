@@ -19,6 +19,11 @@ Dependencies:
 
 ## results
 
+I have been playing around with DESI galaxy png postage stamps 
+downloaded from DESI DR8 just to see if my hunch that 
+"more galaxy data == more better model". So far this looks to be the
+case, and below I show some first results.
+
 Some preliiminary results for scaling the model for 1M DESI DR8 galaxies
 (around 1B tokens when tokenised via a ViT-like learnt tokeniser):
 
