@@ -19,7 +19,14 @@ Dependencies:
 
 ## results
 
-TBD
+Some preliiminary results for scaling the model for 1M DESI DR8 galaxies
+(around 1B tokens when tokenised via a ViT-like learnt tokeniser):
+
+<p align="center">
+    <img src="explore/scaling.png" alt="scaling" width="512"/>
+</p>
+
+Looking good! Next step: 9M galaxies!
 
 ## pretrained weights
 
