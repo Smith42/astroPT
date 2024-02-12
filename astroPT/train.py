@@ -39,22 +39,22 @@ from model import GPTConfig, GPT
 
 # -----------------------------------------------------------------------------
 # default config values designed to train astroPT-700M on DESI galaxies
-out_dir = 'logs/astropt'
-eval_interval = 5000
-log_interval = 10
+out_dir = 'logs/astropt_1M'
+eval_interval = 1000
+log_interval = 100
 eval_iters = 10
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = False # if True, always save a checkpoint after each eval
 init_from = 'scratch' # 'scratch' or 'resume'
 # data
-gradient_accumulation_steps = 5 #* 8 # used to simulate larger batch sizes
-batch_size = 16 # if gradient_accumulation_steps > 1, this is the micro-batch size
+gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
+batch_size = 4 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
 num_workers = 64 
 # astroPT model
-n_layer = 8 
-n_head = 16 
-n_embd = 768
+n_layer = 4#26#10#36 
+n_head = 6#16#10#20
+n_embd = 240#1024#320#1280
 n_chan = 3 # 3 imagery bands: r, i, z
 dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 bias = False # do we use bias inside LayerNorm and Linear layers?
@@ -62,7 +62,7 @@ patch_size = 16 # size of image patches for ViT tokenisation
 # adamw optimizer
 # we follow the same schedule here as Chinchilla
 learning_rate = 2e-5 # max learning rate
-max_iters = 90010 # total number of training iterations for one pass over our dataset
+max_iters = 50010 # total number of training iterations for one pass over our dataset
 weight_decay = 1e-1
 beta1 = 0.9
 beta2 = 0.95
@@ -86,6 +86,7 @@ config = {k: globals()[k] for k in config_keys} # will be useful for logging
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
+print(ddp)
 if ddp:
     init_process_group(backend=backend)
     ddp_rank = int(os.environ['RANK'])
@@ -164,7 +165,7 @@ class GalaxyImageDataset(Dataset):
 
 # training dataset and dataloader
 dataset = GalaxyImageDataset(paths, transform=data_transforms())
-sampler = DistributedSampler(dataset) if ddp else None
+sampler = None #DistributedSampler(dataset) if ddp else None
 tdl = iter(DataLoader(
     dataset,
     sampler=sampler,
@@ -175,7 +176,7 @@ tdl = iter(DataLoader(
 
 # validation dataset and dataloader
 dataset = GalaxyImageDataset(paths, transform=data_transforms())
-sampler = DistributedSampler(dataset) if ddp else None
+sampler = None #DistributedSampler(dataset) if ddp else None
 vdl = iter(DataLoader(
     dataset,
     sampler=sampler,
@@ -291,6 +292,7 @@ def validate(iter_num, out_dir):
             bbox_inches="tight", 
             pad_inches=0
         )
+        plt.close()
     model.train()
 
 # learning rate decay scheduler (cosine with warmup)
@@ -337,6 +339,7 @@ while True:
             ax.set_yscale("log")
             ax.legend()
             f.savefig(os.path.join(out_dir, "loss.png"))
+            plt.close()
 
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
