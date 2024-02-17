@@ -14,7 +14,7 @@ import functools
 
 # -----------------------------------------------------------------------------
 init_from = 'resume'
-out_dir = 'logs/earthpt' # ignored if init_from is not 'resume'
+out_dir = 'logs/astropt' # ignored if init_from is not 'resume'
 prompt = '' # promptfile (numpy)
 num_samples = 1 # number of samples to draw
 max_new_tokens = 500 # number of tokens generated in each sample
@@ -59,29 +59,19 @@ if compile:
 if start != '':
     x = torch.tensor(np.load(start)).to(device=device)
 else:
-    if spread == True:
-        # This is an initial random input
-        data = np.load('data/big_eo/test.npy', mmap_mode='r+')
-        ii = torch.randint(len(data), (1,)).tile((32,))
-        x = torch.stack([torch.from_numpy((data[i]).astype(float)) for i in ii])
-        t = x[0, :, 10:14]
-        gt = x[:, :, :10].to(device).float()
-        x = x[:, :128, :14].to(device).float()
-        t = t[128:].to(device).float()
-    else:
-        # This is an initial random input
-        train_data = np.load('data/big_eo/TL64_train.npy', mmap_mode='r+')
-        test_data = np.load('data/big_eo/TL64_test.npy', mmap_mode='r+')
-        ii = torch.randint(len(train_data), (2,))
-        print(ii)
-        #ii = torch.tensor([397*1024 + 442, 442*1024 + 397])
-        train_xs = torch.stack([torch.from_numpy((train_data[i]).astype(float)) for i in ii])
-        test_xs = torch.stack([torch.from_numpy((test_data[i]).astype(float)) for i in ii])
-        xs = torch.cat((train_xs, test_xs), dim=1)
-        t_embs = xs[0, :, 10:12].to(device).float() # time embeddings for year
-        ts = xs[0, 500:, 10:14].to(device).float()
-        gts = xs[:, :, :10].to(device).float()
-        xs = xs[:, :500, :14].to(device).float()
+    # This is an initial random input
+    train_data = np.load('data/big_eo/TL64_train.npy', mmap_mode='r+')
+    test_data = np.load('data/big_eo/TL64_test.npy', mmap_mode='r+')
+    ii = torch.randint(len(train_data), (2,))
+    print(ii)
+    #ii = torch.tensor([397*1024 + 442, 442*1024 + 397])
+    train_xs = torch.stack([torch.from_numpy((train_data[i]).astype(float)) for i in ii])
+    test_xs = torch.stack([torch.from_numpy((test_data[i]).astype(float)) for i in ii])
+    xs = torch.cat((train_xs, test_xs), dim=1)
+    t_embs = xs[0, :, 10:12].to(device).float() # time embeddings for year
+    ts = xs[0, 500:, 10:14].to(device).float()
+    gts = xs[:, :, :10].to(device).float()
+    xs = xs[:, :500, :14].to(device).float()
 
 def plot_prediction(y, gt, spread=None, dumpto=os.path.join(out_dir, "test.png")):
     f, axs = plt.subplots(5, 2, figsize=(30, 16))
@@ -102,57 +92,16 @@ def plot_prediction(y, gt, spread=None, dumpto=os.path.join(out_dir, "test.png")
         ax.legend()
         f.savefig(dumpto)
 
-def plot_ndvi_vci(y, gt, ts=None, dumpto=os.path.join(out_dir, "test.png")):
-    f, axs = plt.subplots(2, 1, figsize=(20, 10))
-
-    # TODO is there a better way to get the loop to work with these functions?
-    def _get_ndvi(red, nir, ts): return (nir - red)/(nir + red)
-
-    def _get_vci(red, nir, ts):
-        ndvis = _get_ndvi(red, nir, ts)
-
-        vcis = []
-        for ndvi, t in zip(ndvis, ts):
-            delta = (np.sin((1/24)*2*np.pi), np.cos((1/24)*2*np.pi))
-
-            ndvi_mask = np.where(
-                np.sign(ts[:, 1]) == 1, 
-                (t[0]*delta[1] - t[1]*delta[0] <= ts[:, 0]) & (t[0]*delta[1] + t[1]*delta[0] >= ts[:, 0]),
-                (t[0]*delta[1] - t[1]*delta[0] >= ts[:, 0]) & (t[0]*delta[1] + t[1]*delta[0] <= ts[:, 0])
-            )
-
-            masked_ndvis = ndvis[ndvi_mask]
-            vci = (ndvi - np.min(masked_ndvis))/(np.max(masked_ndvis) - np.min(masked_ndvis))
-            vcis.append(vci)
-
-        return np.array(vcis)
-
-    names = ["NDVI", "VCI"]
-    functions = [_get_ndvi, _get_vci]
-    for ax, name, function in zip(axs, names, functions):
-        ax.plot(function(y[:, 3], y[:, 2], ts), color="blue", label="Prediction")
-        ax.plot(function(gt[:, 3], gt[:, 2], ts), color="orange", label="Ground Truth")
-        ax.set_title(name)
-        ax.legend()
-    f.savefig(dumpto)
-
 # run generation
 with torch.no_grad():
     with ctx:
         ys = model.generate(xs, ts, max_new_tokens, temperature=temperature).detach().cpu().numpy()
         gts = gts.detach().cpu().numpy()
         t_embs = t_embs.detach().cpu().numpy()
-        unnorm = lambda ar: ((ar + 1)/2)*1000
+        unnorm = lambda ar: ar*255.
         ys = unnorm(ys)
         gts = unnorm(gts)
 
         print("Plotting...")
-        if spread == True:
-            y_mean = np.array(ys).mean(axis=0)
-            y_std = np.array(ys).std(axis=0)
-
-            plot_prediction(y_mean, gts, spread=y_std)
-        else:
-            for i, y, gt in tqdm(zip(range(len(ys)), ys, gts), total=len(ys)):
-                plot_prediction(y[:], gt[:], dumpto=os.path.join(out_dir, f"p_{i:03d}.png"))
-                #plot_ndvi_vci(y[:], gt[:], t_embs, dumpto=os.path.join(out_dir, f"p_ndvi_{i:03d}.png"))
+        for i, y, gt in tqdm(zip(range(len(ys)), ys, gts), total=len(ys)):
+            plot_prediction(y[:], gt[:], dumpto=os.path.join(out_dir, f"p_{i:03d}.png"))
