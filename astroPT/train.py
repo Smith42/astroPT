@@ -34,6 +34,12 @@ from torchvision import datasets
 from torch.distributed import init_process_group, destroy_process_group
 from torchvision import transforms, io
 from tqdm import trange
+try:
+    import wandb
+    print("wandb detected, gonna log to that")
+    log_via_wandb = True
+except:
+    log_via_wandb = False
 
 from model import GPTConfig, GPT
 
@@ -87,8 +93,8 @@ class GalaxyImageDataset(Dataset):
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to train astroPT-700M on DESI galaxies
-    out_dir = 'logs/astropt_1M'
-    eval_interval = 1000
+    out_dir = 'logs/astropt_700M_3500kgal'
+    eval_interval = 5000
     log_interval = 100
     eval_iters = 10
     eval_only = False # if True, script exits right after the first eval
@@ -100,9 +106,9 @@ if __name__ == "__main__":
     block_size = 1024
     num_workers = 64 
     # astroPT model
-    n_layer = 4#26#10#36 
-    n_head = 6#16#10#20
-    n_embd = 240#1024#320#1280
+    n_layer = 36#4#26#10#36 
+    n_head = 20#6#16#10#20
+    n_embd = 1280#240#1024#320#1280
     n_chan = 3 # 3 imagery bands: r, i, z
     dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
     bias = False # do we use bias inside LayerNorm and Linear layers?
@@ -125,7 +131,7 @@ if __name__ == "__main__":
     # system
     device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
     dtype = 'bfloat16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
-    compile = False # use PyTorch 2.0 to compile the model to be faster
+    compile = True # use PyTorch 2.0 to compile the model to be faster
     # -----------------------------------------------------------------------------
     config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
     exec(open('astroPT/configurator.py').read()) # overrides from command line or config file
@@ -154,6 +160,11 @@ if __name__ == "__main__":
     tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * block_size
     print(f"tokens per iteration will be: {tokens_per_iter:,}")
     
+    if log_via_wandb and master_process:
+        wandb.init(
+            project = "EarthPT-700M, 3.5M galaxies",
+            config = config,
+        )
     if master_process:
         os.makedirs(out_dir, exist_ok=True)
     torch.manual_seed(1337 + seed_offset)
@@ -284,6 +295,9 @@ if __name__ == "__main__":
             Y = einops.rearrange(Y, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=32, w=32)
             P = torch.cat((P, zero_block), dim=1)
             P = einops.rearrange(P, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=32, w=32)
+            if log_via_wandb:
+                wandb.log({"Y": wandb.Image(Y.swapaxes(1, -1)), "P": wandb.Image(P.swapaxes(1, -1))})
+
             for ax, p, y in zip(axs.T, P.to(float).cpu().numpy(), Y.cpu().numpy()):
                 ax[0].imshow(y)
                 ax[1].imshow(p)
@@ -399,6 +413,9 @@ if __name__ == "__main__":
                 mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
                 running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
             print(f"iter {iter_num}: loss {lossf:.6f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
+            if log_via_wandb:
+                wandb.log({"loss": lossf, "time": dt})
+
         iter_num += 1
         local_iter_num += 1
     
@@ -408,3 +425,5 @@ if __name__ == "__main__":
     
     if ddp:
         destroy_process_group()
+    if log_via_wandb:
+        wandb.finish()
