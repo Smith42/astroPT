@@ -10,21 +10,23 @@ from tqdm import tqdm, trange
 import matplotlib.pyplot as plt
 import numpy as np
 from model import GPTConfig, GPT
+from train import GalaxyImageDataset, data_transforms
 import functools
+import einops
 
 # -----------------------------------------------------------------------------
 init_from = 'resume'
-out_dir = 'logs/astropt' # ignored if init_from is not 'resume'
+out_dir = 'logs/astropt_300M' # ignored if init_from is not 'resume'
 prompt = '' # promptfile (numpy)
-num_samples = 1 # number of samples to draw
-max_new_tokens = 500 # number of tokens generated in each sample
+num_samples = 2 # number of samples to draw
+max_new_tokens = 1024 # number of tokens generated in each sample
 temperature = 0.00 # 0.0 = no change, < = less random, > = more random, in predictions
 spread = False
 seed = 1337
 device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1', etc.
 dtype = 'bfloat16' # 'float32' or 'bfloat16' or 'float16'
 compile = False # use PyTorch 2.0 to compile the model to be faster
-exec(open('configurator.py').read()) # overrides from command line or config file
+exec(open('astroPT/configurator.py').read()) # overrides from command line or config file
 # -----------------------------------------------------------------------------
 
 torch.manual_seed(seed)
@@ -56,52 +58,27 @@ if compile:
     model = torch.compile(model) # requires PyTorch 2.0 (optional)
 
 # start file (numpy)
-if start != '':
-    x = torch.tensor(np.load(start)).to(device=device)
-else:
-    # This is an initial random input
-    train_data = np.load('data/big_eo/TL64_train.npy', mmap_mode='r+')
-    test_data = np.load('data/big_eo/TL64_test.npy', mmap_mode='r+')
-    ii = torch.randint(len(train_data), (2,))
-    print(ii)
-    #ii = torch.tensor([397*1024 + 442, 442*1024 + 397])
-    train_xs = torch.stack([torch.from_numpy((train_data[i]).astype(float)) for i in ii])
-    test_xs = torch.stack([torch.from_numpy((test_data[i]).astype(float)) for i in ii])
-    xs = torch.cat((train_xs, test_xs), dim=1)
-    t_embs = xs[0, :, 10:12].to(device).float() # time embeddings for year
-    ts = xs[0, 500:, 10:14].to(device).float()
-    gts = xs[:, :, :10].to(device).float()
-    xs = xs[:, :500, :14].to(device).float()
+# This is an initial random input
+paths = "./sorted_files.txt"
+train_data = iter(GalaxyImageDataset(paths, transform=data_transforms()))
+xs = torch.stack([next(train_data)[0] for _ in range(num_samples)])[:, 0:1]
 
-def plot_prediction(y, gt, spread=None, dumpto=os.path.join(out_dir, "test.png")):
-    f, axs = plt.subplots(5, 2, figsize=(30, 16))
-    names = [ "Blue", "Green", "NIR", "Red", "Red Edge 1", "Red Edge 2", "Red Edge 3", "Red Edge 4", "SWIR 1", "SWIR 2" ]
+def plot_galaxies(xs, dumpto=os.path.join(out_dir, "test.png")):
+    f, axs = plt.subplots(2, 2, figsize=(12, 3), constrained_layout=True)
 
-    for ax, ch, name in zip(axs.ravel(), range(10), names):
-        ax.plot(y[:, ch], color="blue", label="Prediction")
-        if spread is not None:
-            ax.fill_between(
-                range(len(y)),
-                y[:, ch] - spread[:, ch], 
-                y[:, ch] + spread[:, ch], 
-                alpha=0.4,
-                color="blue",
-            )
-        ax.plot(gt[:, ch], color="orange", label="Ground Truth")
-        ax.set_title(name)
-        ax.legend()
-        f.savefig(dumpto)
+    for ax, x in zip(axs.ravel(), xs):
+        ax.imshow(x)
+
+    f.savefig(dumpto)
 
 # run generation
 with torch.no_grad():
     with ctx:
-        ys = model.generate(xs, ts, max_new_tokens, temperature=temperature).detach().cpu().numpy()
-        gts = gts.detach().cpu().numpy()
-        t_embs = t_embs.detach().cpu().numpy()
+        xs = model.generate(xs.to(device), max_new_tokens, temperature=temperature).detach().cpu().numpy()
         unnorm = lambda ar: ar*255.
-        ys = unnorm(ys)
-        gts = unnorm(gts)
+        xs = unnorm(xs)[:, 1:]
+        # Rearrange galaxy images so that they are nice and in png format:
+        xs = einops.rearrange(xs, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=16, p2=16, h=32, w=32)
 
         print("Plotting...")
-        for i, y, gt in tqdm(zip(range(len(ys)), ys, gts), total=len(ys)):
-            plot_prediction(y[:], gt[:], dumpto=os.path.join(out_dir, f"p_{i:03d}.png"))
+        plot_galaxies(xs, dumpto=os.path.join(out_dir, f"ps.png"))
