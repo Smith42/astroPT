@@ -40,6 +40,12 @@ try:
     log_via_wandb = True
 except:
     log_via_wandb = False
+try:
+    from codecarbon import EmissionsTracker
+    print("codecarbon detected, will log emissions")
+    log_emissions = True
+except:
+    log_emissions = False
 
 from model import GPTConfig, GPT
 
@@ -93,8 +99,8 @@ class GalaxyImageDataset(Dataset):
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to train astroPT-700M on DESI galaxies
-    out_dir = 'logs/astropt_700M_3500kgal'
-    eval_interval = 5000
+    out_dir = 'logs/astropt_700M_3500kgal_2'
+    eval_interval = 1000
     log_interval = 100
     eval_iters = 10
     eval_only = False # if True, script exits right after the first eval
@@ -333,6 +339,9 @@ if __name__ == "__main__":
     local_iter_num = 0 # number of iterations in the lifetime of this process
     raw_model = model.module if ddp else model # unwrap DDP container if needed
     running_mfu = -1.0
+    if log_emissions:
+        tracker = EmissionsTracker(output_dir=out_dir)
+        tracker.start()
     while True:
     
         # determine and set the learning rate for this iteration
@@ -421,6 +430,9 @@ if __name__ == "__main__":
     
         # termination conditions
         if iter_num > max_iters:
+            if log_emissions:
+                emissions: float = tracker.stop()
+                print(emissions)
             break
     
     if ddp:
