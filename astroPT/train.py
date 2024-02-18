@@ -146,7 +146,6 @@ if __name__ == "__main__":
     
     # various inits, derived attributes, I/O setup
     ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
-    print(ddp)
     if ddp:
         init_process_group(backend=backend)
         ddp_rank = int(os.environ['RANK'])
@@ -164,7 +163,7 @@ if __name__ == "__main__":
         seed_offset = 0
         ddp_world_size = 1
     tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * block_size
-    print(f"tokens per iteration will be: {tokens_per_iter:,}")
+    if master_process: print(f"tokens per iteration will be: {tokens_per_iter:,}")
     
     if log_via_wandb and master_process:
         wandb.init(
@@ -340,7 +339,7 @@ if __name__ == "__main__":
     raw_model = model.module if ddp else model # unwrap DDP container if needed
     running_mfu = -1.0
     if log_emissions:
-        tracker = EmissionsTracker(output_dir=out_dir)
+        tracker = EmissionsTracker(output_dir=out_dir, log_level="error", save_to_file=True)
         tracker.start()
     while True:
     
@@ -421,9 +420,13 @@ if __name__ == "__main__":
             if local_iter_num >= 5: # let the training loop settle a bit
                 mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
                 running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
-            print(f"iter {iter_num}: loss {lossf:.6f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
             if log_via_wandb:
                 wandb.log({"loss": lossf, "time": dt})
+            if log_emissions:
+                emissions: float = tracker.flush()
+                print(f"iter {iter_num}: loss {lossf:.6f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%, co2 {emissions:.1f}kg")
+            else:
+                print(f"iter {iter_num}: loss {lossf:.6f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
 
         iter_num += 1
         local_iter_num += 1
@@ -432,7 +435,7 @@ if __name__ == "__main__":
         if iter_num > max_iters:
             if log_emissions:
                 emissions: float = tracker.stop()
-                print(emissions)
+                if master_process: print(emissions)
             break
     
     if ddp:
