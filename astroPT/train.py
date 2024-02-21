@@ -57,19 +57,68 @@ def data_transforms():
 
 class GalaxyImageDataset(Dataset):
 
-    def __init__(self, paths, transform=None, stochastic=True, patch_size=16):
+    def __init__(self, paths, transform=None, stochastic=True, spiral=False, patch_size=16):
         """
         Arguments:
-            root_dir (string): Directory with all the galaxies.
+            paths: file with all the galaxy paths.
             transform (callable, optional): Optional transform to be applied on a sample.
+            spiral: spiral form instead of raster form
+            patch_size: size of ViT patch
         """
         self.paths = np.genfromtxt(paths, dtype=str)
         self.transform = transform
         self.patch_size = patch_size
         self.stochastic = stochastic
+        self.spiral = spiral
 
     def __len__(self):
         return int(1e10) # len(self.paths)
+
+    @staticmethod
+    def _spiral(n):
+        """ 
+        generate a spiral index array of side length 'n'
+        there must be a better way to do this: any suggestions? 
+        """
+        a = np.arange(n*n)
+        b = a.reshape((n,n))
+        m = None
+        for i in range(n, 0, -2):
+            m = np.r_[m, b[0, :], b[1:, -1], b[-1, :-1][::-1], b[1:-1, 0][::-1]]
+            b = b[1:-1, 1:-1]
+        a[list(m[1:])] = list(a)
+        a = abs(a - n*n + 1)
+        return a.reshape((n,n))
+
+    def spiralise(self, galaxy):
+        """ 
+        Change ViT patch ordering to a 'spiral order'. See Fig 8 in
+        https://arxiv.org/pdf/2401.08541.pdf for an illustration.
+
+        Alternate function available here:
+        https://www.procook.co.uk/product/procook-spiralizer-black-and-stainless-steel
+        """
+        # Generate a spiralised matrix and then flatten it to the same shape as 'galaxy'
+        indices = einops.rearrange(
+            self._spiral(int(np.sqrt(len(galaxy)))),
+            'h w -> (h w)',
+        )
+        assert len(indices) == len(galaxy), "tokenised galaxy must have a square rootable length!"
+        spiraled = [ii for _, ii in sorted(zip(indices, galaxy))]
+        return torch.stack(spiraled)
+
+    def antispiralise(self, galaxy):
+        """ 
+        Change ViT patch ordering from spiral to raster order. See 'spiralise'.
+        """
+        # Generate a spiralised matrix and then flatten it to the same shape as 'galaxy'
+        indices = einops.rearrange(
+            self._spiral(int(np.sqrt(len(galaxy)))),
+            'h w -> (h w)',
+        )
+        assert len(indices) == len(galaxy), "tokenised galaxy must have a square rootable length!"
+        antispiraled = [galaxy[ii] for ii in indices]
+        return torch.stack(antispiraled)
 
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
@@ -84,22 +133,24 @@ class GalaxyImageDataset(Dataset):
                 break
             except Exception as err:
                 idx = np.random.randint(len(self.paths))
-        raster_galaxy = einops.rearrange(
+        patch_galaxy = einops.rearrange(
             raw_galaxy,
             'c (h p1) (w p2) -> (h w) (p1 p2 c)', 
             p1=self.patch_size, p2=self.patch_size
         )
 
         if self.transform:
-            raster_galaxy = self.transform(raster_galaxy)
+            patch_galaxy = self.transform(patch_galaxy)
+        if self.spiral:
+            patch_galaxy = self.spiralise(patch_galaxy)
 
-        return raster_galaxy[:-1], raster_galaxy[1:]
+        return patch_galaxy[:-1], patch_galaxy[1:]
 
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to train astroPT-700M on DESI galaxies
-    out_dir = 'logs/astropt_700M_3500kgal_2'
+    out_dir = 'logs/astropt_700M_spiral'
     eval_interval = 1000
     log_interval = 100
     eval_iters = 10
@@ -109,12 +160,13 @@ if __name__ == "__main__":
     # data
     gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
     batch_size = 4 # if gradient_accumulation_steps > 1, this is the micro-batch size
+    spiral = True # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     num_workers = 64 
     # astroPT model
-    n_layer = 36#4#26#10#36 
-    n_head = 20#6#16#10#20
-    n_embd = 1280#240#1024#320#1280
+    n_layer = 26#4#26#10#36 
+    n_head = 16#6#16#10#20
+    n_embd = 1024#240#1024#320#1280
     n_chan = 3 # 3 imagery bands: r, i, z
     dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
     bias = False # do we use bias inside LayerNorm and Linear layers?
@@ -182,7 +234,7 @@ if __name__ == "__main__":
     
     paths = "./sorted_files.txt"
     # training dataset and dataloader
-    dataset = GalaxyImageDataset(paths, transform=data_transforms())
+    dataset = GalaxyImageDataset(paths, spiral=spiral, transform=data_transforms())
     sampler = None #DistributedSampler(dataset) if ddp else None
     tdl = iter(DataLoader(
         dataset,
@@ -193,7 +245,7 @@ if __name__ == "__main__":
     ))
     
     # validation dataset and dataloader
-    dataset = GalaxyImageDataset(paths, transform=data_transforms())
+    dataset = GalaxyImageDataset(paths, spiral=spiral, transform=data_transforms())
     sampler = None #DistributedSampler(dataset) if ddp else None
     vdl = iter(DataLoader(
         dataset,
@@ -288,7 +340,7 @@ if __name__ == "__main__":
     def validate(iter_num, out_dir):
         model.eval()
         for dl, split in zip([tdl, vdl], ["train", "val"]):
-            f, axs = plt.subplots(2, 8, figsize=(12, 3), constrained_layout=True)
+            f, axs = plt.subplots(2, 4, figsize=(6, 3), constrained_layout=True)
             X, Y = next(dl)
             X = X.to(device)
             Y = Y.to(device)
@@ -296,9 +348,11 @@ if __name__ == "__main__":
                 P, _ = model(X, Y)
             b, t, c = Y.size()
             zero_block = torch.zeros((b, 1, c)).to(device)
-            Y = torch.cat((Y, zero_block), dim=1)
+            Y = torch.cat((zero_block, Y), dim=1)
+            if spiral: Y = torch.stack([dataset.antispiralise(yy) for yy in Y])
             Y = einops.rearrange(Y, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=32, w=32)
             P = torch.cat((P, zero_block), dim=1)
+            if spiral: P = torch.stack([dataset.antispiralise(pp) for pp in P])
             P = einops.rearrange(P, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=32, w=32)
             if log_via_wandb:
                 wandb.log({"Y": wandb.Image(Y.swapaxes(1, -1)), "P": wandb.Image(P.swapaxes(1, -1))})
@@ -310,8 +364,8 @@ if __name__ == "__main__":
                 ax[1].axis("off")
             f.savefig(
                 os.path.join(out_dir, f"{iter_num:08d}_{split}.jpg"), 
-                bbox_inches="tight", 
-                pad_inches=0
+                bbox_inches="tight",
+                pad_inches=0,
             )
             plt.close()
         model.train()
