@@ -351,7 +351,7 @@ if __name__ == "__main__":
             Y = torch.cat((zero_block, Y), dim=1)
             if spiral: Y = torch.stack([dataset.antispiralise(yy) for yy in Y])
             Y = einops.rearrange(Y, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=32, w=32)
-            P = torch.cat((P, zero_block), dim=1)
+            P = torch.cat((zero_block, P), dim=1)
             if spiral: P = torch.stack([dataset.antispiralise(pp) for pp in P])
             P = einops.rearrange(P, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=32, w=32)
             if log_via_wandb:
