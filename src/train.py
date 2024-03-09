@@ -150,7 +150,7 @@ class GalaxyImageDataset(Dataset):
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to train astroPT-700M on DESI galaxies
-    out_dir = 'logs/astropt_700M_spiral'
+    out_dir = 'logs/big_run_test'
     eval_interval = 1000
     log_interval = 100
     eval_iters = 10
@@ -164,7 +164,7 @@ if __name__ == "__main__":
     block_size = 1024
     num_workers = 64 
     # astroPT model
-    n_layer = 26#4#26#10#36 
+    n_layer = 24#26#4#26#10#36 
     n_head = 16#6#16#10#20
     n_embd = 1024#240#1024#320#1280
     n_chan = 3 # 3 imagery bands: r, i, z
@@ -173,8 +173,8 @@ if __name__ == "__main__":
     patch_size = 16 # size of image patches for ViT tokenisation
     # adamw optimizer
     # we follow the same schedule here as Chinchilla
-    learning_rate = 2e-5 # max learning rate
-    max_iters = 50010 # total number of training iterations for one pass over our dataset
+    learning_rate = 3e-4#2e-5 # max learning rate
+    max_iters = 80010 # total number of training iterations for one pass over our dataset
     weight_decay = 1e-1
     beta1 = 0.9
     beta2 = 0.95
@@ -182,7 +182,7 @@ if __name__ == "__main__":
     # learning rate decay settings
     decay_lr = True # whether to decay the learning rate
     warmup_iters = 2000 # how many steps to warm up for
-    lr_decay_iters = 85500 * 1.1 # should be ~= max_iters per Chinchilla
+    lr_decay_iters = 50010 * 1.1 # should be ~= max_iters per Chinchilla
     min_lr = 2e-6 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
     # DDP settings
     backend = 'nccl' # 'nccl', 'gloo', etc.
@@ -192,7 +192,7 @@ if __name__ == "__main__":
     compile = True # use PyTorch 2.0 to compile the model to be faster
     # -----------------------------------------------------------------------------
     config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
-    exec(open('astroPT/configurator.py').read()) # overrides from command line or config file
+    exec(open('src/configurator.py').read()) # overrides from command line or config file
     config = {k: globals()[k] for k in config_keys} # will be useful for logging
     # -----------------------------------------------------------------------------
     
@@ -219,7 +219,7 @@ if __name__ == "__main__":
     
     if log_via_wandb and master_process:
         wandb.init(
-            project = "EarthPT-700M, 3.5M galaxies",
+            project = "AstroPT-300M, 8.5M galaxies",
             config = config,
         )
     if master_process:
@@ -232,7 +232,7 @@ if __name__ == "__main__":
     ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
     ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
     
-    paths = "./sorted_files.txt"
+    paths = "./train.txt"
     # training dataset and dataloader
     dataset = GalaxyImageDataset(paths, spiral=spiral, transform=data_transforms())
     sampler = None #DistributedSampler(dataset) if ddp else None
@@ -245,6 +245,7 @@ if __name__ == "__main__":
     ))
     
     # validation dataset and dataloader
+    paths = "./test.txt"
     dataset = GalaxyImageDataset(paths, spiral=spiral, transform=data_transforms())
     sampler = None #DistributedSampler(dataset) if ddp else None
     vdl = iter(DataLoader(
@@ -291,7 +292,7 @@ if __name__ == "__main__":
         model.load_state_dict(state_dict)
         iter_num = checkpoint['iter_num']
         best_val_loss = checkpoint['best_val_loss']
-    
+
     # crop down the model block size if desired, using model surgery
     if block_size < model.config.block_size:
         model.crop_block_size(block_size)
@@ -322,7 +323,6 @@ if __name__ == "__main__":
     def estimate_loss():
         out = {}
         model.eval()
-        # TODO get splits working with new dataloader
         for dl, split in zip([tdl, vdl], ["train", "val"]):
             losses = torch.zeros(eval_iters)
             for k in range(eval_iters):
