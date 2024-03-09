@@ -153,7 +153,7 @@ class GalaxyImageDataset(Dataset):
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to train astroPT-700M on DESI galaxies
-    out_dir = 'logs/big_run_test'
+    out_dir = 'logs/big_run_test_2'
     eval_interval = 1000
     log_interval = 100
     eval_iters = 10
@@ -170,7 +170,7 @@ if __name__ == "__main__":
     # astroPT model
     n_layer = 24#26#4#26#10#36 
     n_head = 16#6#16#10#20
-    n_embd = 1024#240#1024#320#1280
+    n_embd = 1792#240#1024#320#1280
     n_chan = 3 # 3 imagery bands: r, i, z
     dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
     bias = False # do we use bias inside LayerNorm and Linear layers?
@@ -272,11 +272,11 @@ if __name__ == "__main__":
     
     if init_from == 'scratch':
         # init a new model from scratch
-        print("Initializing a new model from scratch")
+        if master_process: print("initializing a new model from scratch")
         gptconf = GPTConfig(**model_args)
-        model = GPT(gptconf)
+        model = GPT(gptconf, master_process=master_process)
     if init_from == 'resume':
-        print(f"Resuming training from {out_dir}")
+        if master_process: print(f"resuming training from {out_dir}")
         # resume training from a checkpoint.
         ckpt_path = os.path.join(out_dir, 'ckpt.pt')
         checkpoint = torch.load(ckpt_path, map_location=device)
@@ -288,7 +288,7 @@ if __name__ == "__main__":
             model_args[k] = checkpoint_model_args[k]
         # create the model
         gptconf = GPTConfig(**model_args)
-        model = GPT(gptconf)
+        model = GPT(gptconf, master_process=master_process)
         state_dict = checkpoint['model']
         # fix the keys of the state dictionary :(
         # honestly no idea how checkpoints sometimes get this prefix, have to debug more
@@ -308,7 +308,7 @@ if __name__ == "__main__":
             config = config,
         )
     # write config and important information to log file
-    with open(f"{out_dir}/hparams.txt", "w") as fi
+    with open(f"{out_dir}/hparams.txt", "w") as fi:
         fi.write(f"AstroPT-{model.get_num_params()/1e6:06.1f}M\n")
         fi.write(f"time: {int(time.time())}\n")
         for k, v in config.items():
@@ -331,7 +331,7 @@ if __name__ == "__main__":
     
     # compile the model
     if compile:
-        print("compiling the model... (takes a ~minute)")
+        if master_process: print("compiling the model... (takes a ~minute)")
         unoptimized_model = model
         model = torch.compile(model) # requires PyTorch 2.0
     
@@ -370,17 +370,17 @@ if __name__ == "__main__":
             b, t, c = Y.size()
             zero_block = torch.zeros((b, 1, c)).to(device)
             Y = torch.cat((zero_block, Y), dim=1)
-            if spiral: Y = torch.stack([dataset.antispiralise(yy) for yy in Y])
+            if spiral: Y = torch.stack([vdataset.antispiralise(yy) for yy in Y])
             Y = einops.rearrange(Y, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=32, w=32)
             P = torch.cat((zero_block, P), dim=1)
-            if spiral: P = torch.stack([dataset.antispiralise(pp) for pp in P])
+            if spiral: P = torch.stack([vdataset.antispiralise(pp) for pp in P])
             P = einops.rearrange(P, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=32, w=32)
             if log_via_wandb:
                 wandb.log({"Y": wandb.Image(Y.swapaxes(1, -1)), "P": wandb.Image(P.swapaxes(1, -1))})
 
             for ax, p, y in zip(axs.T, P.to(float).cpu().numpy(), Y.cpu().numpy()):
-                ax[0].imshow(y)
-                ax[1].imshow(p)
+                ax[0].imshow(np.clip(y, 0, 1))
+                ax[1].imshow(np.clip(p, 0, 1))
                 ax[0].axis("off")
                 ax[1].axis("off")
             f.savefig(
