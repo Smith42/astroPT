@@ -36,13 +36,11 @@ from torchvision import transforms, io
 from tqdm import trange
 try:
     import wandb
-    print("wandb detected, gonna log to that")
     log_via_wandb = True
 except:
     log_via_wandb = False
 try:
     from codecarbon import EmissionsTracker
-    print("codecarbon detected, will log emissions")
     log_emissions = True
 except:
     log_emissions = False
@@ -215,13 +213,11 @@ if __name__ == "__main__":
         seed_offset = 0
         ddp_world_size = 1
     tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * block_size
-    if master_process: print(f"tokens per iteration will be: {tokens_per_iter:,}")
+    if master_process:
+        if log_via_wandb: print("wandb detected, gonna log to that")
+        if log_emissions: print("codecarbon detected, will log emissions")
+        print(f"tokens per iteration will be: {tokens_per_iter:,}")
     
-    if log_via_wandb and master_process:
-        wandb.init(
-            project = "AstroPT-300M, 3.5M galaxies",
-            config = config,
-        )
     if master_process:
         os.makedirs(out_dir, exist_ok=True)
     torch.manual_seed(1337 + seed_offset)
@@ -292,6 +288,20 @@ if __name__ == "__main__":
         model.load_state_dict(state_dict)
         iter_num = checkpoint['iter_num']
         best_val_loss = checkpoint['best_val_loss']
+
+    # logging via wandb if available
+    # this is here so we can get the number of params from model()
+    if log_via_wandb and master_process:
+        wandb.init(
+            project = f"AstroPT-{model.get_num_params()/1e6:06.1f}M",
+            config = config,
+        )
+    # write config and important information to log file
+    with open(f"{out_dir}/hparams.txt", "w") as fi
+        fi.write(f"AstroPT-{model.get_num_params()/1e6:06.1f}M\n")
+        fi.write(f"time: {int(time.time())}\n")
+        for k, v in config.items():
+            fi.write(f"{k}: {v}\n")
 
     # crop down the model block size if desired, using model surgery
     if block_size < model.config.block_size:
@@ -430,7 +440,7 @@ if __name__ == "__main__":
                         'best_val_loss': best_val_loss,
                         'config': config,
                     }
-                    print(f"saving checkpoint to {out_dir}")
+                    if master_process: print(f"saving checkpoint to {out_dir}")
                     torch.save(checkpoint, os.path.join(out_dir, f'ckpt.pt'))
         if iter_num == 0 and eval_only:
             break
