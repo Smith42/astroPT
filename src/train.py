@@ -219,7 +219,7 @@ if __name__ == "__main__":
     
     if log_via_wandb and master_process:
         wandb.init(
-            project = "AstroPT-300M, 8.5M galaxies",
+            project = "AstroPT-300M, 3.5M galaxies",
             config = config,
         )
     if master_process:
