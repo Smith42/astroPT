@@ -137,14 +137,6 @@ class GPT(nn.Module):
         self.config = config
 
         self.transformer = nn.ModuleDict(dict(
-            # This is for time series:
-            #wte = nn.Sequential(
-            #          nn.Linear(config.n_chan, config.n_embd),
-            #          nn.ReLU(),
-            #          nn.Linear(config.n_embd, config.n_embd),
-            #          nn.ReLU(),
-            #),
-            # This is for imagery:
             wte = nn.Sequential(
                  nn.Linear(config.patch_size*config.patch_size*config.n_chan, config.n_embd),
                  nn.ReLU(),
