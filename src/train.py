@@ -55,15 +55,16 @@ def data_transforms():
 
 class GalaxyImageDataset(Dataset):
 
-    def __init__(self, paths, transform=None, stochastic=True, spiral=False, patch_size=16):
+    def __init__(self, paths=None, transform=None, stochastic=True, spiral=False, patch_size=16):
         """
         Arguments:
-            paths: file with all the galaxy paths.
+            paths: file with all the galaxy paths. Paths can be None if streaming from HF.
             transform (callable, optional): Optional transform to be applied on a sample.
             spiral: spiral form instead of raster form
             patch_size: size of ViT patch
         """
-        self.paths = np.genfromtxt(paths, dtype=str)
+        if paths is not None:
+            self.paths = np.genfromtxt(paths, dtype=str)
         self.transform = transform
         self.patch_size = patch_size
         self.stochastic = stochastic
@@ -118,19 +119,7 @@ class GalaxyImageDataset(Dataset):
         antispiraled = [galaxy[ii] for ii in indices]
         return torch.stack(antispiraled)
 
-    def __getitem__(self, idx):
-        if torch.is_tensor(idx):
-            idx = idx.tolist()
-
-        if self.stochastic == True:
-            idx = np.random.randint(len(self.paths))
-
-        while True:
-            try:
-                raw_galaxy = io.read_image(str(self.paths[idx]))
-                break
-            except Exception as err:
-                idx = np.random.randint(len(self.paths))
+    def process_galaxy(self, raw_galaxy):
         patch_galaxy = einops.rearrange(
             raw_galaxy,
             'c (h p1) (w p2) -> (h w) (p1 p2 c)', 
@@ -144,6 +133,22 @@ class GalaxyImageDataset(Dataset):
 
         return patch_galaxy[:-1], patch_galaxy[1:]
 
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        if self.stochastic == True:
+            idx = np.random.randint(len(self.paths))
+
+        while True:
+            try:
+                raw_galaxy = io.read_image(str(self.paths[idx]))
+                break
+            except Exception as err:
+                idx = np.random.randint(len(self.paths))
+
+        X, Y = self.process_galaxy(raw_galaxy)
+        return X, Y
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
@@ -155,6 +160,7 @@ if __name__ == "__main__":
     eval_only = False # if True, script exits right after the first eval
     always_save_checkpoint = False # if True, always save a checkpoint after each eval
     init_from = 'scratch' # 'scratch' or 'resume'
+    stream_hf_dataset = False # stream the galaxies from huggingface
     # data
     gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
     batch_size = 4 # if gradient_accumulation_steps > 1, this is the micro-batch size
@@ -227,25 +233,30 @@ if __name__ == "__main__":
     # note: float16 data type will automatically use a GradScaler
     ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
     ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
-    
-    paths = "./train.txt"
+
+    # dataset init
     # training dataset and dataloader
-    dataset = GalaxyImageDataset(paths, spiral=spiral, transform=data_transforms())
+    tpaths = None if stream_hf_dataset else "./train.txt"
+    tdataset = GalaxyImageDataset(tpaths, spiral=spiral, transform=data_transforms())
+    # validation dataset and dataloader
+    vpaths = None if stream_hf_dataset else "./test.txt"
+    vdataset = GalaxyImageDataset(vpaths, spiral=spiral, transform=data_transforms())
+    if stream_hf_dataset:
+        from dataset import Dataset
+        tdataset = Dataset("Smith42/galaxies", split="train", streaming=True).with_format("torch")
+        tdataset = tdataset.map(tdataset.process_galaxy)
+        vdataset = Dataset("Smith42/galaxies", split="test", streaming=True).with_format("torch")
+        vdataset = tdataset.map(vdataset.process_galaxy)
     sampler = None #DistributedSampler(dataset) if ddp else None
     tdl = iter(DataLoader(
-        dataset,
+        tdataset,
         sampler=sampler,
         batch_size=batch_size,
         num_workers=num_workers,
         pin_memory=True,
     ))
-    
-    # validation dataset and dataloader
-    paths = "./test.txt"
-    dataset = GalaxyImageDataset(paths, spiral=spiral, transform=data_transforms())
-    sampler = None #DistributedSampler(dataset) if ddp else None
     vdl = iter(DataLoader(
-        dataset,
+        vdataset,
         sampler=sampler,
         batch_size=batch_size,
         num_workers=num_workers,
