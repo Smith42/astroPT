@@ -36,7 +36,7 @@ from torchvision import transforms, io
 from tqdm import trange
 try:
     import wandb
-    log_via_wandb = False
+    log_via_wandb = True
 except:
     log_via_wandb = False
 try:
