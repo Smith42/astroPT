@@ -19,6 +19,7 @@ $ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=1 --master_addr=123.456.123
 import os
 import time
 import math
+from functools import partial
 import pickle
 from pathlib import Path
 from contextlib import nullcontext
@@ -30,13 +31,12 @@ import matplotlib.pyplot as plt
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
-from torchvision import datasets
 from torch.distributed import init_process_group, destroy_process_group
 from torchvision import transforms, io
 from tqdm import trange
 try:
     import wandb
-    log_via_wandb = True
+    log_via_wandb = False
 except:
     log_via_wandb = False
 try:
@@ -46,114 +46,12 @@ except:
     log_emissions = False
 
 from model import GPTConfig, GPT
-
-def data_transforms():
-    transform = transforms.Compose([
-        transforms.Lambda(lambda x: x/255.),
-    ])
-    return transform
-
-class GalaxyImageDataset(Dataset):
-
-    def __init__(self, paths=None, transform=None, stochastic=True, spiral=False, patch_size=16):
-        """
-        Arguments:
-            paths: file with all the galaxy paths. Paths can be None if streaming from HF.
-            transform (callable, optional): Optional transform to be applied on a sample.
-            spiral: spiral form instead of raster form
-            patch_size: size of ViT patch
-        """
-        if paths is not None:
-            self.paths = np.genfromtxt(paths, dtype=str)
-        self.transform = transform
-        self.patch_size = patch_size
-        self.stochastic = stochastic
-        self.spiral = spiral
-
-    def __len__(self):
-        return int(1e10) # len(self.paths)
-
-    @staticmethod
-    def _spiral(n):
-        """ 
-        generate a spiral index array of side length 'n'
-        there must be a better way to do this: any suggestions? 
-        """
-        a = np.arange(n*n)
-        b = a.reshape((n,n))
-        m = None
-        for i in range(n, 0, -2):
-            m = np.r_[m, b[0, :], b[1:, -1], b[-1, :-1][::-1], b[1:-1, 0][::-1]]
-            b = b[1:-1, 1:-1]
-        a[list(m[1:])] = list(a)
-        a = abs(a - n*n + 1)
-        return a.reshape((n,n))
-
-    def spiralise(self, galaxy):
-        """ 
-        Change ViT patch ordering to a 'spiral order'. See Fig 8 in
-        https://arxiv.org/pdf/2401.08541.pdf for an illustration.
-
-        Alternate function available here:
-        https://www.procook.co.uk/product/procook-spiralizer-black-and-stainless-steel
-        """
-        # Generate a spiralised matrix and then flatten it to the same shape as 'galaxy'
-        indices = einops.rearrange(
-            self._spiral(int(np.sqrt(len(galaxy)))),
-            'h w -> (h w)',
-        )
-        assert len(indices) == len(galaxy), "tokenised galaxy must have a square rootable length!"
-        spiraled = [ii for _, ii in sorted(zip(indices, galaxy))]
-        return torch.stack(spiraled)
-
-    def antispiralise(self, galaxy):
-        """ 
-        Change ViT patch ordering from spiral to raster order. See 'spiralise'.
-        """
-        # Generate a spiralised matrix and then flatten it to the same shape as 'galaxy'
-        indices = einops.rearrange(
-            self._spiral(int(np.sqrt(len(galaxy)))),
-            'h w -> (h w)',
-        )
-        assert len(indices) == len(galaxy), "tokenised galaxy must have a square rootable length!"
-        antispiraled = [galaxy[ii] for ii in indices]
-        return torch.stack(antispiraled)
-
-    def process_galaxy(self, raw_galaxy):
-        patch_galaxy = einops.rearrange(
-            raw_galaxy,
-            'c (h p1) (w p2) -> (h w) (p1 p2 c)', 
-            p1=self.patch_size, p2=self.patch_size
-        )
-
-        if self.transform:
-            patch_galaxy = self.transform(patch_galaxy)
-        if self.spiral:
-            patch_galaxy = self.spiralise(patch_galaxy)
-
-        return patch_galaxy[:-1], patch_galaxy[1:]
-
-    def __getitem__(self, idx):
-        if torch.is_tensor(idx):
-            idx = idx.tolist()
-
-        if self.stochastic == True:
-            idx = np.random.randint(len(self.paths))
-
-        while True:
-            try:
-                raw_galaxy = io.read_image(str(self.paths[idx]))
-                break
-            except Exception as err:
-                idx = np.random.randint(len(self.paths))
-
-        X, Y = self.process_galaxy(raw_galaxy)
-        return X, Y
+from local_datasets import GalaxyImageDataset
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to train astroPT-700M on DESI galaxies
-    out_dir = 'logs/big_run_test_2'
+    out_dir = 'logs/test'
     eval_interval = 1000
     log_interval = 100
     eval_iters = 10
@@ -170,7 +68,7 @@ if __name__ == "__main__":
     # astroPT model
     n_layer = 24#26#4#26#10#36 
     n_head = 16#6#16#10#20
-    n_embd = 1792#240#1024#320#1280
+    n_embd = 1024#240#1792#240#1024#320#1280
     n_chan = 3 # 3 imagery bands: r, i, z
     dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
     bias = False # do we use bias inside LayerNorm and Linear layers?
@@ -187,7 +85,7 @@ if __name__ == "__main__":
     decay_lr = True # whether to decay the learning rate
     warmup_iters = 2000 # how many steps to warm up for
     lr_decay_iters = 50010 * 1.1 # should be ~= max_iters per Chinchilla
-    min_lr = 2e-6 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
+    min_lr = learning_rate/10 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
     # DDP settings
     backend = 'nccl' # 'nccl', 'gloo', etc.
     # system
@@ -235,6 +133,11 @@ if __name__ == "__main__":
     ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
     # dataset init
+    def data_transforms():
+        transform = transforms.Compose([
+            transforms.Lambda(lambda x: x/255.),
+        ])
+        return transform
     # training dataset and dataloader
     tpaths = None if stream_hf_dataset else "./train.txt"
     tdataset = GalaxyImageDataset(tpaths, spiral=spiral, transform=data_transforms())
@@ -242,21 +145,27 @@ if __name__ == "__main__":
     vpaths = None if stream_hf_dataset else "./test.txt"
     vdataset = GalaxyImageDataset(vpaths, spiral=spiral, transform=data_transforms())
     if stream_hf_dataset:
-        from dataset import Dataset
-        tdataset = Dataset("Smith42/galaxies", split="train", streaming=True).with_format("torch")
-        tdataset = tdataset.map(tdataset.process_galaxy)
-        vdataset = Dataset("Smith42/galaxies", split="test", streaming=True).with_format("torch")
-        vdataset = tdataset.map(vdataset.process_galaxy)
+        from datasets import load_dataset
+        def process_galaxy_wrapper(galdict, func):
+            patch_galaxy = func(np.array(galdict["image"]).swapaxes(0, 2))
+            return { "X": patch_galaxy[:-1], "Y": patch_galaxy[1:], }
+        tdataset_hf = load_dataset("Smith42/galaxies", split="train", streaming=True)
+        tdataset_hf = tdataset_hf.map(partial(process_galaxy_wrapper, func=tdataset.process_galaxy))
+        tdataset_hf = tdataset_hf.remove_columns(["image", "dr8_id"])
+        vdataset_hf = load_dataset("Smith42/galaxies", split="test", streaming=True)
+        vdataset_hf = vdataset_hf.map(partial(process_galaxy_wrapper, func=vdataset.process_galaxy))
+        vdataset_hf = vdataset_hf.remove_columns(["image", "dr8_id"])
+
     sampler = None #DistributedSampler(dataset) if ddp else None
     tdl = iter(DataLoader(
-        tdataset,
+        tdataset_hf if stream_hf_dataset else tdataset,
         sampler=sampler,
         batch_size=batch_size,
         num_workers=num_workers,
         pin_memory=True,
     ))
     vdl = iter(DataLoader(
-        vdataset,
+        vdataset_hf if stream_hf_dataset else vdataset,
         sampler=sampler,
         batch_size=batch_size,
         num_workers=num_workers,
@@ -347,9 +256,9 @@ if __name__ == "__main__":
         for dl, split in zip([tdl, vdl], ["train", "val"]):
             losses = torch.zeros(eval_iters)
             for k in range(eval_iters):
-                X, Y = next(dl)
-                X = X.to(device)
-                Y = Y.to(device)
+                B = next(dl)
+                X = B["X"].to(device)
+                Y = B["Y"].to(device)
                 with ctx:
                     logits, loss = model(X, Y)
                 losses[k] = loss.item()
@@ -362,9 +271,9 @@ if __name__ == "__main__":
         model.eval()
         for dl, split in zip([tdl, vdl], ["train", "val"]):
             f, axs = plt.subplots(2, 4, figsize=(6, 3), constrained_layout=True)
-            X, Y = next(dl)
-            X = X.to(device)
-            Y = Y.to(device)
+            B = next(dl)
+            X = B["X"].to(device)
+            Y = B["Y"].to(device)
             with ctx:
                 P, _ = model(X, Y)
             b, t, c = Y.size()
@@ -406,9 +315,9 @@ if __name__ == "__main__":
         return min_lr + coeff * (learning_rate - min_lr)
     
     # training loop
-    X, Y = next(tdl) # fetch the very first batch
-    X = X.to(device)
-    Y = Y.to(device)
+    B = next(tdl) # fetch the very first batch
+    X = B["X"].to(device)
+    Y = B["Y"].to(device)
     t0 = time.time()
     local_iter_num = 0 # number of iterations in the lifetime of this process
     raw_model = model.module if ddp else model # unwrap DDP container if needed
@@ -469,9 +378,9 @@ if __name__ == "__main__":
                 logits, loss = model(X, Y)
                 loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
-            X, Y = next(tdl)
-            X = X.to(device)
-            Y = Y.to(device)
+            B = next(tdl)
+            X = B["X"].to(device)
+            Y = B["Y"].to(device)
             # backward pass, with gradient scaling if training in fp16
             scaler.scale(loss).backward()
         # clip the gradient
