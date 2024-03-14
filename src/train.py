@@ -24,6 +24,7 @@ import pickle
 from pathlib import Path
 from contextlib import nullcontext
 import einops
+import PIL
 
 import numpy as np
 import torch
@@ -140,36 +141,47 @@ if __name__ == "__main__":
         return transform
     # training dataset and dataloader
     tpaths = None if stream_hf_dataset else "./train.txt"
-    tdataset = GalaxyImageDataset(tpaths, spiral=spiral, transform=data_transforms())
+    tds = GalaxyImageDataset(tpaths, spiral=spiral, transform=data_transforms())
     # validation dataset and dataloader
     vpaths = None if stream_hf_dataset else "./test.txt"
-    vdataset = GalaxyImageDataset(vpaths, spiral=spiral, transform=data_transforms())
+    vds = GalaxyImageDataset(vpaths, spiral=spiral, transform=data_transforms())
     if stream_hf_dataset:
-        from datasets import load_dataset
+        from datasets import load_dataset, Image
+        import io
+        def filter_bumf(galdict):
+            """ Lazily remove galaxies that are borked """
+            try:
+                gal = PIL.Image.open(io.BytesIO(galdict["image"]["bytes"]))
+                return True
+            except:
+                return False
         def process_galaxy_wrapper(galdict, func):
-            patch_galaxy = func(np.array(galdict["image"]).swapaxes(0, 2))
+            gal = PIL.Image.open(io.BytesIO(galdict["image"]["bytes"]))
+            patch_galaxy = func(np.array(gal).swapaxes(0, 2))
             return { "X": patch_galaxy[:-1], "Y": patch_galaxy[1:], }
-        tdataset_hf = load_dataset("Smith42/galaxies", split="train", streaming=True)
-        tdataset_hf = tdataset_hf.map(partial(process_galaxy_wrapper, func=tdataset.process_galaxy))
-        tdataset_hf = tdataset_hf.remove_columns(["image", "dr8_id"])
-        vdataset_hf = load_dataset("Smith42/galaxies", split="test", streaming=True)
-        vdataset_hf = vdataset_hf.map(partial(process_galaxy_wrapper, func=vdataset.process_galaxy))
-        vdataset_hf = vdataset_hf.remove_columns(["image", "dr8_id"])
+        tds_hf = load_dataset("Smith42/galaxies", split="train", streaming=True)
+        tds_hf = tds_hf.cast_column("image", Image(decode=False))
+        tds_hf = tds_hf.filter(filter_bumf).map(partial(process_galaxy_wrapper, func=tds.process_galaxy))
+        tds_hf = tds_hf.remove_columns(["image", "dr8_id"])
+        vds_hf = load_dataset("Smith42/galaxies", split="test", streaming=True)
+        vds_hf = vds_hf.cast_column("image", Image(decode=False))
+        vds_hf = vds_hf.filter(filter_bumf).map(partial(process_galaxy_wrapper, func=vds.process_galaxy))
+        vds_hf = vds_hf.remove_columns(["image", "dr8_id"])
 
     sampler = None #DistributedSampler(dataset) if ddp else None
     tdl = iter(DataLoader(
-        tdataset_hf if stream_hf_dataset else tdataset,
+        tds_hf if stream_hf_dataset else tds,
         sampler=sampler,
         batch_size=batch_size,
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=False,
     ))
     vdl = iter(DataLoader(
-        vdataset_hf if stream_hf_dataset else vdataset,
+        vds_hf if stream_hf_dataset else vds,
         sampler=sampler,
         batch_size=batch_size,
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=False,
     ))
     
     # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
@@ -279,10 +291,10 @@ if __name__ == "__main__":
             b, t, c = Y.size()
             zero_block = torch.zeros((b, 1, c)).to(device)
             Y = torch.cat((zero_block, Y), dim=1)
-            if spiral: Y = torch.stack([vdataset.antispiralise(yy) for yy in Y])
+            if spiral: Y = torch.stack([vds.antispiralise(yy) for yy in Y])
             Y = einops.rearrange(Y, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=32, w=32)
             P = torch.cat((zero_block, P), dim=1)
-            if spiral: P = torch.stack([vdataset.antispiralise(pp) for pp in P])
+            if spiral: P = torch.stack([vds.antispiralise(pp) for pp in P])
             P = einops.rearrange(P, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=32, w=32)
             if log_via_wandb:
                 wandb.log({"Y": wandb.Image(Y.swapaxes(1, -1)), "P": wandb.Image(P.swapaxes(1, -1))})
