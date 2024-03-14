@@ -30,7 +30,6 @@ import matplotlib.pyplot as plt
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
-from torchvision import datasets
 from torch.distributed import init_process_group, destroy_process_group
 from torchvision import transforms, io
 from tqdm import trange
@@ -153,7 +152,7 @@ class GalaxyImageDataset(Dataset):
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to train astroPT-700M on DESI galaxies
-    out_dir = 'logs/big_run_test_2'
+    out_dir = 'logs/big_run_test_3'
     eval_interval = 1000
     log_interval = 100
     eval_iters = 10
@@ -170,7 +169,7 @@ if __name__ == "__main__":
     # astroPT model
     n_layer = 24#26#4#26#10#36 
     n_head = 16#6#16#10#20
-    n_embd = 1792#240#1024#320#1280
+    n_embd = 1024#240#1024#320#1280
     n_chan = 3 # 3 imagery bands: r, i, z
     dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
     bias = False # do we use bias inside LayerNorm and Linear layers?
