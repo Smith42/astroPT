@@ -177,7 +177,7 @@ if __name__ == "__main__":
     best_val_loss = 1e9
     
     # model init
-    model_args = dict(n_layer = n_layer, n_head = n_head, n_embd = n_embd, n_chan = n_chan, block_size = block_size, dropout = dropout)
+    model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, n_chan=n_chan, block_size=block_size, dropout=dropout, patch_size=patch_size)
     
     if init_from == 'scratch':
         # init a new model from scratch
@@ -319,6 +319,7 @@ if __name__ == "__main__":
     X = B["X"].to(device)
     Y = B["Y"].to(device)
     t0 = time.time()
+    dts = []
     local_iter_num = 0 # number of iterations in the lifetime of this process
     raw_model = model.module if ddp else model # unwrap DDP container if needed
     running_mfu = -1.0
@@ -396,6 +397,7 @@ if __name__ == "__main__":
         # timing and logging
         t1 = time.time()
         dt = t1 - t0
+        dts.append(dt)
         t0 = t1
         if iter_num % log_interval == 0 and master_process:
             # get loss as float. note: this is a CPU-GPU sync point
@@ -408,9 +410,10 @@ if __name__ == "__main__":
                 wandb.log({"loss": lossf, "time": dt})
             if log_emissions:
                 emissions: float = tracker.flush()
-                print(f"iter {iter_num}: loss {lossf:.6f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%, co2 {emissions:.1f}kg")
+                print(f"iter {iter_num}: loss {lossf:.6f}, time {np.mean(dts)*1000:.2f}ms, mfu {running_mfu*100:.2f}%, co2 {emissions:.1f}kg")
             else:
-                print(f"iter {iter_num}: loss {lossf:.6f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
+                print(f"iter {iter_num}: loss {lossf:.6f}, time {np.mean(dts)*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
+            dts = []
 
         iter_num += 1
         local_iter_num += 1
