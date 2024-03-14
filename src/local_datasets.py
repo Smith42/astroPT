@@ -57,7 +57,7 @@ class GalaxyImageDataset(Dataset):
         )
         assert len(indices) == len(galaxy), "tokenised galaxy must have a square rootable length!"
         spiraled = [ii for _, ii in sorted(zip(indices, galaxy))]
-        return torch.stack(spiraled) if isinstance(spiraled, torch.Tensor) else np.stack(spiraled)
+        return torch.stack(spiraled) if isinstance(spiraled[0], torch.Tensor) else np.stack(spiraled)
 
     def antispiralise(self, galaxy):
         """ 
@@ -70,7 +70,7 @@ class GalaxyImageDataset(Dataset):
         )
         assert len(indices) == len(galaxy), "tokenised galaxy must have a square rootable length!"
         antispiraled = [galaxy[ii] for ii in indices]
-        return torch.stack(antispiraled) if isinstance(antispiraled, torch.Tensor) else np.stack(antispiraled)
+        return torch.stack(antispiraled) if isinstance(antispiraled[0], torch.Tensor) else np.stack(antispiraled)
 
     def process_galaxy(self, raw_galaxy):
         patch_galaxy = einops.rearrange(
