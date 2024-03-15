@@ -51,7 +51,8 @@ from local_datasets import GalaxyImageDataset
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
-    # default config values designed to train astroPT-700M on DESI galaxies
+    # default config values designed to test run a model on DESI
+    # look at config/astropt300m.py for a prod run example
     out_dir = 'logs/test'
     eval_interval = 1000
     log_interval = 100
@@ -59,7 +60,7 @@ if __name__ == "__main__":
     eval_only = False # if True, script exits right after the first eval
     always_save_checkpoint = False # if True, always save a checkpoint after each eval
     init_from = 'scratch' # 'scratch' or 'resume'
-    stream_hf_dataset = False # stream the galaxies from huggingface
+    stream_hf_dataset = True # stream the galaxies from huggingface
     # data
     gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
     batch_size = 4 # if gradient_accumulation_steps > 1, this is the micro-batch size
@@ -67,16 +68,16 @@ if __name__ == "__main__":
     block_size = 1024
     num_workers = 64 
     # astroPT model
-    n_layer = 24#26#4#26#10#36 
-    n_head = 16#6#16#10#20
-    n_embd = 1024#240#1792#240#1024#320#1280
+    n_layer = 26
+    n_head = 16
+    n_embd = 768
     n_chan = 3 # 3 imagery bands: r, i, z
     dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
     bias = False # do we use bias inside LayerNorm and Linear layers?
     patch_size = 16 # size of image patches for ViT tokenisation
     # adamw optimizer
     # we follow the same schedule here as Chinchilla
-    learning_rate = 3e-4#2e-5 # max learning rate
+    learning_rate = 2e-4 # max learning rate
     max_iters = 80010 # total number of training iterations for one pass over our dataset
     weight_decay = 1e-1
     beta1 = 0.9
