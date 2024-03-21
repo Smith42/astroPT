@@ -60,7 +60,8 @@ if __name__ == "__main__":
     eval_only = False # if True, script exits right after the first eval
     always_save_checkpoint = False # if True, always save a checkpoint after each eval
     init_from = 'scratch' # 'scratch' or 'resume'
-    stream_hf_dataset = True # stream the galaxies from huggingface
+    use_hf = True # use the huggingface dataset version of our galz
+    stream_hf_dataset = False # stream the galaxies from huggingface
     # data
     gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
     batch_size = 4 # if gradient_accumulation_steps > 1, this is the micro-batch size
@@ -94,6 +95,7 @@ if __name__ == "__main__":
     device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
     dtype = 'bfloat16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
     compile = True # use PyTorch 2.0 to compile the model to be faster
+    log_via_wandb = False
     # -----------------------------------------------------------------------------
     config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
     exec(open('src/configurator.py').read()) # overrides from command line or config file
@@ -141,44 +143,46 @@ if __name__ == "__main__":
         ])
         return transform
     # training dataset and dataloader
-    tpaths = None if stream_hf_dataset else "./train.txt"
+    tpaths = None if use_hf else "./train.txt"
     tds = GalaxyImageDataset(tpaths, spiral=spiral, transform=data_transforms())
     # validation dataset and dataloader
-    vpaths = None if stream_hf_dataset else "./test.txt"
+    vpaths = None if use_hf else "./test.txt"
     vds = GalaxyImageDataset(vpaths, spiral=spiral, transform=data_transforms())
-    if stream_hf_dataset:
-        from datasets import load_dataset, Image
-        import io
-        def filter_bumf(galdict):
-            """ Lazily remove galaxies that are borked """
-            try:
-                gal = PIL.Image.open(io.BytesIO(galdict["image"]["bytes"]))
-                return True
-            except:
-                return False
-        def process_galaxy_wrapper(galdict, func):
-            gal = PIL.Image.open(io.BytesIO(galdict["image"]["bytes"]))
-            patch_galaxy = func(np.array(gal).swapaxes(0, 2))
+
+    if use_hf:
+        from datasets import load_dataset
+
+        def _process_galaxy_wrapper(gal, func):
+            patch_galaxy = func(np.array(gal["image"]).swapaxes(0, 2))
             return { "X": patch_galaxy[:-1], "Y": patch_galaxy[1:], }
-        tds_hf = load_dataset("Smith42/galaxies", split="train", streaming=True)
-        tds_hf = tds_hf.cast_column("image", Image(decode=False))
-        tds_hf = tds_hf.filter(filter_bumf).map(partial(process_galaxy_wrapper, func=tds.process_galaxy))
+
+        tds_hf = load_dataset(
+            "Smith42/galaxies",
+            split="train",
+            streaming=(True if stream_hf_dataset else False),
+            cache_dir="/raid/data/cache",
+        )
+        tds_hf = tds_hf.map(partial(_process_galaxy_wrapper, func=tds.process_galaxy))
         tds_hf = tds_hf.remove_columns(["image", "dr8_id"])
-        vds_hf = load_dataset("Smith42/galaxies", split="test", streaming=True)
-        vds_hf = vds_hf.cast_column("image", Image(decode=False))
-        vds_hf = vds_hf.filter(filter_bumf).map(partial(process_galaxy_wrapper, func=vds.process_galaxy))
+        vds_hf = load_dataset(
+            "Smith42/galaxies",
+            split="test",
+            streaming=(True if stream_hf_dataset else False),
+            cache_dir="/raid/data/cache",
+        )
+        vds_hf = vds_hf.map(partial(_process_galaxy_wrapper, func=vds.process_galaxy))
         vds_hf = vds_hf.remove_columns(["image", "dr8_id"])
 
     sampler = None #DistributedSampler(dataset) if ddp else None
     tdl = iter(DataLoader(
-        tds_hf if stream_hf_dataset else tds,
+        tds_hf if use_hf else tds,
         sampler=sampler,
         batch_size=batch_size,
         num_workers=num_workers,
         pin_memory=False,
     ))
     vdl = iter(DataLoader(
-        vds_hf if stream_hf_dataset else vds,
+        vds_hf if use_hf else vds,
         sampler=sampler,
         batch_size=batch_size,
         num_workers=num_workers,
