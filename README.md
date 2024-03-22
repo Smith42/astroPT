@@ -37,4 +37,6 @@ Looking good! Next step: 9M galaxies!
 
 ## pretrained weights
 
-TBD
+Available on [HuggingFace 🤗 here](https://huggingface.co/Smith42/astroPT).
+
+Dataset is also available on [HuggingFace 🔥](https://huggingface.co/datasets/Smith42/galaxies).
