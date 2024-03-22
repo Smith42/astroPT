@@ -1,5 +1,5 @@
 """
-Sample from a trained model
+Sample from a trained astropt model
 """
 import os
 import pickle
@@ -10,13 +10,15 @@ from tqdm import tqdm, trange
 import matplotlib.pyplot as plt
 import numpy as np
 from model import GPTConfig, GPT
-from train import GalaxyImageDataset, data_transforms
+from datasets import load_dataset
+from train import GalaxyImageDataset
+from torchvision import transforms
 import functools
 import einops
 
 # -----------------------------------------------------------------------------
 init_from = 'resume'
-out_dir = 'logs/astropt_1M' # ignored if init_from is not 'resume'
+out_dir = 'logs/spiralized_astropt_300M' # ignored if init_from is not 'resume'
 prompt = '' # promptfile (numpy)
 num_samples = 4 # number of samples to draw
 max_new_tokens = 1024 # number of tokens generated in each sample
@@ -57,11 +59,23 @@ model.to(device)
 if compile:
     model = torch.compile(model) # requires PyTorch 2.0 (optional)
 
-# start file (numpy)
-# This is an initial random input
-paths = "./sorted_files.txt"
-train_data = iter(GalaxyImageDataset(paths, transform=data_transforms()))
-xs = torch.stack([next(train_data)[0] for _ in range(num_samples)])[:, 0:1]
+# set up HF galaxies in test set to be processed
+def data_transforms():
+    transform = transforms.Compose([
+        transforms.Lambda(lambda x: x/255.),
+    ])
+    return transform
+def _process_galaxy_wrapper(gal, func):
+    patch_galaxy = func(np.array(gal["image"]).swapaxes(0, 2))
+    return {"image": patch_galaxy}
+galproc = GalaxyImageDataset(None, spiral=True, transform=data_transforms())
+ds = load_dataset("Smith42/galaxies", split="test", streaming=True)
+ds = iter(ds.map(
+    functools.partial(_process_galaxy_wrapper, func=galproc.process_galaxy)
+).with_format("torch"))
+
+# get samples for processing
+xs = torch.stack([next(ds)["image"] for _ in range(num_samples)])[:, 0:16]
 
 def plot_galaxies(xs, dumpto=os.path.join(out_dir, "test.png")):
     f, axs = plt.subplots(8, 4, figsize=(8, 16), constrained_layout=True)
@@ -82,12 +96,12 @@ with torch.no_grad():
     with ctx:
         for temperature in np.logspace(-4, 0, 8):
             print("inferring", temperature)
-            ps = model.generate(xs.to(device), max_new_tokens, temperature=temperature).detach().cpu().numpy()
-            ps = ps[:, :-1]
+            ps = model.generate(xs.to(device), max_new_tokens - xs.shape[1], temperature=temperature)
             ps = (ps - ps.min())/(ps.max() - ps.min())
             # Rearrange galaxy images so that they are nice and in png format:
+            ps = torch.stack([galproc.antispiralise(pp) for pp in ps])
             ps = einops.rearrange(ps, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=16, p2=16, h=32, w=32)
-            pss.append(ps)
+            pss.append(ps.detach().cpu().numpy())
 
         print("Plotting...")
         plot_galaxies(np.concatenate(pss), dumpto=os.path.join(out_dir, f"ps.png"))
