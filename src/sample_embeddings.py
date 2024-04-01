@@ -96,7 +96,7 @@ def plot_embeddings(xs, ids, dumpto=os.path.join(out_dir, "test.png")):
     pcs = run_pca(xs)
     for ax, metadatum in zip(axs.ravel(), [
                 "redshift", "mag_g", "sersic_n", "has-spiral-arms_yes_fraction",
-                "u_minus_r", "elpetro_mass_log", "total_sfr_avg", "total_ssfr_avg",
+                "u_minus_r", "elpetro_mass_log", "elpetro_theta_r", "merging_merger_fraction",
             ]):
         md_to_plot = metadata[metadatum]
         im = ax.scatter(
