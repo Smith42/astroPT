@@ -56,9 +56,11 @@ if __name__ == "__main__":
     out_dir = 'logs/test'
     eval_interval = 1000
     log_interval = 100
+    checkpoint_interval = 10000
+    assert checkpoint_interval % eval_interval == 0
     eval_iters = 10
     eval_only = False # if True, script exits right after the first eval
-    always_save_checkpoint = False # if True, always save a checkpoint after each eval
+    always_save_checkpoint = True # if True, always save a checkpoint at each checkpoint_interval
     init_from = 'scratch' # 'scratch' or 'resume'
     use_hf = True # use the huggingface dataset version of our galz
     stream_hf_dataset = False # stream the galaxies from huggingface
@@ -367,6 +369,7 @@ if __name__ == "__main__":
                 f.savefig(os.path.join(out_dir, "loss.png"))
                 plt.close()
     
+        if iter_num % checkpoint_interval == 0 and master_process:
             if losses['val'] < best_val_loss or always_save_checkpoint:
                 best_val_loss = losses['val']
                 if iter_num > 0:
