@@ -16,19 +16,20 @@ block_size=1024
 learning_rate = 3e-4 # max learning rate
 min_lr = learning_rate/10 
 
-# these make the total batch size be ~0.164M
-# 4 batch size * 1024 block size * 5 gradaccum * 8 GPUs = 163,840
+# these make the total batch size be ~0.328M
+# 8 batch size * 1024 block size * 5 gradaccum * 8 GPUs = 327,680
 # here we assume a world size of 8!
 init_from = "scratch"
-batch_size = 4
+batch_size = 8
 gradient_accumulation_steps = 5 * 8
 
-# this makes total number of tokens be 9B (~chinchilla optimal)
-max_iters = 55010
-lr_decay_iters = 55010 * 1.1
+# this makes total number of tokens be 8.5B (one epoch of GZ DESI)
+max_iters = 30000
+lr_decay_iters = 27000 * 1.1
 
 # eval stuff
-eval_interval = 5000
-eval_iters = 200 
-log_interval = 10
-out_dir ='logs/astropt400m'
+eval_interval = 1000
+checkpoint_interval = 5000
+eval_iters = 200
+log_interval = 100
+out_dir ='logs/9B_tokens/astropt300m'
