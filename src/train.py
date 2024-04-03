@@ -372,7 +372,7 @@ if __name__ == "__main__":
                 f.savefig(os.path.join(out_dir, "loss.png"))
                 plt.close()
     
-        if ((iter_num % checkpoint_interval == 0 and master_process) or (iter_num == max_iters)):
+        if ((iter_num % checkpoint_interval == 0 or iter_num == max_iters) and master_process)):
             if losses['val'] < best_val_loss or always_save_checkpoint:
                 best_val_loss = losses['val']
                 if iter_num > 0:
