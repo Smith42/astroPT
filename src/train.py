@@ -66,7 +66,7 @@ if __name__ == "__main__":
     stream_hf_dataset = False # stream the galaxies from huggingface
     # data
     gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
-    batch_size = 4 # if gradient_accumulation_steps > 1, this is the micro-batch size
+    batch_size = 8 # if gradient_accumulation_steps > 1, this is the micro-batch size
     spiral = True # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     num_workers = 64 
@@ -81,7 +81,7 @@ if __name__ == "__main__":
     # adamw optimizer
     # we follow the same schedule here as Chinchilla
     learning_rate = 2e-4 # max learning rate
-    max_iters = 80010 # total number of training iterations for one pass over our dataset
+    max_iters = 30000 # total number of training iterations for one pass over our dataset
     weight_decay = 1e-1
     beta1 = 0.9
     beta2 = 0.95
@@ -89,7 +89,7 @@ if __name__ == "__main__":
     # learning rate decay settings
     decay_lr = True # whether to decay the learning rate
     warmup_iters = 2000 # how many steps to warm up for
-    lr_decay_iters = 50010 * 1.1 # should be ~= max_iters per Chinchilla
+    lr_decay_iters = 27000 * 1.1 # should be ~= max_iters per Chinchilla
     min_lr = learning_rate/10 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
     # DDP settings
     backend = 'nccl' # 'nccl', 'gloo', etc.
@@ -181,14 +181,14 @@ if __name__ == "__main__":
         sampler=sampler,
         batch_size=batch_size,
         num_workers=num_workers,
-        pin_memory=False,
+        pin_memory=True,
     ))
     vdl = iter(DataLoader(
         vds_hf if use_hf else vds,
         sampler=sampler,
         batch_size=batch_size,
         num_workers=num_workers,
-        pin_memory=False,
+        pin_memory=True,
     ))
     
     # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
@@ -334,6 +334,7 @@ if __name__ == "__main__":
         return min_lr + coeff * (learning_rate - min_lr)
     
     # training loop
+    if master_process: print("starting training...")
     B = next(tdl) # fetch the very first batch
     X = B["X"].to(device)
     Y = B["Y"].to(device)
@@ -359,6 +360,8 @@ if __name__ == "__main__":
             validate(iter_num, out_dir)
             with open(os.path.join(out_dir, "loss.txt"), "a") as fi:
                 fi.write(f"{iter_num},{losses['train']},{losses['val']},{lr},{running_mfu*100}\n")
+            if log_via_wandb:
+                wandb.log({"valloss": losses['val']})
             if iter_num != 0:
                 loss_ar = np.genfromtxt(os.path.join(out_dir, "loss.txt"), delimiter=",")
                 f, ax = plt.subplots(1, 1, figsize=(8, 3))
@@ -369,7 +372,7 @@ if __name__ == "__main__":
                 f.savefig(os.path.join(out_dir, "loss.png"))
                 plt.close()
     
-        if iter_num % checkpoint_interval == 0 and master_process:
+        if ((iter_num % checkpoint_interval == 0 and master_process) or (iter_num == max_iters)):
             if losses['val'] < best_val_loss or always_save_checkpoint:
                 best_val_loss = losses['val']
                 if iter_num > 0:
