@@ -152,10 +152,19 @@ if __name__ == "__main__":
     vds = GalaxyImageDataset(vpaths, spiral=spiral, transform=data_transforms())
 
     if use_hf:
-        from datasets import load_dataset
+        from datasets import load_dataset, Image
+        import io
 
-        def _process_galaxy_wrapper(gal, func):
-            patch_galaxy = func(np.array(gal["image"]).swapaxes(0, 2))
+        def filter_bumf(galdict):
+            """ Lazily remove galaxies that are borked """
+            try:
+                gal = PIL.Image.open(io.BytesIO(galdict["image"]["bytes"]))
+                return True
+            except:
+                return False
+        def process_galaxy_wrapper(galdict, func):
+            gal = PIL.Image.open(io.BytesIO(galdict["image"]["bytes"]))
+            patch_galaxy = func(np.array(gal).swapaxes(0, 2))
             return { "X": patch_galaxy[:-1], "Y": patch_galaxy[1:], }
 
         tds_hf = load_dataset(
@@ -164,15 +173,18 @@ if __name__ == "__main__":
             streaming=(True if stream_hf_dataset else False),
             cache_dir="/raid/data/cache",
         )
-        tds_hf = tds_hf.map(partial(_process_galaxy_wrapper, func=tds.process_galaxy))
+        tds_hf = tds_hf.cast_column("image", Image(decode=False))
+        tds_hf = tds_hf.filter(filter_bumf).map(partial(process_galaxy_wrapper, func=tds.process_galaxy))
         tds_hf = tds_hf.remove_columns(["image", "dr8_id"])
+
         vds_hf = load_dataset(
             "Smith42/galaxies",
             split="test",
             streaming=(True if stream_hf_dataset else False),
             cache_dir="/raid/data/cache",
         )
-        vds_hf = vds_hf.map(partial(_process_galaxy_wrapper, func=vds.process_galaxy))
+        vds_hf = vds_hf.cast_column("image", Image(decode=False))
+        vds_hf = vds_hf.filter(filter_bumf).map(partial(process_galaxy_wrapper, func=vds.process_galaxy))
         vds_hf = vds_hf.remove_columns(["image", "dr8_id"])
 
     sampler = None #DistributedSampler(dataset) if ddp else None
