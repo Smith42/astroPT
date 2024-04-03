@@ -5,6 +5,7 @@ import einops
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from torchvision import io
 
 class GalaxyImageDataset(Dataset):
 
