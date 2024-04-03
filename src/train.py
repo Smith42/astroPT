@@ -384,7 +384,7 @@ if __name__ == "__main__":
                 f.savefig(os.path.join(out_dir, "loss.png"))
                 plt.close()
     
-        if ((iter_num % checkpoint_interval == 0 or iter_num == max_iters) and master_process)):
+        if ((iter_num % checkpoint_interval == 0 or iter_num == max_iters) and master_process):
             if losses['val'] < best_val_loss or always_save_checkpoint:
                 best_val_loss = losses['val']
                 if iter_num > 0:
@@ -397,7 +397,10 @@ if __name__ == "__main__":
                         'config': config,
                     }
                     if master_process: print(f"saving checkpoint to {out_dir}")
-                    torch.save(checkpoint, os.path.join(out_dir, f'ckpt.pt'))
+                    if always_save_checkpoint:
+                        torch.save(checkpoint, os.path.join(out_dir, f'{iter_num:06d}_ckpt.pt'))
+                    else:
+                        torch.save(checkpoint, os.path.join(out_dir, f'ckpt.pt'))
         if iter_num == 0 and eval_only:
             break
     
