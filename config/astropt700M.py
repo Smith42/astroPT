@@ -32,4 +32,4 @@ eval_interval = 1000
 checkpoint_interval = 5000
 eval_iters = 200
 log_interval = 100
-out_dir ='logs/9B_tokens/astropt700m'
+out_dir ='logs/9B_tokens/astropt700M'
