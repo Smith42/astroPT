@@ -78,7 +78,7 @@ class GalaxyImageDataset(Dataset):
             raw_galaxy,
             'c (h p1) (w p2) -> (h w) (p1 p2 c)', 
             p1=self.patch_size, p2=self.patch_size
-        )
+        ).to(torch.float)
 
         if self.transform:
             patch_galaxy = self.transform(patch_galaxy)
