@@ -324,7 +324,7 @@ if __name__ == "__main__":
                 ax[0].axis("off")
                 ax[1].axis("off")
             f.savefig(
-                os.path.join(out_dir, f"{iter_num:08d}_{split}.jpg"), 
+                os.path.join(out_dir, f"{iter_num:06d}_{split}.jpg"),
                 bbox_inches="tight",
                 pad_inches=0,
             )
