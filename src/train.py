@@ -139,9 +139,13 @@ if __name__ == "__main__":
     ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
     # dataset init
+    def normalise(x):
+        std, mean = torch.std_mean(x, dim=1, keepdim=True)
+        return (x - mean)/(std + 1e-8)
     def data_transforms():
         transform = transforms.Compose([
-            transforms.Lambda(lambda x: x/255.),
+            #transforms.Lambda(lambda x: x/255.),
+            transforms.Lambda(normalise),
         ])
         return transform
     # training dataset and dataloader
