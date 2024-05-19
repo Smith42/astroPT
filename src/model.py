@@ -305,7 +305,7 @@ class GPT(nn.Module):
         return idx
 
     @torch.no_grad()
-    def generate_embeddings(self, idx):
+    def generate_embeddings(self, idx, average_type="mean"):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t))
         and get the embedding from the transformer model for that series.
@@ -314,6 +314,16 @@ class GPT(nn.Module):
         operation for this.
         """
         idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
-        # We only care about the average embedding
-        embeddings = torch.mean(self.get_embeddings(idx_cond), dim=1)
-        return embeddings
+        if average_type == "mean":
+            # We only care about the average embedding
+            weighted_embeddings = torch.mean(self.get_embeddings(idx_cond), dim=1)
+        elif average_type == "exp_decay":
+            embeddings = self.get_embeddings(idx_cond)
+            weights = torch.logspace(0, -1, embeddings.shape[1], device=embeddings.device).unsqueeze(0).unsqueeze(-1)
+            weighted_embeddings = torch.sum(weights*embeddings, dim=1)/torch.sum(embeddings, dim=1)
+        elif average_type == "none":
+            weighted_embeddings = self.get_embeddings(idx_cond)
+        else:
+            raise NotImplementedError
+
+        return weighted_embeddings
