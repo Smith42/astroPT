@@ -36,7 +36,7 @@ and define a patch as a 16 by 16 pixel square, and feed the galaxy patches
 in a spiral order:
 
 <p align="center">
-    <img src="explore/galaxy.png" alt="galaxy" width="256"/>
+    <img src="explore/galaxy.png" alt="galaxy" width="128"/>
 </p>
 
 The trained model results are promising -- below we show our full training run
