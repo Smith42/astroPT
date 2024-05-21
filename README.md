@@ -2,7 +2,7 @@
     <img src="assets/emoji.png" alt="earthPT" width="150"/>
 </p>
 
-# astroPT
+# astroPT: a Large Observation Model for astronomy
 
 A simple repository for training astronomical large observation models. This
 repository began its life as Andrej Karpathy's
@@ -21,21 +21,17 @@ Dependencies:
 
 ## results
 
-I have been playing around with DESI galaxy png postage stamps 
-downloaded from DESI DR8 just to see if my hunch that 
-"more galaxy data == more better model" holds. So far this looks to be the
-case, and below I show some first results.
-
-Some preliminary results for scaling the model for 1M DESI DR8 galaxies
-(around 1B tokens when tokenised via a ViT-like learnt tokeniser):
+AstroPT has been trained on 8.6M galaxy grz band `*.png` postage stamps 
+downloaded from DESI-LS DR8 to see if neural scaling laws apply to galaxian
+data (in other words, to see if `more galaxy data == more better model`).  
+The results are promising, below I show our full training run validation losses
+across a parameter sweep of `{1,5,12,21,89,309,830,2100}M` trainable parameters:
 
 <p align="center">
-    <img src="explore/scaling.png" alt="scaling" width="512"/>
+    <img src="explore/scaling_xkcd.png" alt="scaling" width="512"/>
 </p>
 
-Looking good! Next step: 9M galaxies!
-
-## pretrained weights
+## pretrained weights, and full galaxy dataset
 
 Available on [HuggingFace 🤗 here](https://huggingface.co/Smith42/astroPT).
 
