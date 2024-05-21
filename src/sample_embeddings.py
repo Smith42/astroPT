@@ -11,9 +11,10 @@ from tqdm import tqdm, trange
 import matplotlib.pyplot as plt
 import numpy as np
 from model import GPTConfig, GPT
-from datasets import load_dataset
+from datasets import load_dataset, concatenate_datasets 
 from train import GalaxyImageDataset
 from torchvision import transforms
+from torchvision.transforms import ToTensor
 import functools
 from einops import rearrange
 import pandas as pd
@@ -43,7 +44,7 @@ ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=
 # model
 if init_from == 'resume':
     # init from a model saved in a specific directory
-    ckpt_path = os.path.join(out_dir, 'ckpt.pt')
+    ckpt_path = os.path.join(out_dir, '030000_ckpt.pt')
     checkpoint = torch.load(ckpt_path, map_location=device)
     # TODO remove this for latest models
     gptconf = GPTConfig(**checkpoint['model_args'])
@@ -61,16 +62,23 @@ if compile:
     model = torch.compile(model) # requires PyTorch 2.0 (optional)
 
 # set up HF galaxies in test set to be processed
+def normalise(x):
+    std, mean = torch.std_mean(x, dim=1, keepdim=True)
+    return (x - mean)/(std + 1e-8)
 def data_transforms():
     transform = transforms.Compose([
-        transforms.Lambda(lambda x: x/255.),
+        transforms.Lambda(normalise),
     ])
     return transform
 def _process_galaxy_wrapper(gal, func):
-    patch_galaxy = func(np.array(gal["image"]).swapaxes(0, 2))
+    gal = ToTensor()(gal["image"]).to(torch.float16)
+    patch_galaxy = func(gal)
     return {"image": patch_galaxy}
 galproc = GalaxyImageDataset(None, spiral=True, transform=data_transforms())
-ds = load_dataset("Smith42/galaxies", split="test", streaming=True)
+ds = concatenate_datasets(( 
+    load_dataset("Smith42/galaxies", split="test", streaming=True),
+    load_dataset("Smith42/galaxies", split="validation", streaming=True),
+))
 ds = ds.map(
     functools.partial(_process_galaxy_wrapper, func=galproc.process_galaxy)
 ).with_format("torch")
@@ -78,39 +86,12 @@ dl = iter(DataLoader(
     ds, batch_size=batch_size, num_workers=2,
 ))
 
-def run_pca(zs):
-    pca = PCA(n_components=2)
-    zs_pca = pca.fit_transform(zs)
-    return zs_pca
-
-#metadata = pd.read_parquet("metadata.parquet")
-#print([key for key in metadata.keys()])
-
-def plot_embeddings(xs, ids, dumpto=os.path.join(out_dir, "test.png")):
-    f, axs = plt.subplots(2, 4, figsize=(16, 4*2), constrained_layout=True)
-    print("Reading metadata")
-    metadata = pd.read_parquet("metadata.parquet")
-    metadata = metadata.set_index(["dr8_id"])
-    metadata = pd.concat([metadata.loc[id_] for id_ in tqdm(ids)])
-
-    pcs = run_pca(xs)
-    for ax, metadatum in zip(axs.ravel(), [
-                "redshift", "mag_g", "sersic_n", "has-spiral-arms_yes_fraction",
-                "u_minus_r", "elpetro_mass_log", "elpetro_theta_r", "merging_merger_fraction",
-            ]):
-        md_to_plot = metadata[metadatum]
-        im = ax.scatter(
-            pcs[:, 0], pcs[:, 1], 
-            c=md_to_plot.clip(md_to_plot.quantile(0.01), md_to_plot.quantile(0.99)),
-            s=1, cmap="magma", alpha=0.4
-        )
-        ax.set_xlabel(metadatum)
-        cbar = plt.colorbar(im)
-    f.savefig(dumpto, dpi=300)
-
+n_tokens = 64
+norm = "mean"
 if (not (
-        os.path.isfile(os.path.join(out_dir, "zss.npy")) and 
-        os.path.isfile(os.path.join(out_dir, "idss.npy"))
+        os.path.isfile(os.path.join(out_dir, f"zss_{n_tokens}t_{norm}.npy")) and 
+        os.path.isfile(os.path.join(out_dir, f"idss_{n_tokens}t_{norm}.npy")) and
+        os.path.isfile(os.path.join(out_dir, "metadata_processed.parquet"))
    )) or refresh_cache:
     # run generation
     xss = []
@@ -123,24 +104,29 @@ if (not (
                 xs = B["image"][:, :64]
                 ids = B["dr8_id"]
                 zs = model.generate_embeddings(xs.to(device))
-                xss.append(rearrange(xs, "b t c -> b (t c)").detach().cpu().numpy())
+                if not os.path.isfile(os.path.join(out_dir, f"xss_{n_tokens}t.npy")):
+                    xss.append(rearrange(xs, "b t c -> b (t c)").detach().to(torch.float16).cpu().numpy())
                 zss.append(zs.detach().cpu().numpy())
                 idss.append(ids)
                 tt.update(batch_size)
             tt.close()
 
+    if not os.path.isfile(os.path.join(out_dir, f"xss_{n_tokens}t.npy")):
+        xss = np.concatenate(xss, axis=0)
+        np.save(os.path.join(out_dir, f"xss_{n_tokens}t.npy"), xss)
     zss = np.concatenate(zss, axis=0)
-    xss = np.concatenate(xss, axis=0)
     idss = np.concatenate(idss, axis=0)
-    np.save(os.path.join(out_dir, "xss_64t.npy"), xss)
-    np.save(os.path.join(out_dir, "zss_64t.npy"), zss)
-    np.save(os.path.join(out_dir, "idss_64t.npy"), idss)
+    np.save(os.path.join(out_dir, f"zss_{n_tokens}t_{norm}.npy"), zss)
+    np.save(os.path.join(out_dir, f"idss_{n_tokens}t_{norm}.npy"), idss)
+
+    print("processing metadata file")
+    metadata = pd.read_parquet("/raid/data/metadata.parquet")
+    metadata = metadata.set_index(["dr8_id"])
+    metadata = metadata.loc[list(idss)]
+    metadata.to_parquet(os.path.join(out_dir, "metadata_processed.parquet"))
 else:
     print("loading from cache")
-    xss = np.load(os.path.join(out_dir, "xss_64t.npy"))
-    zss = np.load(os.path.join(out_dir, "zss_64t.npy"))
-    idss = np.load(os.path.join(out_dir, "idss_64t.npy"))
-
-print("plotting...")
-plot_embeddings(zss, idss, dumpto=os.path.join(out_dir, f"embeddings_z_64t.png"))
-plot_embeddings(xss, idss, dumpto=os.path.join(out_dir, f"embeddings_x_64t.png"))
+    metadata = pd.read_parquet(os.path.join(out_dir, "metadata_processed.parquet"))
+    zss = np.load(os.path.join(out_dir, f"zss_{n_tokens}t_{norm}.npy"))
+    #xss = np.load(os.path.join(out_dir, f"xss_{n_tokens}t.npy"))
+    idss = np.load(os.path.join(out_dir, f"idss_{n_tokens}t_{norm}.npy"))
