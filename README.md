@@ -31,6 +31,22 @@ across a parameter sweep of `{1,5,12,21,89,309,830,2100}M` trainable parameters:
     <img src="explore/scaling_xkcd.png" alt="scaling" width="512"/>
 </p>
 
+We also test our astroPT models on some scientifically-useful downstream tasks by
+taking the models' penultimate layer outputs and finetuning linear probes to
+predict emergent physical properties of the galaxies:
+
+<p align="center">
+    <img src="explore/downstream_xkcd.png" alt="scaling" width="512"/>
+</p>
+
+In the above pic, $M_g$ and $M_z$ are the absolute magnitudes (or brightness at
+a fixed distance) of the galaxies, $g - r$ and $r - z$ are the differences
+between the observations of different telescope filter bands, redshift is the
+distance to the galaxies, sSFR is the total mass of new stars born each year in
+the galaxies per total galaxy mass, and $M_{\*}$ is the total mass of stars within
+the galaxies. "smooth?", "disc?", "artefact?", "edge on?" and "tight spiral?" are
+morphological properties of the galaxies as described by citizen scientists.
+
 ## pretrained weights, and full galaxy dataset
 
 Available on [HuggingFace 🤗 here](https://huggingface.co/Smith42/astroPT).
