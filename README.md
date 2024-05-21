@@ -68,9 +68,10 @@ The cool thing to take away from these plots is that the surrogate task loss
 is correlated with astronomically "useful" downstream tasks 🤯🚀.
 
 Finally, check out our UMAP projection of astroPT-87M's penultimate layer
-outputs of our validation set. We colour each point with the emergent physical
-galaxy property. The structure suggests that the model has learnt some
-knowledge about physics simply from our next-token prediction pretraining task!
+outputs of our validation set. We colour each point with an emergent physical
+galaxy property described above. The structure suggests that the model has
+learnt some knowledge about physics simply from our next-token prediction
+pretraining task!
 
 <p align="center">
     <img src="explore/hexbin_xkcd.png" alt="hexbin" width="512"/>
