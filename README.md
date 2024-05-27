@@ -79,6 +79,8 @@ pretraining task!
 
 ## pretrained weights, and full galaxy dataset
 
+Check out the paper here: [https://arxiv.org/abs/2405.14930](https://arxiv.org/abs/2405.14930).
+
 We of course release all our model weights checkpointed across our full training runs on [HuggingFace 🤗 here](https://huggingface.co/Smith42/astroPT).
 
 We also release our full dataset and galaxy metadata on [HuggingFace 🔥](https://huggingface.co/datasets/Smith42/galaxies).
