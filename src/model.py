@@ -118,6 +118,53 @@ class Block(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return x
 
+class Encoder(nn.Module):
+    """ base module to move from data space to embedding space """
+     
+    def __init__(self, config, in_size):
+        super().__init__()
+        self.enc = nn.Sequential(
+             nn.Linear(in_size, config.n_embd),
+             nn.ReLU(),
+             nn.Linear(config.n_embd, config.n_embd),
+             nn.ReLU(),
+        )
+
+    def forward(self, x):
+        return self.enc(x)
+
+class Decoder(nn.Module):
+    """ base module to move from embedding space to data space  """
+
+    def __init__(self, config, out_size):
+        super().__init__()
+        self.dec = nn.Sequential(
+            nn.Linear(config.n_embd, config.n_embd*2),
+            nn.ReLU(),
+            nn.Linear(config.n_embd*2, config.n_embd),
+            nn.ReLU(),
+            nn.Linear(config.n_embd, out_size)
+        )
+
+    def forward(self, x):
+        return self.dec(x)
+
+class Embedder(nn.Module):
+    """ base module to move from embedding space to data space  """
+
+    def __init__(self, config, out_size):
+        super().__init__()
+        self.embed_now = nn.Embedding(10000, config.n_embd//2)
+        self.embed_next = nn.Embedding(10000, config.n_embd//2)
+
+    def forward(self, pos):
+        pos_now = pos[:, 0, :]
+        pos_next = pos[:, 1, :]
+        return torch.cat(
+            (self.embed_now(pos_now), self.embed_next(pos_next)),
+            dim=-1,
+        )
+
 @dataclass
 class GPTConfig:
     block_size: int = 1024
@@ -137,24 +184,19 @@ class GPT(nn.Module):
         self.config = config
 
         self.transformer = nn.ModuleDict(dict(
-            wte = nn.Sequential(
-                 nn.Linear(config.patch_size*config.patch_size*config.n_chan, config.n_embd),
-                 nn.ReLU(),
-                 nn.Linear(config.n_embd, config.n_embd),
-                 nn.ReLU(),
-            ),
-            wpe = nn.Embedding(config.block_size, config.n_embd),
+            wte = nn.ModuleDict(dict(
+                galaxy = Encoder(config, config.patch_size*config.patch_size*config.n_chan),
+            )),
+            wpe = nn.ModuleDict(dict(
+                galaxy = Embedder(config, config.block_size),
+            )),
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
-        self.lm_head = nn.Sequential(
-            nn.Linear(config.n_embd, config.n_embd*2),
-            nn.ReLU(),
-            nn.Linear(config.n_embd*2, config.n_embd),
-            nn.ReLU(),
-            nn.Linear(config.n_embd, config.patch_size*config.patch_size*config.n_chan),
-        )
+        self.lm_head = nn.ModuleDict(dict( 
+            galaxy = Decoder(config, config.patch_size*config.patch_size*config.n_chan)
+        ))
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
         # This behavior is deprecated and will be an error in future versions"
@@ -182,7 +224,9 @@ class GPT(nn.Module):
         """
         n_params = sum(p.numel() for p in self.parameters())
         if non_embedding:
-            n_params -= self.transformer.wpe.weight.numel()
+            modality = "galaxy" # dummy modality so we can take embedding count away
+            n_params -= sum(p.numel() for p in self.transformer.wpe[modality].parameters())
+            n_params -= sum(p.numel() for p in self.transformer.wte[modality].parameters())
         return n_params
 
     def _init_weights(self, module):
@@ -193,15 +237,16 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, modality, targets=None, pos=None):
         device = idx.device
-        b, t, c = idx.size()
-        assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-        pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0) # shape (1, t)
+        bb, tt, cc = idx.size()
+        assert tt <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        if pos is None:
+            pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0) # shape (1, tt)
 
         # forward the GPT model itself
-        tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
-        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
+        tok_emb = self.transformer.wte[modality](idx) # token embeddings of shape (bb, tt, n_embd)
+        pos_emb = self.transformer.wpe[modality](pos) # position embeddings of shape (1, tt, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x)
@@ -209,26 +254,27 @@ class GPT(nn.Module):
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
-            logits = self.lm_head(x)
+            logits = self.lm_head[modality](x)
             loss = F.huber_loss(logits, targets)
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
-            logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+            logits = self.lm_head[modality](x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
 
         return logits, loss
 
-    def get_embeddings(self, idx):
+    def get_embeddings(self, idx, modality, pos=None, layer=None):
         device = idx.device
         b, t, ch = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-        pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0) # shape (1, t)
+        if pos is None:
+            pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0) # shape (1, t)
 
         # forward the GPT model itself
-        tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
-        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
+        tok_emb = self.transformer.wte[modality](idx) # token embeddings of shape (b, t, n_embd)
+        pos_emb = self.transformer.wpe[modality](pos) # position embeddings of shape (1, t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
-        for block in self.transformer.h:
+        for block in self.transformer.h[:layer]: # by default we take the penultimate layer as the embedding layer
             x = block(x)
         embeddings = x
 
@@ -305,7 +351,7 @@ class GPT(nn.Module):
         return idx
 
     @torch.no_grad()
-    def generate_embeddings(self, idx, average_type="mean"):
+    def generate_embeddings(self, idx, modality, average_type="mean", layer=None):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t))
         and get the embedding from the transformer model for that series.
@@ -316,13 +362,13 @@ class GPT(nn.Module):
         idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
         if average_type == "mean":
             # We only care about the average embedding
-            weighted_embeddings = torch.mean(self.get_embeddings(idx_cond), dim=1)
+            weighted_embeddings = torch.mean(self.get_embeddings(idx_cond, modality, layer=layer), dim=1)
         elif average_type == "exp_decay":
-            embeddings = self.get_embeddings(idx_cond)
+            embeddings = self.get_embeddings(idx_cond, modality, layer=layer)
             weights = torch.logspace(0, -1, embeddings.shape[1], device=embeddings.device).unsqueeze(0).unsqueeze(-1)
             weighted_embeddings = torch.sum(weights*embeddings, dim=1)/torch.sum(embeddings, dim=1)
-        elif average_type == "none":
-            weighted_embeddings = self.get_embeddings(idx_cond)
+        elif average_type == "None":
+            weighted_embeddings = self.get_embeddings(idx_cond, modality, layer=layer)
         else:
             raise NotImplementedError
 

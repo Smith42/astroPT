@@ -294,8 +294,9 @@ if __name__ == "__main__":
                 B = next(dl)
                 X = B["X"].to(device)
                 Y = B["Y"].to(device)
+                T = B["T"].to(device)
                 with ctx:
-                    logits, loss = model(X, Y)
+                    logits, loss = model(X, "galaxy", Y, pos=T)
                 losses[k] = loss.item()
             out[split] = losses.mean()
         model.train()
@@ -309,6 +310,7 @@ if __name__ == "__main__":
             B = next(dl)
             X = B["X"].to(device)
             Y = B["Y"].to(device)
+            T = B["T"].to(device)
             with ctx:
                 P, _ = model(X, Y)
             b, t, c = Y.size()
@@ -354,6 +356,7 @@ if __name__ == "__main__":
     B = next(tdl) # fetch the very first batch
     X = B["X"].to(device)
     Y = B["Y"].to(device)
+    T = B["T"].to(device)
     t0 = time.time()
     dts = []
     local_iter_num = 0 # number of iterations in the lifetime of this process
@@ -418,12 +421,13 @@ if __name__ == "__main__":
                 # looking at the source of that context manager, it just toggles this variable
                 model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
             with ctx:
-                logits, loss = model(X, Y)
+                logits, loss = model(X, "galaxy", Y, pos=T)
                 loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
             B = next(tdl)
             X = B["X"].to(device)
             Y = B["Y"].to(device)
+            T = B["T"].to(device)
             # backward pass, with gradient scaling if training in fp16
             scaler.scale(loss).backward()
         # clip the gradient
