@@ -47,13 +47,14 @@ except:
     log_emissions = False
 
 from model import GPTConfig, GPT
-from local_datasets import GalaxyImageDataset
+#from local_datasets import GalaxyImageDataset
+from spectra import GalaxySpectraImageDataset
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a model on DESI
     # look at config/astropt300m.py for a prod run example
-    out_dir = 'logs/test'
+    out_dir = 'logs/test_spectra_2024-09-22'
     eval_interval = 1000
     log_interval = 100
     checkpoint_interval = 10000
@@ -62,11 +63,11 @@ if __name__ == "__main__":
     eval_only = False # if True, script exits right after the first eval
     always_save_checkpoint = True # if True, always save a checkpoint at each checkpoint_interval
     init_from = 'scratch' # 'scratch' or 'resume'
-    use_hf = True # use the huggingface dataset version of our galz
+    use_hf = False # use the huggingface dataset version of our galz
     stream_hf_dataset = False # stream the galaxies from huggingface
     # data
-    gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
-    batch_size = 8 # if gradient_accumulation_steps > 1, this is the micro-batch size
+    gradient_accumulation_steps = 5#5 * 8 # used to simulate larger batch sizes
+    batch_size = 64#8 # if gradient_accumulation_steps > 1, this is the micro-batch size
     spiral = True # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     num_workers = 64 
@@ -96,7 +97,7 @@ if __name__ == "__main__":
     # system
     device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
     dtype = 'bfloat16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
-    compile = True # use PyTorch 2.0 to compile the model to be faster
+    compile = False # use PyTorch 2.0 to compile the model to be faster
     log_via_wandb = False
     # -----------------------------------------------------------------------------
     config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
@@ -149,11 +150,13 @@ if __name__ == "__main__":
         ])
         return transform
     # training dataset and dataloader
-    tpaths = None if use_hf else "./train.txt"
-    tds = GalaxyImageDataset(tpaths, spiral=spiral, transform=data_transforms())
+    target_ids = np.random.permutation(GalaxySpectraImageDataset()._get_target_ids())
+    sample_size = int(len(target_ids) * 0.8)
+    target_ids_train = target_ids[:sample_size]
+    target_ids_valid = target_ids[sample_size:]
+    tds = GalaxySpectraImageDataset(spiral=spiral, transform=data_transforms(), target_ids=target_ids_train)
     # validation dataset and dataloader
-    vpaths = None if use_hf else "./test.txt"
-    vds = GalaxyImageDataset(vpaths, spiral=spiral, transform=data_transforms())
+    vds = GalaxySpectraImageDataset(spiral=spiral, transform=data_transforms(), target_ids=target_ids_valid)
 
     if use_hf:
         from datasets import load_dataset, Image
@@ -294,9 +297,9 @@ if __name__ == "__main__":
                 B = next(dl)
                 X = B["X"].to(device)
                 Y = B["Y"].to(device)
-                T = B["T"].to(device)
+                #T = B["T"].to(device)
                 with ctx:
-                    logits, loss = model(X, "galaxy", Y, pos=T)
+                    logits, loss = model(X, "galaxy", Y)#, pos=T)
                 losses[k] = loss.item()
             out[split] = losses.mean()
         model.train()
@@ -306,29 +309,40 @@ if __name__ == "__main__":
     def validate(iter_num, out_dir):
         model.eval()
         for dl, split in zip([tdl, vdl], ["train", "val"]):
-            f, axs = plt.subplots(2, 4, figsize=(6, 3), constrained_layout=True)
+            f, axs = plt.subplots(4, 4, figsize=(6, 6), constrained_layout=True)
             B = next(dl)
             X = B["X"].to(device)
             Y = B["Y"].to(device)
-            T = B["T"].to(device)
+            #T = B["T"].to(device)
             with ctx:
-                P, _ = model(X, Y)
+                P, _ = model(X, "galaxy", Y)
+
+            spectra_Y = einops.rearrange(Y[:, 64:], 'b t c -> b (t c)')
+            spectra_P = einops.rearrange(P[:, 64:], 'b t c -> b (t c)')
+
             b, t, c = Y.size()
             zero_block = torch.zeros((b, 1, c)).to(device)
             Y = torch.cat((zero_block, Y), dim=1)
-            if spiral: Y = torch.stack([vds.antispiralise(yy) for yy in Y])
-            Y = einops.rearrange(Y, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=32, w=32)
+            if spiral: Y = torch.stack([vds.antispiralise(yy[:64]) for yy in Y]) # TODO make this more robust
+            Y = einops.rearrange(Y, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=8, w=8)
             P = torch.cat((zero_block, P), dim=1)
-            if spiral: P = torch.stack([vds.antispiralise(pp) for pp in P])
-            P = einops.rearrange(P, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=32, w=32)
+            if spiral: P = torch.stack([vds.antispiralise(pp[:64]) for pp in P])
+            P = einops.rearrange(P, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=8, w=8)
             if log_via_wandb:
                 wandb.log({"Y": wandb.Image(Y.swapaxes(1, -1)), "P": wandb.Image(P.swapaxes(1, -1))})
 
-            for ax, p, y in zip(axs.T, P.to(float).cpu().numpy(), Y.cpu().numpy()):
+
+            for ax, p, y, spectrum_p, spectrum_y in zip(axs.T, 
+                    P.to(float).cpu().numpy(), Y.cpu().numpy(), 
+                    spectra_P.to(float).cpu().numpy(), spectra_Y.cpu().numpy(),
+            ):
                 ax[0].imshow(np.clip(y, 0, 1))
                 ax[1].imshow(np.clip(p, 0, 1))
                 ax[0].axis("off")
                 ax[1].axis("off")
+                ax[2].plot(spectrum_y)
+                ax[2].plot(spectrum_p) # overlay too cause yolo
+                ax[3].plot(spectrum_p)
             f.savefig(
                 os.path.join(out_dir, f"{iter_num:06d}_{split}.jpg"),
                 bbox_inches="tight",
@@ -356,7 +370,7 @@ if __name__ == "__main__":
     B = next(tdl) # fetch the very first batch
     X = B["X"].to(device)
     Y = B["Y"].to(device)
-    T = B["T"].to(device)
+    #T = B["T"].to(device)
     t0 = time.time()
     dts = []
     local_iter_num = 0 # number of iterations in the lifetime of this process
@@ -421,13 +435,13 @@ if __name__ == "__main__":
                 # looking at the source of that context manager, it just toggles this variable
                 model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
             with ctx:
-                logits, loss = model(X, "galaxy", Y, pos=T)
+                logits, loss = model(X, "galaxy", Y)#, pos=T)
                 loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
             B = next(tdl)
             X = B["X"].to(device)
             Y = B["Y"].to(device)
-            T = B["T"].to(device)
+            #T = B["T"].to(device)
             # backward pass, with gradient scaling if training in fp16
             scaler.scale(loss).backward()
         # clip the gradient
