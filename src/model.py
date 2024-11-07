@@ -183,16 +183,19 @@ class GPT(nn.Module):
         self.transformer = nn.ModuleDict(dict(
             wte = nn.ModuleDict(dict(
                 galaxy = Encoder(config, config.patch_size*config.patch_size*config.n_chan),
+                spectrum = Encoder(config, config.patch_size*config.patch_size*config.n_chan),
             )),
             wpe = nn.ModuleDict(dict(
                 galaxy = Embedder(config, config.block_size),
+                spectrum = Embedder(config, config.block_size),
             )),
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
         self.lm_head = nn.ModuleDict(dict( 
-            galaxy = Decoder(config, config.patch_size*config.patch_size*config.n_chan)
+            galaxy = Decoder(config, config.patch_size*config.patch_size*config.n_chan),
+            spectrum = Decoder(config, config.patch_size*config.patch_size*config.n_chan),
         ))
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
