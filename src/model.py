@@ -123,31 +123,28 @@ class Encoder(nn.Module):
      
     def __init__(self, config, in_size):
         super().__init__()
-        self.enc = nn.Sequential(
-             nn.Linear(in_size, config.n_embd),
-             nn.ReLU(),
-             nn.Linear(config.n_embd, config.n_embd),
-             nn.ReLU(),
-        )
+        self.c_fc    = nn.Linear(in_size, 4 * config.n_embd, bias=config.bias)
+        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
 
     def forward(self, x):
-        return self.enc(x)
+        x = self.c_fc(x)
+        x = new_gelu(x)
+        x = self.c_proj(x)
+        return x
 
 class Decoder(nn.Module):
     """ base module to move from embedding space to data space  """
 
     def __init__(self, config, out_size):
         super().__init__()
-        self.dec = nn.Sequential(
-            nn.Linear(config.n_embd, config.n_embd*2),
-            nn.ReLU(),
-            nn.Linear(config.n_embd*2, config.n_embd),
-            nn.ReLU(),
-            nn.Linear(config.n_embd, out_size)
-        )
+        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
+        self.c_proj  = nn.Linear(4 * config.n_embd, out_size, bias=config.bias)
 
     def forward(self, x):
-        return self.dec(x)
+        x = self.c_fc(x)
+        x = new_gelu(x)
+        x = self.c_proj(x)
+        return x
 
 class Embedder(nn.Module):
     """ base module to move from embedding space to data space  """
