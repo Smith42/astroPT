@@ -171,13 +171,15 @@ class GalaxySpectraImageDataset(Dataset):
         #if idx % 100 == 0:
         #    print(f"Loaded target_id: {target_id} | Spectrum shape: {spectrum.shape} | Image shape: {raw_image.shape}")
 
-        #return {
-        #    "spectrum": patch_spectrum,   # Spectral data
-        #    "image": patch_image    # Image patches
-        #}
-
         patch_both = torch.cat((patch_image, patch_spectrum), dim=0)
+        # TODO this is a bit of a mess for now. refactor so that it is easy to add more modalities
         return {
-            "X": patch_both[:-1],
-            "Y": patch_both[1:],
-        } 
+            "spectra": patch_spectrum,   # Spectral data
+            "images": patch_image,    # Image patches
+        }
+
+        #patch_both = torch.cat((patch_image, patch_spectrum), dim=0)
+        #return {
+        #    "X": patch_both[:-1],
+        #    "Y": patch_both[1:],
+        #} 

@@ -295,11 +295,14 @@ if __name__ == "__main__":
             losses = torch.zeros(eval_iters)
             for k in range(eval_iters):
                 B = next(dl)
-                X = B["X"].to(device)
-                Y = B["Y"].to(device)
+                images = B["images"].to(device)
+                spectra = B["spectra"].to(device)
+                Y = torch.cat((images, spectra), dim=1)[:, 1:]#B["Y"].to(device)
+                #X = B["X"].to(device)
+                #Y = B["Y"].to(device)
                 #T = B["T"].to(device)
                 with ctx:
-                    logits, loss = model(X, "galaxy", Y)#, pos=T)
+                    logits, loss = model(images, spectra[:, :-1], Y)#, pos=T)
                 losses[k] = loss.item()
             out[split] = losses.mean()
         model.train()
@@ -311,11 +314,14 @@ if __name__ == "__main__":
         for dl, split in zip([tdl, vdl], ["train", "val"]):
             f, axs = plt.subplots(4, 4, figsize=(6, 6), constrained_layout=True)
             B = next(dl)
-            X = B["X"].to(device)
-            Y = B["Y"].to(device)
+            images = B["images"].to(device)
+            spectra = B["spectra"].to(device)
+            Y = torch.cat((images, spectra), dim=1)[:, 1:]#B["Y"].to(device)
+            #X = B["X"].to(device)
+            #Y = B["Y"].to(device)
             #T = B["T"].to(device)
             with ctx:
-                P, _ = model(X, "galaxy", Y)
+                P, _ = model(images, spectra[:, :-1], Y)
 
             spectra_Y = einops.rearrange(Y[:, 64:], 'b t c -> b (t c)')
             spectra_P = einops.rearrange(P[:, 64:], 'b t c -> b (t c)')
@@ -368,8 +374,9 @@ if __name__ == "__main__":
     # training loop
     if master_process: print("starting training...")
     B = next(tdl) # fetch the very first batch
-    X = B["X"].to(device)
-    Y = B["Y"].to(device)
+    images = B["images"].to(device)
+    spectra = B["spectra"].to(device)
+    Y = torch.cat((images, spectra), dim=1)[:, 1:]#B["Y"].to(device)
     #T = B["T"].to(device)
     t0 = time.time()
     dts = []
@@ -435,12 +442,13 @@ if __name__ == "__main__":
                 # looking at the source of that context manager, it just toggles this variable
                 model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
             with ctx:
-                logits, loss = model(X, "galaxy", Y)#, pos=T)
+                logits, loss = model(images, spectra[:, :-1], Y)#, pos=T)
                 loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
             B = next(tdl)
-            X = B["X"].to(device)
-            Y = B["Y"].to(device)
+            images = B["images"].to(device)
+            spectra = B["spectra"].to(device)
+            Y = torch.cat((images, spectra), dim=1)[:, 1:]#B["Y"].to(device)
             #T = B["T"].to(device)
             # backward pass, with gradient scaling if training in fp16
             scaler.scale(loss).backward()

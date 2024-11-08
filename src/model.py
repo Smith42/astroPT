@@ -183,11 +183,11 @@ class GPT(nn.Module):
         self.transformer = nn.ModuleDict(dict(
             wte = nn.ModuleDict(dict(
                 galaxy = Encoder(config, config.patch_size*config.patch_size*config.n_chan),
-                spectrum = Encoder(config, config.patch_size*config.patch_size*config.n_chan),
+                spectra = Encoder(config, config.patch_size*config.patch_size*config.n_chan),
             )),
             wpe = nn.ModuleDict(dict(
                 galaxy = Embedder(config, config.block_size),
-                spectrum = Embedder(config, config.block_size),
+                spectra = Embedder(config, config.block_size),
             )),
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
@@ -195,7 +195,12 @@ class GPT(nn.Module):
         ))
         self.lm_head = nn.ModuleDict(dict( 
             galaxy = Decoder(config, config.patch_size*config.patch_size*config.n_chan),
-            spectrum = Decoder(config, config.patch_size*config.patch_size*config.n_chan),
+            spectra = Decoder(config, config.patch_size*config.patch_size*config.n_chan),
+        ))
+        # Tokens to give model knowledge of modality:
+        self.token = nn.ParameterDict(dict(
+            galaxy = nn.Parameter(torch.randn(1, 1, config.n_embd)),
+            spectra = nn.Parameter(torch.randn(1, 1, config.n_embd)),
         ))
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
@@ -237,30 +242,50 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, modality, targets=None, pos=None):
-        device = idx.device
-        bb, tt, cc = idx.size()
+    def forward(self, images, spectra, targets=None, pos=None):
+        device = images.device
+        bb, tt_im, _ = images.size()
+        _, tt_sp, _ = spectra.size()
+        tt = tt_im + tt_sp
         assert tt <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
         if pos is None:
             pos = torch.arange(0, tt + 1, dtype=torch.long, device=device).unsqueeze(0) # shape (1, tt)
             pos = torch.stack((pos[..., :-1], pos[..., 1:]), dim=1)
 
+        image_patches = self.transformer.wte["galaxy"](images)
+        image_patches = image_patches + self.token["galaxy"]
+
+        spect_patches = self.transformer.wte["spectra"](spectra)
+        spect_patches = spect_patches + self.token["spectra"]
+
+        # Calculate indices for each modality
+        image_indices = range(0, image_patches.shape[1])
+        spect_indices = range(image_patches.shape[1], spect_patches.shape[1] + image_patches.shape[1])
+
+        tok_emb = torch.cat((image_patches, spect_patches), dim=1)
+
         # forward the GPT model itself
-        tok_emb = self.transformer.wte[modality](idx) # token embeddings of shape (bb, tt, n_embd)
-        pos_emb = self.transformer.wpe[modality](pos) # position embeddings of shape (1, tt, n_embd)
+        #tok_emb = self.transformer.wte[modality](idx) # token embeddings of shape (bb, tt, n_embd)
+        pos_emb = self.transformer.wpe["galaxy"](pos) # position embeddings of shape (1, tt, n_embd). For now we use a dummy "galaxy" position. Can improve later.
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x)
-        x = self.transformer.ln_f(x)
+        hidden_states = self.transformer.ln_f(x)
+        image_states = hidden_states[:, image_indices]
+        spect_states = hidden_states[:, spect_indices]
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
-            logits = self.lm_head[modality](x)
+            image_logits = self.lm_head["galaxy"](image_states)
+            spect_logits = self.lm_head["spectra"](spect_states)
+            logits = torch.cat((image_logits, spect_logits), dim=1)
             loss = F.huber_loss(logits, targets)
         else:
+            # TODO: get this working for arbitrary modalities
             # inference-time mini-optimization: only forward the lm_head on the very last position
-            logits = self.lm_head[modality](x[:, [-1], :]) # note: using list [-1] to preserve the time dim
-            loss = None
+            raise NotImplementedError
+            #logits = self.lm_head[modality](x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+            #loss = None
 
         return logits, loss
 
