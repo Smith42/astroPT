@@ -69,12 +69,13 @@ if __name__ == "__main__":
     batch_size = 8 # if gradient_accumulation_steps > 1, this is the micro-batch size
     spiral = True # do we want to process the galaxy patches in spiral order?
     block_size = 1024
+    image_size = 224
     num_workers = 64 
     # astroPT model
     n_layer = 26
     n_head = 16
     n_embd = 768
-    n_chan = 3 # 3 imagery bands: r, i, z
+    n_chan = 1 # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
     dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
     bias = False # do we use bias inside LayerNorm and Linear layers?
     patch_size = 16 # size of image patches for ViT tokenisation
@@ -315,10 +316,10 @@ if __name__ == "__main__":
             zero_block = torch.zeros((b, 1, c)).to(device)
             Y = torch.cat((zero_block, Y), dim=1)
             if spiral: Y = torch.stack([vds.antispiralise(yy) for yy in Y])
-            Y = einops.rearrange(Y, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=32, w=32)
+            Y = einops.rearrange(Y, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=image_size//patch_size, w=image_size//patch_size)
             P = torch.cat((zero_block, P), dim=1)
             if spiral: P = torch.stack([vds.antispiralise(pp) for pp in P])
-            P = einops.rearrange(P, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=32, w=32)
+            P = einops.rearrange(P, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=image_size//patch_size, w=image_size//patch_size)
             if log_via_wandb:
                 wandb.log({"Y": wandb.Image(Y.swapaxes(1, -1)), "P": wandb.Image(P.swapaxes(1, -1))})
 
