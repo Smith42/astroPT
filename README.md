@@ -22,7 +22,7 @@ Dependencies:
 
 ## results
 
-AstroPT has been trained on 8.6M galaxy grz band `*.png` postage stamps 
+AstroPT v1.0.0 has been trained on 8.6M galaxy grz band `*.png` postage stamps 
 downloaded from DESI-LS DR8 to see if neural scaling laws apply to galaxian
 data (in other words, to see if `more galaxy data == more better model`).  
 We tried to make the astroPT model as simple as possible so that other
