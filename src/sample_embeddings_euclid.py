@@ -1,5 +1,5 @@
 """
-Sample from a trained astropt model
+Sample from a trained astropt model for Euclid data
 """
 import os
 import pickle
@@ -72,18 +72,15 @@ def data_transforms():
         transforms.Lambda(normalise),
     ])
     return transform
-tpaths = 'train.txt'
-vpaths = 'test.txt'
-tds = GalaxyImageDataset(tpaths, spiral=spiral, transform=data_transforms(), patch_size=patch_size)
-vds = GalaxyImageDataset(vpaths, spiral=spiral, transform=data_transforms(), patch_size=patch_size)
-tdl = iter(DataLoader(
-    tds,
-    batch_size=batch_size,
-    num_workers=8,
-    pin_memory=True,
-))
-vdl = iter(DataLoader(
-    vds,
+ds = GalaxyImageDataset(
+    paths='test.txt',
+    spiral=spiral, 
+    transform=data_transforms(), 
+    patch_size=patch_size,
+    stochastic=False,
+)
+dl = iter(DataLoader(
+    ds,
     batch_size=batch_size,
     num_workers=8,
     pin_memory=True,
@@ -93,24 +90,23 @@ n_tokens = 64
 norm = "mean"
 if (not (
         os.path.isfile(os.path.join(out_dir, f"zss_{n_tokens}t_{norm}.npy")) and 
-        os.path.isfile(os.path.join(out_dir, f"idss_{n_tokens}t_{norm}.npy")) and
-        os.path.isfile(os.path.join(out_dir, "metadata_processed.parquet"))
-   )) or refresh_cache:
+        os.path.isfile(os.path.join(out_dir, f"idss_{n_tokens}t_{norm}.npy")))
+   ) or refresh_cache:
     # run generation
     xss = []
     zss = []
     idss = []
     with torch.no_grad():
         with ctx:
-            tt = tqdm(unit="galz", unit_scale=True)
-            for B in tdl:
+            tt = tqdm(unit="galz", total=len(ds), unit_scale=True)
+            for B in dl:
                 xs = B["X"][:, :64]
-                #ids = B["dr8_id"]
+                idx = B["idx"]
                 zs = model.generate_embeddings(xs.to(device))
                 if not os.path.isfile(os.path.join(out_dir, f"xss_{n_tokens}t.npy")):
                     xss.append(rearrange(xs, "b t c -> b (t c)").detach().to(torch.float16).cpu().numpy())
                 zss.append(zs.detach().cpu().numpy())
-                #idss.append(ids)
+                idxs.append(idx)
                 tt.update(batch_size)
             tt.close()
 
@@ -118,18 +114,11 @@ if (not (
         xss = np.concatenate(xss, axis=0)
         np.save(os.path.join(out_dir, f"xss_{n_tokens}t.npy"), xss)
     zss = np.concatenate(zss, axis=0)
-    #idss = np.concatenate(idss, axis=0)
+    idxs = np.concatenate(idxs, axis=0)
     np.save(os.path.join(out_dir, f"zss_{n_tokens}t_{norm}.npy"), zss)
-    #np.save(os.path.join(out_dir, f"idss_{n_tokens}t_{norm}.npy"), idss)
-
-    print("processing metadata file")
-    #metadata = pd.read_parquet("/raid/data/metadata.parquet")
-    #metadata = metadata.set_index(["dr8_id"])
-    #metadata = metadata.loc[list(idss)]
-    #metadata.to_parquet(os.path.join(out_dir, "metadata_processed.parquet"))
+    np.save(os.path.join(out_dir, f"idxs_{n_tokens}t_{norm}.npy"), idxs)
 else:
     print("loading from cache")
-    metadata = pd.read_parquet(os.path.join(out_dir, "metadata_processed.parquet"))
     zss = np.load(os.path.join(out_dir, f"zss_{n_tokens}t_{norm}.npy"))
     #xss = np.load(os.path.join(out_dir, f"xss_{n_tokens}t.npy"))
-    #idss = np.load(os.path.join(out_dir, f"idss_{n_tokens}t_{norm}.npy"))
+    idxs = np.load(os.path.join(out_dir, f"idxs_{n_tokens}t_{norm}.npy"))
