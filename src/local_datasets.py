@@ -5,6 +5,7 @@ import einops
 import numpy as np
 import torch
 import os
+import sys
 from torch.utils.data import Dataset
 from torchvision import io
 from astropy.io import fits
@@ -27,7 +28,8 @@ class GalaxyImageDataset(Dataset):
         self.spiral = spiral
 
     def __len__(self):
-        return int(1e10) # len(self.paths)
+        # set to a big number if stochastic as a fudge for epochism in pytorch
+        return int(1e10) if self.stochastic else len(self.paths)
 
     @staticmethod
     def _spiral(n):
@@ -114,7 +116,11 @@ class GalaxyImageDataset(Dataset):
                 else:
                     raise NotImplementedError(f"File must be FITS or JPEG, it is instead {ext}.")
             except Exception as err:
-                idx = np.random.randint(len(self.paths))
+                print(err)
+                if self.stochastic == True:
+                    idx = np.random.randint(len(self.paths))
+                else:
+                    sys.exit(1)
 
         patch_galaxy = self.process_galaxy(raw_galaxy)
-        return {"X": patch_galaxy[:-1], "Y": patch_galaxy[1:]}
+        return {"X": patch_galaxy[:-1], "Y": patch_galaxy[1:], "idx": idx}
