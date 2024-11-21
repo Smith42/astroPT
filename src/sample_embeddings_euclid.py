@@ -90,12 +90,12 @@ n_tokens = 64
 norm = "mean"
 if (not (
         os.path.isfile(os.path.join(out_dir, f"zss_{n_tokens}t_{norm}.npy")) and 
-        os.path.isfile(os.path.join(out_dir, f"idss_{n_tokens}t_{norm}.npy")))
+        os.path.isfile(os.path.join(out_dir, f"idxs_{n_tokens}t_{norm}.npy")))
    ) or refresh_cache:
     # run generation
     xss = []
     zss = []
-    idss = []
+    idxs = []
     with torch.no_grad():
         with ctx:
             tt = tqdm(unit="galz", total=len(ds), unit_scale=True)
