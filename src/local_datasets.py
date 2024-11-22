@@ -21,7 +21,7 @@ class GalaxyImageDataset(Dataset):
             patch_size: size of ViT patch
         """
         if paths is not None:
-            self.paths = np.genfromtxt(paths, dtype=str)
+            self.paths = np.genfromtxt(paths, delimiter=",", dtype=str)
         self.transform = transform
         self.patch_size = patch_size
         self.stochastic = stochastic
@@ -102,17 +102,27 @@ class GalaxyImageDataset(Dataset):
             # be careful in this loop -- it fails quietly if there is an error!!!
             try:
                 # get extension to filename and read via FITS or JPG
-                _, ext = os.path.splitext(self.paths[idx])
+                _, ext = os.path.splitext(self.paths[idx]) if len(self.paths.shape) == 1 else os.path.splitext(self.paths[idx][0])
                 if ext == ".jpg" or ext == ".jpeg":
                     raw_galaxy = io.read_image(str(self.paths[idx])).to(torch.bfloat16)
                     break
                 elif ext == ".fits" or ext == ".FITS":
-                    with fits.open(self.paths[idx]) as hdul:
-                        raw_galaxy = hdul[0].data.astype(np.float32)  # Assuming the image data is in the first HDU
-                        # we need to convert to float32 as FITS has bigendian issues (https://stackoverflow.com/questions/59247385/why-does-torch-from-numpy-require-a-different-byte-ordering-while-matplotlib-doe)
-                    # @gosia I have got this working with a single channel, ofc we can can extend to multichannel too by stacking more FITS files along the zeroth axis.
-                    raw_galaxy = torch.tensor(raw_galaxy[np.newaxis]).to(torch.bfloat16)
-                    break
+                    if len(self.paths.shape) == 1:
+                        # case with 1 FITS file
+                        with fits.open(self.paths[idx]) as hdul:
+                            raw_galaxy = hdul[0].data.astype(np.float32)  # Assuming the image data is in the first HDU
+                            # we need to convert to float32 as FITS has bigendian issues (https://stackoverflow.com/questions/59247385/why-does-torch-from-numpy-require-a-different-byte-ordering-while-matplotlib-doe)
+                        raw_galaxy = torch.tensor(raw_galaxy[np.newaxis]).to(torch.bfloat16)
+                        break
+                    else:
+                        # case with N FITS files
+                        raw_galaxy = []
+                        for path in self.paths[idx]:
+                            with fits.open(path) as hdul:
+                                raw_galaxy.append(hdul[0].data.astype(np.float32))  # Assuming the image data is in the first HDU
+                                # we need to convert to float32 as FITS has bigendian issues
+                        raw_galaxy = torch.tensor(np.stack(raw_galaxy)).to(torch.bfloat16)
+                        break
                 else:
                     raise NotImplementedError(f"File must be FITS or JPEG, it is instead {ext}.")
             except Exception as err:
