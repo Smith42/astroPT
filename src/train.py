@@ -151,10 +151,10 @@ if __name__ == "__main__":
         return transform
     # training dataset and dataloader
     tpaths = None if use_hf else "./train.txt"
-    tds = GalaxyImageDataset(tpaths, spiral=spiral, transform=data_transforms())
+    tds = GalaxyImageDataset(tpaths, spiral=spiral, transform=data_transforms(), patch_size=patch_size)
     # validation dataset and dataloader
     vpaths = None if use_hf else "./test.txt"
-    vds = GalaxyImageDataset(vpaths, spiral=spiral, transform=data_transforms())
+    vds = GalaxyImageDataset(vpaths, spiral=spiral, transform=data_transforms(), patch_size=patch_size)
 
     if use_hf:
         from datasets import load_dataset, Image
