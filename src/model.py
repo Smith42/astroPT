@@ -14,10 +14,18 @@ https://github.com/aspiaspace/earthpt
 
 import math
 import inspect
+import sys
 from dataclasses import dataclass
+from functools import partial
 
 import torch
 import torch.nn as nn
+try:
+    from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+    flex_attention_avail = True
+except:
+    print("WARNING: only causal attention is available. Flex Attention requires PyTorch >= 2.6")
+    flex_attention_avail = False
 from torch.nn import functional as F
 from einops.layers.torch import Rearrange
 
@@ -40,7 +48,7 @@ class LayerNorm(nn.Module):
     def forward(self, input):
         return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
 
-class CausalSelfAttention(nn.Module):
+class SelfAttention(nn.Module):
 
     def __init__(self, config):
         super().__init__()
@@ -55,13 +63,30 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.dropout = config.dropout
-        # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-        if not self.flash:
-            print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
-            # causal mask to ensure that attention is only applied to the left in the input sequence
-            self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
-                                        .view(1, 1, config.block_size, config.block_size))
+
+        self.attn_type = config.attn_type
+        if self.attn_type == "causal":
+            # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
+            self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+            if not self.flash:
+                print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
+                # causal mask to ensure that attention is only applied to the left in the input sequence
+                self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
+                                            .view(1, 1, config.block_size, config.block_size))
+        elif (self.attn_type == "prefix" and flex_attention_avail):
+            # flex attention also make GPU brrrr for non-causal masking, only available with DDP for PyTorch >= 2.6
+            block_mask = create_block_mask(self._prefix, B=None, H=None, Q_LEN=config.block_size, KV_LEN=config.block_size)
+            self.prefix_attention = torch.compile(partial(flex_attention, block_mask=block_mask))
+        else:
+            raise NotImplementedError("Attention type must be one of 'causal' or 'prefix'. Prefix requires PyTorch >= 2.6.")
+
+    @staticmethod
+    def _causal(b, h, q_idx, kv_idx):
+        return q_idx >= kv_idx
+
+    @staticmethod
+    def _prefix(b, h, q_idx, kv_idx):
+        raise NotImplementedError("Prefix attention not currently implemented")
 
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
@@ -72,17 +97,22 @@ class CausalSelfAttention(nn.Module):
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
 
-        # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-        if self.flash:
-            # efficient attention using Flash Attention CUDA kernels
-            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
-        else:
-            # manual implementation of attention
-            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
-            att = F.softmax(att, dim=-1)
-            att = self.attn_dropout(att)
-            y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        if self.attn_type == "causal":
+            # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
+            if self.flash:
+                # efficient attention using Flash Attention CUDA kernels
+                y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
+            else:
+                # manual implementation of attention
+                att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+                att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+                att = F.softmax(att, dim=-1)
+                att = self.attn_dropout(att)
+                y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        elif self.attn_type == "prefix":
+            y = self.prefix_attention(q, k, v)
+        else: 
+            raise NotImplementedError("Attention type must be one of 'causal' or 'prefix'. Prefix requires PyTorch >= 2.6.")
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
 
         # output projection
@@ -109,7 +139,7 @@ class Block(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
-        self.attn = CausalSelfAttention(config)
+        self.attn = SelfAttention(config)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
@@ -128,6 +158,7 @@ class GPTConfig:
     dropout: float = 0.0
     patch_size: int = 16
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    attn_type: str = "causal" # causal or prefix
 
 class GPT(nn.Module):
 
