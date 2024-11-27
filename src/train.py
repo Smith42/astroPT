@@ -64,7 +64,7 @@ if __name__ == "__main__":
     eval_only = False # if True, script exits right after the first eval
     always_save_checkpoint = True # if True, always save a checkpoint at each checkpoint_interval
     init_from = 'scratch' # 'scratch' or 'resume'
-    use_hf = True # use the huggingface dataset version of our galz
+    use_hf = False # use the huggingface dataset version of our galz
     stream_hf_dataset = False # stream the galaxies from huggingface
     # data
     gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
@@ -79,6 +79,7 @@ if __name__ == "__main__":
     n_embd = 768
     n_chan = 1 # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
     dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
+    patch_size = 16
     # NB dropout is NOT implemented for flex attention
     bias = False # do we use bias inside LayerNorm and Linear layers?
     attn_type = "causal" # causal or prefix
