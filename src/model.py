@@ -15,13 +15,14 @@ https://github.com/aspiaspace/earthpt
 import math
 import inspect
 import sys
+import random
 from dataclasses import dataclass
 from functools import partial
 
 import torch
 import torch.nn as nn
 try:
-    from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+    from torch.nn.attention.flex_attention import flex_attention, create_block_mask, or_masks
     flex_attention_avail = True
 except:
     print("WARNING: only causal attention is available. Flex Attention requires PyTorch >= 2.6")
@@ -47,6 +48,30 @@ class LayerNorm(nn.Module):
 
     def forward(self, input):
         return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
+
+def generate_prefix_lm_mask(prefix_length):
+    """
+    Generates a prefix LM causal attention mask.
+    From the attention gym 
+    https://github.com/pytorch-labs/attention-gym/blob/bbf437e9ea7d802c0ee71d067787f7b57605f9ff/attn_gym/masks/prefix_lm.py
+
+    Args:
+        prefix_length: The length of the prefix.
+
+    Note:
+        This mask allows full attention within the prefix (first PREFIX_LENGTH tokens)
+        and causal attention for the rest of the sequence.
+    """
+
+    def prefix_mask(b, h, q_idx, kv_idx):
+        return kv_idx < prefix_length
+
+    def causal_mask(b, h, q_idx, kv_idx):
+        return q_idx >= kv_idx
+
+    prefix_lm_causal_mask = or_masks(prefix_mask, causal_mask)
+    prefix_lm_causal_mask.__name__ = f"prefix_lm_causal_mask_{prefix_length}"
+    return prefix_lm_causal_mask
 
 class SelfAttention(nn.Module):
 
@@ -75,20 +100,12 @@ class SelfAttention(nn.Module):
                                             .view(1, 1, config.block_size, config.block_size))
         elif (self.attn_type == "prefix" and flex_attention_avail):
             # flex attention also make GPU brrrr for non-causal masking, only available with DDP for PyTorch >= 2.6
-            block_mask = create_block_mask(self._prefix, B=None, H=None, Q_LEN=config.block_size, KV_LEN=config.block_size)
-            self.prefix_attention = torch.compile(partial(flex_attention, block_mask=block_mask))
+            # need to compile flex attention for performance so this is on by default
+            self.flex_attention = torch.compile(flex_attention)
         else:
             raise NotImplementedError("Attention type must be one of 'causal' or 'prefix'. Prefix requires PyTorch >= 2.6.")
 
-    @staticmethod
-    def _causal(b, h, q_idx, kv_idx):
-        return q_idx >= kv_idx
-
-    @staticmethod
-    def _prefix(b, h, q_idx, kv_idx):
-        raise NotImplementedError("Prefix attention not currently implemented")
-
-    def forward(self, x):
+    def forward(self, x, block_mask=None):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
@@ -110,7 +127,7 @@ class SelfAttention(nn.Module):
                 att = self.attn_dropout(att)
                 y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         elif self.attn_type == "prefix":
-            y = self.prefix_attention(q, k, v)
+            y = self.flex_attention(q, k, v, block_mask=block_mask)
         else: 
             raise NotImplementedError("Attention type must be one of 'causal' or 'prefix'. Prefix requires PyTorch >= 2.6.")
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
@@ -143,8 +160,8 @@ class Block(nn.Module):
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
-    def forward(self, x):
-        x = x + self.attn(self.ln_1(x))
+    def forward(self, x, block_mask=None):
+        x = x + self.attn(self.ln_1(x), block_mask=None)
         x = x + self.mlp(self.ln_2(x))
         return x
 
@@ -228,6 +245,13 @@ class GPT(nn.Module):
         device = idx.device
         b, t, c = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        if self.config.attn_type == "prefix":
+            # TODO we need to make sure that this hyperparameter is tuned well:
+            prefix_len = random.randrange(self.config.block_size - 1)
+            prefix_lm_mask = generate_prefix_lm_mask(prefix_len)
+            block_mask = create_block_mask(prefix_lm_mask, None, None, self.config.block_size, self.config.block_size)
+        else:
+            block_mask = None
         pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0) # shape (1, t)
 
         # forward the GPT model itself
@@ -235,13 +259,18 @@ class GPT(nn.Module):
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
-            x = block(x)
+            x = block(x, block_mask=block_mask)
         x = self.transformer.ln_f(x)
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
-            loss = F.huber_loss(logits, targets)
+            # if we have prefix attention on we only want to backprop through
+            # tokens where our model cannot look ahead! so we mask the loss:
+            prefix_mask = torch.ones_like(targets, dtype=torch.bool)
+            if self.config.attn_type == "prefix":
+                prefix_mask[:, :prefix_len] = False
+            loss = F.huber_loss(logits[prefix_mask], targets[prefix_mask])
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
