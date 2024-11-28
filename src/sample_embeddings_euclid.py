@@ -6,7 +6,6 @@ import pickle
 from contextlib import nullcontext
 import torch
 from torch.utils.data import DataLoader
-import tiktoken
 from tqdm import tqdm, trange
 import matplotlib.pyplot as plt
 import numpy as np
@@ -18,8 +17,6 @@ from torchvision.transforms import ToTensor
 import functools
 from einops import rearrange
 import pandas as pd
-
-from sklearn.decomposition import PCA
 
 # -----------------------------------------------------------------------------
 init_from = 'resume'
