@@ -97,9 +97,14 @@ if (not (
         with ctx:
             tt = tqdm(unit="galz", total=len(ds), unit_scale=True)
             for B in dl:
-                xs = B["X"][:, :64]
+                prefix_len = 64
+                xs = B["X"][:, :prefix_len]
                 idx = B["idx"]
-                zs = model.generate_embeddings(xs.to(device))
+                if model.config.attn_type == "prefix":
+                    # forward and backward attention over whole image if pretrained with prefix attention
+                    zs = model.generate_embeddings(xs.to(device), prefix_len=prefix_len)
+                else:
+                    zs = model.generate_embeddings(xs.to(device))
                 if not os.path.isfile(os.path.join(out_dir, f"xss_{n_tokens}t.npy")):
                     xss.append(rearrange(xs, "b t c -> b (t c)").detach().to(torch.float16).cpu().numpy())
                 zss.append(zs.detach().cpu().numpy())

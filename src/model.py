@@ -100,8 +100,8 @@ class SelfAttention(nn.Module):
                                             .view(1, 1, config.block_size, config.block_size))
         elif (self.attn_type == "prefix" and flex_attention_avail):
             # flex attention also make GPU brrrr for non-causal masking, only available with DDP for PyTorch >= 2.6
-            # need to compile flex attention for performance so this is on by default
-            self.flex_attention = torch.compile(flex_attention)
+            # need to compile flex attention for performance!
+            self.flex_attention = flex_attention
         else:
             raise NotImplementedError("Attention type must be one of 'causal' or 'prefix'. Prefix requires PyTorch >= 2.6.")
 
@@ -241,13 +241,16 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, targets=None, prefix_len=None):
         device = idx.device
         b, t, c = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
         if self.config.attn_type == "prefix":
-            # TODO we need to make sure that this hyperparameter is tuned well:
-            prefix_len = random.randrange(self.config.block_size - 1)
+            # TODO we need to make sure that the prefix hyperparameters are tuned well:
+            if prefix_len is None:
+                # if we don't pass a prefix length assume we want it sampled at random
+                # TODO do we want this to be an eval mode switch?
+                prefix_len = random.randrange(self.config.block_size - 1)
             prefix_lm_mask = generate_prefix_lm_mask(prefix_len)
             block_mask = create_block_mask(prefix_lm_mask, None, None, self.config.block_size, self.config.block_size)
         else:
@@ -278,10 +281,20 @@ class GPT(nn.Module):
 
         return logits, loss
 
-    def get_embeddings(self, idx):
+    def get_embeddings(self, idx, prefix_len=None):
         device = idx.device
         b, t, ch = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        if self.config.attn_type == "prefix":
+            # TODO we need to make sure that the prefix hyperparameters are tuned well:
+            if prefix_len is None:
+                # if we don't pass a prefix length assume we want it sampled at random
+                # TODO do we want this to be an eval mode switch?
+                prefix_len = random.randrange(self.config.block_size - 1)
+            prefix_lm_mask = generate_prefix_lm_mask(prefix_len)
+            block_mask = create_block_mask(prefix_lm_mask, None, None, self.config.block_size, self.config.block_size)
+        else:
+            block_mask = None
         pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0) # shape (1, t)
 
         # forward the GPT model itself
@@ -289,7 +302,7 @@ class GPT(nn.Module):
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
-            x = block(x)
+            x = block(x, block_mask=block_mask)
         embeddings = x
 
         return embeddings
@@ -365,7 +378,7 @@ class GPT(nn.Module):
         return idx
 
     @torch.no_grad()
-    def generate_embeddings(self, idx, average_type="mean"):
+    def generate_embeddings(self, idx, average_type="mean", prefix_len=None):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t))
         and get the embedding from the transformer model for that series.
@@ -374,16 +387,14 @@ class GPT(nn.Module):
         operation for this.
         """
         idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
+        embeddings = self.get_embeddings(idx_cond, prefix_len=None)
         if average_type == "mean":
             # We only care about the average embedding
-            weighted_embeddings = torch.mean(self.get_embeddings(idx_cond), dim=1)
+            return torch.mean(embeddings, dim=1)
         elif average_type == "exp_decay":
-            embeddings = self.get_embeddings(idx_cond)
             weights = torch.logspace(0, -1, embeddings.shape[1], device=embeddings.device).unsqueeze(0).unsqueeze(-1)
-            weighted_embeddings = torch.sum(weights*embeddings, dim=1)/torch.sum(embeddings, dim=1)
+            return torch.sum(weights*embeddings, dim=1)/torch.sum(embeddings, dim=1)
         elif average_type == "none":
-            weighted_embeddings = self.get_embeddings(idx_cond)
+            return embeddings
         else:
             raise NotImplementedError
-
-        return weighted_embeddings
