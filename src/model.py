@@ -101,7 +101,7 @@ class SelfAttention(nn.Module):
         elif (self.attn_type == "prefix" and flex_attention_avail):
             # flex attention also make GPU brrrr for non-causal masking, only available with DDP for PyTorch >= 2.6
             # need to compile flex attention for performance!
-            self.flex_attention = flex_attention
+            self.flex_attention = torch.compile(flex_attention)
         else:
             raise NotImplementedError("Attention type must be one of 'causal' or 'prefix'. Prefix requires PyTorch >= 2.6.")
 
