@@ -97,7 +97,12 @@ if (not (
         with ctx:
             tt = tqdm(unit="galz", total=len(ds), unit_scale=True)
             for B in dl:
-                prefix_len = 64
+                if n_tokens == "all":
+                    prefix_len = B["X"].shape[1]
+                else:
+                    prefix_len = n_tokens
+                # flex attention does not yet work with variable inputs so error on compiled flex attention
+                # see https://github.com/pytorch/pytorch/issues/139064
                 xs = B["X"][:, :prefix_len]
                 idx = B["idx"]
                 if model.config.attn_type == "prefix":
