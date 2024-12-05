@@ -25,6 +25,7 @@ from pathlib import Path
 from contextlib import nullcontext
 import einops
 import PIL
+import itertools
 
 import numpy as np
 import torch
@@ -47,8 +48,7 @@ except:
     log_emissions = False
 
 from model import GPTConfig, GPT
-#from local_datasets import GalaxyImageDataset
-from spectra import GalaxySpectraImageDataset
+from local_datasets import GalaxyImageDataset
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
@@ -80,6 +80,7 @@ if __name__ == "__main__":
     dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
     bias = False # do we use bias inside LayerNorm and Linear layers?
     patch_size = 16 # size of image patches for ViT tokenisation
+    modalities = ["images", "spectra"]
     # adamw optimizer
     # we follow the same schedule here as Chinchilla
     learning_rate = 2e-4 # max learning rate
@@ -124,7 +125,7 @@ if __name__ == "__main__":
         master_process = True
         seed_offset = 0
         ddp_world_size = 1
-    tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * block_size
+    tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * block_size * len(list(itertools.product(modalities, repeat=2)))
     if master_process:
         if log_via_wandb: print("wandb detected, gonna log to that")
         if log_emissions: print("codecarbon detected, will log emissions")
@@ -151,11 +152,13 @@ if __name__ == "__main__":
         ])
         return transform
     # training dataset and dataloader
-    tpaths = None if use_hf else "./train.txt"
-    tds = GalaxyImageDataset(tpaths, spiral=spiral, transform=data_transforms(), patch_size=patch_size)
+    tpaths = None if use_hf else "./images_train.txt"
+    tpaths_spectra = None if use_hf else "./spectra_train.txt"
+    tds = GalaxyImageDataset(tpaths, paths_spect=tpaths_spectra, spiral=spiral, transform=data_transforms(), patch_size=patch_size)
     # validation dataset and dataloader
-    vpaths = None if use_hf else "./test.txt"
-    vds = GalaxyImageDataset(vpaths, spiral=spiral, transform=data_transforms(), patch_size=patch_size)
+    vpaths = None if use_hf else "./images_test.txt"
+    vpaths_spectra = "./spectra_test.txt"
+    vds = GalaxyImageDataset(vpaths, paths_spect=vpaths_spectra, spiral=spiral, transform=data_transforms(), patch_size=patch_size)
 
     if use_hf:
         from datasets import load_dataset, Image
@@ -373,10 +376,6 @@ if __name__ == "__main__":
     # training loop
     if master_process: print("starting training...")
     B = next(tdl) # fetch the very first batch
-    images = B["images"].to(device)
-    spectra = B["spectra"].to(device)
-    Y = torch.cat((images, spectra), dim=1)[:, 1:]#B["Y"].to(device)
-    #T = B["T"].to(device)
     t0 = time.time()
     dts = []
     local_iter_num = 0 # number of iterations in the lifetime of this process
@@ -445,10 +444,6 @@ if __name__ == "__main__":
                 loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
             B = next(tdl)
-            images = B["images"].to(device)
-            spectra = B["spectra"].to(device)
-            Y = torch.cat((images, spectra), dim=1)[:, 1:]#B["Y"].to(device)
-            #T = B["T"].to(device)
             # backward pass, with gradient scaling if training in fp16
             scaler.scale(loss).backward()
         # clip the gradient

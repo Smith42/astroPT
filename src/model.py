@@ -123,28 +123,47 @@ class Encoder(nn.Module):
      
     def __init__(self, config, in_size):
         super().__init__()
-        self.c_fc    = nn.Linear(in_size, 4 * config.n_embd, bias=config.bias)
-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
+        encode = nn.Sequential(
+             nn.Linear(in_size, config.n_embd),
+             nn.ReLU(),
+             nn.Linear(config.n_embd, config.n_embd),
+             nn.ReLU(),
+        )
+        # TODO activate these after first tests on euclid model done
+        #self.c_fc    = nn.Linear(in_size, 4 * config.n_embd, bias=config.bias)
+        #self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
 
     def forward(self, x):
-        x = self.c_fc(x)
-        x = new_gelu(x)
-        x = self.c_proj(x)
+        x = encode(x)
         return x
+        #x = self.c_fc(x)
+        #x = new_gelu(x)
+        #x = self.c_proj(x)
+        #return x
 
 class Decoder(nn.Module):
     """ base module to move from embedding space to data space  """
 
     def __init__(self, config, out_size):
         super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
-        self.c_proj  = nn.Linear(4 * config.n_embd, out_size, bias=config.bias)
+        decode = nn.Sequential(
+            nn.Linear(config.n_embd, config.n_embd*2),
+            nn.ReLU(),
+            nn.Linear(config.n_embd*2, config.n_embd),
+            nn.ReLU(),
+            nn.Linear(config.n_embd, out_size)
+        )
+        # TODO activate these after first tests on euclid model done
+        #self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
+        #self.c_proj  = nn.Linear(4 * config.n_embd, out_size, bias=config.bias)
 
     def forward(self, x):
-        x = self.c_fc(x)
-        x = new_gelu(x)
-        x = self.c_proj(x)
+        x = decode(x)
         return x
+        #x = self.c_fc(x)
+        #x = new_gelu(x)
+        #x = self.c_proj(x)
+        #return x
 
 class Embedder(nn.Module):
     """ base module to move from embedding space to data space  """
@@ -183,7 +202,7 @@ class GPT(nn.Module):
         self.transformer = nn.ModuleDict(dict(
             wte = nn.ModuleDict(dict(
                 galaxy = Encoder(config, config.patch_size*config.patch_size*config.n_chan),
-                spectra = Encoder(config, config.patch_size*config.patch_size*config.n_chan),
+                spectra = Encoder(config, config.patch_size*config.patch_size*1),
             )),
             wpe = nn.ModuleDict(dict(
                 galaxy = Embedder(config, config.block_size),
@@ -195,12 +214,7 @@ class GPT(nn.Module):
         ))
         self.lm_head = nn.ModuleDict(dict( 
             galaxy = Decoder(config, config.patch_size*config.patch_size*config.n_chan),
-            spectra = Decoder(config, config.patch_size*config.patch_size*config.n_chan),
-        ))
-        # Tokens to give model knowledge of modality:
-        self.token = nn.ParameterDict(dict(
-            galaxy = nn.Parameter(torch.randn(1, 1, config.n_embd)),
-            spectra = nn.Parameter(torch.randn(1, 1, config.n_embd)),
+            spectra = Decoder(config, config.patch_size*config.patch_size*1),
         ))
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
@@ -242,30 +256,24 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, images, spectra, targets=None, pos=None):
+    def forward(self, images, spectra, targets=None):
         device = images.device
         bb, tt_im, _ = images.size()
         _, tt_sp, _ = spectra.size()
         tt = tt_im + tt_sp
-        assert tt <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-        if pos is None:
-            pos = torch.arange(0, tt + 1, dtype=torch.long, device=device).unsqueeze(0) # shape (1, tt)
-            pos = torch.stack((pos[..., :-1], pos[..., 1:]), dim=1)
-
-        image_patches = self.transformer.wte["galaxy"](images)
-        image_patches = image_patches + self.token["galaxy"]
-
-        spect_patches = self.transformer.wte["spectra"](spectra)
-        spect_patches = spect_patches + self.token["spectra"]
-
-        # Calculate indices for each modality
-        image_indices = range(0, image_patches.shape[1])
-        spect_indices = range(image_patches.shape[1], spect_patches.shape[1] + image_patches.shape[1])
-
-        tok_emb = torch.cat((image_patches, spect_patches), dim=1)
+        assert tt <= self.config.block_size, f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
+        pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0) # shape (1, tt)
 
         # forward the GPT model itself
-        #tok_emb = self.transformer.wte[modality](idx) # token embeddings of shape (bb, tt, n_embd)
+        # TODO get this working for arbitrary different modalities
+        spect_patches = self.transformer.wte["spectra"](spectra)
+        image_patches = self.transformer.wte["galaxy"](images)
+
+        # Calculate indices for each modality
+        spect_indices = range(0, spect_patches.shape[1])
+        image_indices = range(spect_patches.shape[1], spect_patches.shape[1] + image_patches.shape[1])
+
+        tok_emb = torch.cat((spect_patches, image_patches), dim=1)
         pos_emb = self.transformer.wpe["galaxy"](pos) # position embeddings of shape (1, tt, n_embd). For now we use a dummy "galaxy" position. Can improve later.
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
@@ -276,31 +284,40 @@ class GPT(nn.Module):
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
-            image_logits = self.lm_head["galaxy"](image_states)
             spect_logits = self.lm_head["spectra"](spect_states)
+            image_logits = self.lm_head["galaxy"](image_states)
             logits = torch.cat((image_logits, spect_logits), dim=1)
             loss = F.huber_loss(logits, targets)
         else:
-            # TODO: get this working for arbitrary modalities
-            # inference-time mini-optimization: only forward the lm_head on the very last position
-            raise NotImplementedError
-            #logits = self.lm_head[modality](x[:, [-1], :]) # note: using list [-1] to preserve the time dim
-            #loss = None
+            # TODO add back in inference-time mini-optimization: only forward the lm_head on the very last position
+            spect_logits = self.lm_head["spectra"](spect_states)
+            image_logits = self.lm_head["galaxy"](image_states)
+            logits = (torch.cat((image_logits, spect_logits), dim=1)[:, [-1], :])
+            loss = None
 
         return logits, loss
 
-    def get_embeddings(self, idx, modality, pos=None, layer=None):
+    def get_embeddings(self, idx, images, spectra):
         device = idx.device
-        b, t, ch = idx.size()
-        assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-        if pos is None:
-            pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0) # shape (1, t)
+        bb, tt_im, ch = images.size()
+        _, tt_sp, _ = spectra.size()
+        tt = tt_im + tt_sp
+        assert tt <= self.config.block_size, f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
+        pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0) # shape (1, tt)
 
         # forward the GPT model itself
-        tok_emb = self.transformer.wte[modality](idx) # token embeddings of shape (b, t, n_embd)
-        pos_emb = self.transformer.wpe[modality](pos) # position embeddings of shape (1, t, n_embd)
+        # TODO get this working for arbitrary different modalities
+        spect_patches = self.transformer.wte["spectra"](spectra)
+        image_patches = self.transformer.wte["galaxy"](images)
+
+        # Calculate indices for each modality
+        spect_indices = range(0, spect_patches.shape[1])
+        image_indices = range(spect_patches.shape[1], spect_patches.shape[1] + image_patches.shape[1])
+
+        tok_emb = torch.cat((spect_patches, image_patches), dim=1)
+        pos_emb = self.transformer.wpe["galaxy"](pos) # position embeddings of shape (1, tt, n_embd). For now we use a dummy "galaxy" position. Can improve later.
         x = self.transformer.drop(tok_emb + pos_emb)
-        for block in self.transformer.h[:layer]: # by default we take the penultimate layer as the embedding layer
+        for block in self.transformer.h: # by default we take the penultimate layer as the embedding layer
             x = block(x)
         embeddings = x
 
@@ -377,7 +394,7 @@ class GPT(nn.Module):
         return idx
 
     @torch.no_grad()
-    def generate_embeddings(self, idx, modality, average_type="mean", layer=None):
+    def generate_embeddings(self, idx, modality, average_type="mean"):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t))
         and get the embedding from the transformer model for that series.
