@@ -77,11 +77,11 @@ if __name__ == "__main__":
     n_layer = 26
     n_head = 16
     n_embd = 768
-    n_chan = 1 # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
+    n_chan = 4 # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
     dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
     bias = False # do we use bias inside LayerNorm and Linear layers?
-    patch_size = 16 # size of image patches for ViT tokenisation
-    modalities = ["images", "spectra"]
+    patch_size = {"spectra": 32, "images": 16} # size of image patches for ViT tokenisation
+    modalities = ["spectra", "images"]
     # adamw optimizer
     # we follow the same schedule here as Chinchilla
     learning_rate = 2e-4 # max learning rate
@@ -126,7 +126,7 @@ if __name__ == "__main__":
         master_process = True
         seed_offset = 0
         ddp_world_size = 1
-    tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * block_size * len(list(itertools.product(modalities, repeat=2)))
+    tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * block_size * len(modalities)
     if master_process:
         if log_via_wandb: print("wandb detected, gonna log to that")
         if log_emissions: print("codecarbon detected, will log emissions")
@@ -218,7 +218,7 @@ if __name__ == "__main__":
     best_val_loss = 1e9
     
     # model init
-    model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, n_chan=n_chan, block_size=block_size, dropout=dropout, patch_size=patch_size)
+    model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, n_chan=n_chan, block_size=block_size, dropout=dropout, patch_size_images=patch_size["images"], patch_size_spectra=patch_size["spectra"])
     
     if init_from == 'scratch':
         # init a new model from scratch
@@ -303,7 +303,7 @@ if __name__ == "__main__":
     def estimate_loss():
         out = {}
         model.eval()
-        pairs = list(itertools.product(modalities, repeat=2))
+        pairs = modalities
         for dl, split in zip(
                 [tdl, vdl], 
                 ["train", "val"],
@@ -313,49 +313,53 @@ if __name__ == "__main__":
                 losses = torch.zeros(eval_iters)
                 for k in range(eval_iters):
                     B = next(dl) # fetch the very first batch
-                    X = B["X"][pair[0]].to(device)
-                    Y = B["Y"][pair[1]].to(device)
+                    X = B["X"][pair].to(device)
+                    Y = B["Y"][pair].to(device)
                     with ctx:
-                        logits, loss = model(X, pair[0], pair[1], Y)
+                        logits, loss = model(X, pair, pair, Y)
                     losses[k] = loss.item()
-                out[split][f"{pair[0]}_{pair[1]}"] = losses.mean()
+                out[split][f"{pair}_{pair}"] = losses.mean()
         model.train()
         return out
     
     @torch.no_grad()
     def validate(iter_num, out_dir):
         model.eval()
-        pairs = list(itertools.product(modalities, repeat=2))
-        B = next(vdl)
-        for pair in pairs:
-            X = B["X"][pair[0]].to(device)
-            Y = B["Y"][pair[1]].to(device)
-            with ctx:
-                P, loss = model(X, pair[0], pair[1], Y, pos=T)
+        for dl, split in zip([tdl, vdl], ["train", "val"]):
+            pairs = modalities
+            f, axs = plt.subplots(8, 4, figsize=(6, 12), constrained_layout=True)
+            B = next(vdl)
+            for pair in pairs:
+                X = B["X"][pair].to(device)
+                Y = B["Y"][pair].to(device)
+                with ctx:
+                    P, loss = model(X, pair, pair, Y)
 
-            b, t, c = Y.size()
-            zero_block = torch.zeros((b, 1, c)).to(device)
-            Y = torch.cat((zero_block, Y), dim=1)
-            if spiral: Y = torch.stack([vds.antispiralise(yy) for yy in Y])
-            Y = einops.rearrange(Y, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=image_size//patch_size, w=image_size//patch_size)
-            P = torch.cat((zero_block, P), dim=1)
-            if spiral: P = torch.stack([vds.antispiralise(pp) for pp in P])
-            P = einops.rearrange(P, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=image_size//patch_size, w=image_size//patch_size)
-            if log_via_wandb:
-                wandb.log({"Y": wandb.Image(Y.swapaxes(1, -1)), "P": wandb.Image(P.swapaxes(1, -1))})
+                if pair == "images":
+                    b, t, c = Y.size()
+                    zero_block = torch.zeros((b, 1, c)).to(device)
+                    Y = torch.cat((zero_block, Y), dim=1)
+                    if spiral: Y = torch.stack([vds.antispiralise(yy) for yy in Y])
+                    im_patch = patch_size["images"]
+                    Y = einops.rearrange(Y, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=im_patch, p2=im_patch, h=image_size//im_patch, w=image_size//im_patch)
+                    P = torch.cat((zero_block, P), dim=1)
+                    if spiral: P = torch.stack([vds.antispiralise(pp) for pp in P])
+                    P = einops.rearrange(P, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=im_patch, p2=im_patch, h=image_size//im_patch, w=image_size//im_patch)
 
+                    for ax, p, y in zip(axs, P.to(float).cpu().numpy(), Y.to(float).cpu().numpy()):
+                        ax[0].imshow(np.clip(y, 0, 1))
+                        ax[1].imshow(np.clip(p, 0, 1))
+                        ax[0].axis("off")
+                        ax[1].axis("off")
 
-            for ax, p, y, spectrum_p, spectrum_y in zip(axs.T, 
-                    P.to(float).cpu().numpy(), Y.cpu().numpy(), 
-                    spectra_P.to(float).cpu().numpy(), spectra_Y.cpu().numpy(),
-            ):
-                ax[0].imshow(np.clip(y, 0, 1))
-                ax[1].imshow(np.clip(p, 0, 1))
-                ax[0].axis("off")
-                ax[1].axis("off")
-                ax[2].plot(spectrum_y)
-                ax[2].plot(spectrum_p) # overlay too cause yolo
-                ax[3].plot(spectrum_p)
+                    if log_via_wandb:
+                        wandb.log({"Y": wandb.Image(Y.swapaxes(1, -1)), "P": wandb.Image(P.swapaxes(1, -1))})
+
+                if pair == "spectra":
+                    for ax, p, y in zip(axs, P.to(float).cpu().numpy(), Y.to(float).cpu().numpy()):
+                        ax[2].plot(np.concatenate(p, axis=0)) # overlay too cause yolo
+                        ax[2].plot(np.concatenate(y, axis=0))
+                        ax[3].plot(np.concatenate(p, axis=0))
             f.savefig(
                 os.path.join(out_dir, f"{iter_num:06d}_{split}.jpg"),
                 bbox_inches="tight",
@@ -456,13 +460,13 @@ if __name__ == "__main__":
                 # looking at the source of that context manager, it just toggles this variable
                 model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
 
-            pairs = list(itertools.product(modalities, repeat=2))
+            pairs = modalities
             loss = 0
             for pair in pairs:
                 with ctx:
-                    X = B["X"][pair[0]].to(device)
-                    Y = B["Y"][pair[1]].to(device)
-                    loss += model(X, pair[0], pair[1], Y, pos=T)[1]
+                    X = B["X"][pair].to(device)
+                    Y = B["Y"][pair].to(device)
+                    loss += model(X, pair, pair, Y)[1]
             loss /= (gradient_accumulation_steps*len(pairs)) # scale the loss to account for gradient accumulation
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
             B = next(tdl)
