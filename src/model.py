@@ -125,7 +125,7 @@ class Encoder(nn.Module):
      
     def __init__(self, config, in_size):
         super().__init__()
-        encode = nn.Sequential(
+        self.encode = nn.Sequential(
              nn.Linear(in_size, config.n_embd),
              nn.ReLU(),
              nn.Linear(config.n_embd, config.n_embd),
@@ -136,7 +136,7 @@ class Encoder(nn.Module):
         #self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
 
     def forward(self, x):
-        x = encode(x)
+        x = self.encode(x)
         return x
         #x = self.c_fc(x)
         #x = new_gelu(x)
@@ -148,7 +148,7 @@ class Decoder(nn.Module):
 
     def __init__(self, config, out_size):
         super().__init__()
-        decode = nn.Sequential(
+        self.decode = nn.Sequential(
             nn.Linear(config.n_embd, config.n_embd*2),
             nn.ReLU(),
             nn.Linear(config.n_embd*2, config.n_embd),
@@ -160,7 +160,7 @@ class Decoder(nn.Module):
         #self.c_proj  = nn.Linear(4 * config.n_embd, out_size, bias=config.bias)
 
     def forward(self, x):
-        x = decode(x)
+        x = self.decode(x)
         return x
         #x = self.c_fc(x)
         #x = new_gelu(x)
@@ -170,18 +170,12 @@ class Decoder(nn.Module):
 class Embedder(nn.Module):
     """ base module to move from embedding space to data space  """
 
-    def __init__(self, config, out_size):
+    def __init__(self, config):
         super().__init__()
-        self.embed_now = nn.Embedding(10000, config.n_embd//2)
-        self.embed_next = nn.Embedding(10000, config.n_embd//2)
+        self.wpe = nn.Embedding(config.block_size, config.n_embd)
 
     def forward(self, pos):
-        pos_now = pos[:, 0, :]
-        pos_next = pos[:, 1, :]
-        return torch.cat(
-            (self.embed_now(pos_now), self.embed_next(pos_next)),
-            dim=-1,
-        )
+        return self.wpe(pos)
 
 @dataclass
 class GPTConfig:
@@ -191,8 +185,9 @@ class GPTConfig:
     n_embd: int = 768
     n_chan: int = 1
     dropout: float = 0.0
-    patch_size: int = 16
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    patch_size_images: int = 16
+    patch_size_spectra: int = 32
 
 class GPT(nn.Module):
 
@@ -203,20 +198,20 @@ class GPT(nn.Module):
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.ModuleDict(dict(
-                galaxy = Encoder(config, config.patch_size*config.patch_size*config.n_chan),
-                spectra = Encoder(config, config.patch_size*config.patch_size*1),
+                spectra = Encoder(config, config.patch_size_spectra),
+                images = Encoder(config, config.patch_size_images*config.patch_size_images*config.n_chan),
             )),
             wpe = nn.ModuleDict(dict(
-                galaxy = Embedder(config, config.block_size),
-                spectra = Embedder(config, config.block_size),
+                spectra = Embedder(config),
+                images = Embedder(config),
             )),
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
         self.lm_head = nn.ModuleDict(dict( 
-            galaxy = Decoder(config, config.patch_size*config.patch_size*config.n_chan),
-            spectra = Decoder(config, config.patch_size*config.patch_size*1),
+            spectra = Decoder(config, config.patch_size_spectra),
+            images = Decoder(config, config.patch_size_images*config.patch_size_images*config.n_chan),
         ))
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
@@ -245,7 +240,7 @@ class GPT(nn.Module):
         """
         n_params = sum(p.numel() for p in self.parameters())
         if non_embedding:
-            modality = "galaxy" # dummy modality so we can take embedding count away
+            modality = "images" # dummy modality so we can take embedding count away
             n_params -= sum(p.numel() for p in self.transformer.wpe[modality].parameters())
             n_params -= sum(p.numel() for p in self.transformer.wte[modality].parameters())
         return n_params
@@ -258,12 +253,11 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, images, spectra, targets=None):
-        assert tt <= self.config.block_size, f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
-        pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0) # shape (1, tt)
-    def forward(self, idx, in_modality, out_modality, targets=None, pos=None, prefix_len=None):
+    def forward(self, idx, in_modality, out_modality, targets=None):
         device = idx.device
         bb, tt, cc = idx.size()
+        assert tt <= self.config.block_size, f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
+        pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0) # shape (1, tt)
 
         # forward the GPT model itself
         tok_emb = self.transformer.wte[in_modality](idx) # token embeddings of shape (bb, tt, n_embd)
@@ -275,8 +269,8 @@ class GPT(nn.Module):
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
-            loss = F.huber_loss(logits, targets)
             logits = self.lm_head[out_modality](x)
+            loss = F.huber_loss(logits, targets)
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head[out_modality](x[:, [-1], :]) # note: using list [-1] to preserve the time dim
