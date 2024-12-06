@@ -88,7 +88,7 @@ class GalaxyImageDataset(Dataset):
         patch_galaxy = einops.rearrange(
             raw_galaxy,
             'c (h p1) (w p2) -> (h w) (p1 p2 c)', 
-            p1=self.patch_size, p2=self.patch_size
+            p1=self.patch_size["images"], p2=self.patch_size["images"]
         )
 
         if self.transform:
@@ -101,7 +101,7 @@ class GalaxyImageDataset(Dataset):
     def process_spectra(self, raw_spectra):
         # Apply padding to the spectrum
         w = raw_spectra.shape[0]
-        window = self.patch_size
+        window = self.patch_size["spectra"]
         pad_w = (window - w % window) % window
         padded_spectra = F.pad(raw_spectra, (0, pad_w))
 
@@ -152,8 +152,8 @@ class GalaxyImageDataset(Dataset):
                         if self.paths_spect is None:
                             break
                     # Fetch spectrum if we have one
-                    table = Table.read(self.paths_spect[idx], hdu=1, format='fits')
-                    raw_spectra = table['Flux'].astype(np.float32)
+                    with fits.open(self.paths_spect[idx]) as hdul:
+                        raw_spectra = hdul[1].data["Flux"].astype(np.float32)*1e18
                     raw_spectra = torch.tensor(raw_spectra).to(torch.bfloat16)
                     break
                 else:
@@ -168,7 +168,7 @@ class GalaxyImageDataset(Dataset):
         patch_galaxy = self.process_galaxy(raw_galaxy)
         patch_spectra = self.process_spectra(raw_spectra)
         return {
-            "X": {"image": patch_galaxy[:-1], "spect": patch_spectra[:-1]}, 
-            "Y": {"image": patch_galaxy[1:], "spect": patch_spectra[1:]},
+            "X": {"images": patch_galaxy[:-1], "spectra": patch_spectra[:-1]}, 
+            "Y": {"images": patch_galaxy[1:], "spectra": patch_spectra[1:]},
             "idx": idx,
         }
