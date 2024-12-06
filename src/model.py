@@ -14,6 +14,8 @@ https://github.com/aspiaspace/earthpt
 
 import math
 import inspect
+import sys
+import random
 from dataclasses import dataclass
 
 import torch
@@ -257,65 +259,46 @@ class GPT(nn.Module):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, images, spectra, targets=None):
-        device = images.device
-        bb, tt_im, _ = images.size()
-        _, tt_sp, _ = spectra.size()
-        tt = tt_im + tt_sp
         assert tt <= self.config.block_size, f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
         pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0) # shape (1, tt)
+    def forward(self, idx, in_modality, out_modality, targets=None, pos=None, prefix_len=None):
+        device = idx.device
+        bb, tt, cc = idx.size()
 
         # forward the GPT model itself
-        # TODO get this working for arbitrary different modalities
-        spect_patches = self.transformer.wte["spectra"](spectra)
-        image_patches = self.transformer.wte["galaxy"](images)
-
-        # Calculate indices for each modality
-        spect_indices = range(0, spect_patches.shape[1])
-        image_indices = range(spect_patches.shape[1], spect_patches.shape[1] + image_patches.shape[1])
-
-        tok_emb = torch.cat((spect_patches, image_patches), dim=1)
-        pos_emb = self.transformer.wpe["galaxy"](pos) # position embeddings of shape (1, tt, n_embd). For now we use a dummy "galaxy" position. Can improve later.
+        tok_emb = self.transformer.wte[in_modality](idx) # token embeddings of shape (bb, tt, n_embd)
+        pos_emb = self.transformer.wpe[in_modality](pos) # position embeddings of shape (1, tt, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x)
-        hidden_states = self.transformer.ln_f(x)
-        image_states = hidden_states[:, image_indices]
-        spect_states = hidden_states[:, spect_indices]
+        x = self.transformer.ln_f(x) # these are the hidden states
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
-            spect_logits = self.lm_head["spectra"](spect_states)
-            image_logits = self.lm_head["galaxy"](image_states)
-            logits = torch.cat((image_logits, spect_logits), dim=1)
             loss = F.huber_loss(logits, targets)
+            logits = self.lm_head[out_modality](x)
         else:
-            # TODO add back in inference-time mini-optimization: only forward the lm_head on the very last position
-            spect_logits = self.lm_head["spectra"](spect_states)
-            image_logits = self.lm_head["galaxy"](image_states)
-            logits = (torch.cat((image_logits, spect_logits), dim=1)[:, [-1], :])
+            # inference-time mini-optimization: only forward the lm_head on the very last position
+            logits = self.lm_head[out_modality](x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
 
         return logits, loss
 
-    def get_embeddings(self, idx, images, spectra):
+    def get_embeddings(self, idx, in_modality, pos=None, draw_from_centre=True, prefix_len=None):
+        """
+        idx = patch input
+        in_modality = modality to process
+        pos = position
+        draw_from_centre = get embedding from centre from model not from penultimate layer
+        """
         device = idx.device
         bb, tt_im, ch = images.size()
-        _, tt_sp, _ = spectra.size()
-        tt = tt_im + tt_sp
         assert tt <= self.config.block_size, f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
         pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0) # shape (1, tt)
 
         # forward the GPT model itself
-        # TODO get this working for arbitrary different modalities
-        spect_patches = self.transformer.wte["spectra"](spectra)
-        image_patches = self.transformer.wte["galaxy"](images)
-
-        # Calculate indices for each modality
-        spect_indices = range(0, spect_patches.shape[1])
-        image_indices = range(spect_patches.shape[1], spect_patches.shape[1] + image_patches.shape[1])
-
-        tok_emb = torch.cat((spect_patches, image_patches), dim=1)
-        pos_emb = self.transformer.wpe["galaxy"](pos) # position embeddings of shape (1, tt, n_embd). For now we use a dummy "galaxy" position. Can improve later.
+        tok_emb = self.transformer.wte[in_modality](idx) # token embeddings of shape (b, t, n_embd)
+        pos_emb = self.transformer.wpe[in_modality](pos) # position embeddings of shape (1, t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h: # by default we take the penultimate layer as the embedding layer
             x = block(x)
@@ -386,7 +369,7 @@ class GPT(nn.Module):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
             # forward the model to get the logits for the index in the sequence
-            logits, _ = self(idx_cond)
+            logits, _ = self(idx_cond, in_modality, out_modality)
             idx_next = logits + (torch.randn(logits.size())*temperature).to(logits.device)
             # append sampled index to the running sequence and continue
             idx = torch.cat((idx, idx_next), dim=1)
@@ -403,16 +386,14 @@ class GPT(nn.Module):
         operation for this.
         """
         idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
-        if average_type == "mean":
-            # We only care about the average embedding
-            weighted_embeddings = torch.mean(self.get_embeddings(idx_cond, modality, layer=layer), dim=1)
-        elif average_type == "exp_decay":
-            embeddings = self.get_embeddings(idx_cond, modality, layer=layer)
+        # We only care about the average embedding
+        embeddings = self.get_embeddings(idx_cond, in_modality=in_modality, pos=pos, prefix_len=None)
+        if reduction == "mean":
+            return torch.mean(embeddings, dim=1)
+        elif reduction == "exp_decay":
             weights = torch.logspace(0, -1, embeddings.shape[1], device=embeddings.device).unsqueeze(0).unsqueeze(-1)
-            weighted_embeddings = torch.sum(weights*embeddings, dim=1)/torch.sum(embeddings, dim=1)
-        elif average_type == "None":
-            weighted_embeddings = self.get_embeddings(idx_cond, modality, layer=layer)
+            return torch.sum(weights*embeddings, dim=1)/torch.sum(embeddings, dim=1)
+        elif reduction == "none":
+            return embeddings
         else:
             raise NotImplementedError
-
-        return weighted_embeddings

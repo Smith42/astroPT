@@ -21,14 +21,15 @@ import time
 import math
 from functools import partial
 import pickle
+import itertools
 from pathlib import Path
 from contextlib import nullcontext
 import einops
-import PIL
-import itertools
 
 import numpy as np
+import pandas as pd
 import torch
+import torchvision
 import matplotlib.pyplot as plt
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Dataset, DataLoader
@@ -196,7 +197,7 @@ if __name__ == "__main__":
         vds_hf = vds_hf.filter(filter_bumf).map(partial(process_galaxy_wrapper, func=vds.process_galaxy))
         vds_hf = vds_hf.remove_columns(["image", "dr8_id"])
 
-    sampler = None #DistributedSampler(dataset) if ddp else None
+    sampler = None
     tdl = iter(DataLoader(
         tds_hf if use_hf else tds,
         sampler=sampler,
@@ -270,7 +271,10 @@ if __name__ == "__main__":
     model.to(device)
     
     # initialize a GradScaler. If enabled=False scaler is a no-op
-    scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
+    try: # initting gradscaler changed in Pytorch 2.5.1
+        scaler = torch.amp.GradScaler(enabled=(dtype == 'float16'))
+    except: # fallback to old scaler if we hit an error
+        scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
     
     # optimizer
     optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
@@ -286,47 +290,48 @@ if __name__ == "__main__":
     
     # wrap model into DDP container
     if ddp:
-        model = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=True)
+        if master_process: print("Wrapping in DDP")
+        # Note to future people: we had to turn off optimize_ddp due to a
+        # torch compiler error when running DDP. This _may_ be fixed in a
+        # future torch version so check periodically. I tested this on:
+        # 2.6.0.dev20241126+cu124
+        torch._dynamo.config.optimize_ddp = False
+        model = DDP(model, device_ids=[ddp_local_rank])
     
     # helps estimate an arbitrarily accurate loss over either split using many batches
     @torch.no_grad()
     def estimate_loss():
         out = {}
         model.eval()
-        for dl, split in zip([tdl, vdl], ["train", "val"]):
-            losses = torch.zeros(eval_iters)
-            for k in range(eval_iters):
-                B = next(dl)
-                images = B["images"].to(device)
-                spectra = B["spectra"].to(device)
-                Y = torch.cat((images, spectra), dim=1)[:, 1:]#B["Y"].to(device)
-                #X = B["X"].to(device)
-                #Y = B["Y"].to(device)
-                #T = B["T"].to(device)
-                with ctx:
-                    logits, loss = model(images, spectra[:, :-1], Y)#, pos=T)
-                losses[k] = loss.item()
-            out[split] = losses.mean()
+        pairs = list(itertools.product(modalities, repeat=2))
+        for dl, split in zip(
+                [tdl, vdl], 
+                ["train", "val"],
+              ):
+            out[split] = {}
+            for pair in pairs:
+                losses = torch.zeros(eval_iters)
+                for k in range(eval_iters):
+                    B = next(dl) # fetch the very first batch
+                    X = B["X"][pair[0]].to(device)
+                    Y = B["Y"][pair[1]].to(device)
+                    with ctx:
+                        logits, loss = model(X, pair[0], pair[1], Y)
+                    losses[k] = loss.item()
+                out[split][f"{pair[0]}_{pair[1]}"] = losses.mean()
         model.train()
         return out
     
     @torch.no_grad()
     def validate(iter_num, out_dir):
         model.eval()
-        for dl, split in zip([tdl, vdl], ["train", "val"]):
-            f, axs = plt.subplots(4, 4, figsize=(6, 6), constrained_layout=True)
-            B = next(dl)
-            images = B["images"].to(device)
-            spectra = B["spectra"].to(device)
-            Y = torch.cat((images, spectra), dim=1)[:, 1:]#B["Y"].to(device)
-            #X = B["X"].to(device)
-            #Y = B["Y"].to(device)
-            #T = B["T"].to(device)
+        pairs = list(itertools.product(modalities, repeat=2))
+        B = next(vdl)
+        for pair in pairs:
+            X = B["X"][pair[0]].to(device)
+            Y = B["Y"][pair[1]].to(device)
             with ctx:
-                P, _ = model(images, spectra[:, :-1], Y)
-
-            spectra_Y = einops.rearrange(Y[:, 64:], 'b t c -> b (t c)')
-            spectra_P = einops.rearrange(P[:, 64:], 'b t c -> b (t c)')
+                P, loss = model(X, pair[0], pair[1], Y, pos=T)
 
             b, t, c = Y.size()
             zero_block = torch.zeros((b, 1, c)).to(device)
@@ -393,26 +398,37 @@ if __name__ == "__main__":
     
         # evaluate the loss on train/val sets and write checkpoints
         if iter_num % eval_interval == 0 and master_process:
-            losses = estimate_loss()
-            print(f"iter {iter_num}: train loss {losses['train']:.6f}, val loss {losses['val']:.6f}")
             validate(iter_num, out_dir)
+            losses = estimate_loss()
+            val_loss = np.mean(list(losses['val'].values()))
+            print(f"iter {iter_num}:\ntrain loss:\n{losses['train']}\nval loss:\n{losses['val']}")
             with open(os.path.join(out_dir, "loss.txt"), "a") as fi:
-                fi.write(f"{iter_num},{losses['train']},{losses['val']},{lr},{running_mfu*100}\n")
-            if log_via_wandb:
-                wandb.log({"valloss": losses['val']})
+                if fi.tell() == 0: # check if a new file and write header if so
+                    train_head_str = ','.join(map(lambda x: str(x) + "_train", losses['train'].keys()))
+                    valid_head_str = ','.join(map(lambda x: str(x) + "_valid", losses['val'].keys()))
+                    fi.write(f"iter_num,{train_head_str},{valid_head_str},lr,mfu\n")
+                train_loss_str = ','.join(map(lambda x: str(x.item()), losses['train'].values()))
+                valid_loss_str = ','.join(map(lambda x: str(x.item()), losses['val'].values()))
+                fi.write(f"{iter_num},{train_loss_str},{valid_loss_str},{lr},{running_mfu*100}\n")
             if iter_num != 0:
-                loss_ar = np.genfromtxt(os.path.join(out_dir, "loss.txt"), delimiter=",")
-                f, ax = plt.subplots(1, 1, figsize=(8, 3))
-                ax.plot(loss_ar[:, 0], loss_ar[:, 1], label="train")
-                ax.plot(loss_ar[:, 0], loss_ar[:, 2], label="val")
-                ax.set_yscale("log")
-                ax.legend()
+                loss_df = pd.read_csv(os.path.join(out_dir, "loss.txt"))
+                f, axs = plt.subplots(1, len(losses['train']) + 1, figsize=(12, 4), constrained_layout=True)
+                axs.ravel()[0].set_title("mean")
+                axs.ravel()[0].plot(loss_df["iter_num"], loss_df.filter(like="train").mean(axis=1), label="train")
+                axs.ravel()[0].plot(loss_df["iter_num"], loss_df.filter(like="valid").mean(axis=1), label="valid")
+                for ax, train_loss, valid_loss in zip(
+                        axs.ravel()[1:], loss_df.filter(like="train"), loss_df.filter(like="valid")
+                    ):
+                    ax.set_title(train_loss)
+                    ax.plot(loss_df["iter_num"], loss_df[train_loss], label="train")
+                    ax.plot(loss_df["iter_num"], loss_df[valid_loss], label="valid")
+                [ax.set_yscale("log") for ax in axs.ravel()]
+                [ax.legend() for ax in axs.ravel()]
                 f.savefig(os.path.join(out_dir, "loss.png"))
                 plt.close()
     
-        if ((iter_num % checkpoint_interval == 0 or iter_num == max_iters) and master_process):
-            if losses['val'] < best_val_loss or always_save_checkpoint:
-                best_val_loss = losses['val']
+            if val_loss < best_val_loss or always_save_checkpoint:
+                best_val_loss = val_loss
                 if iter_num > 0:
                     checkpoint = {
                         'model': raw_model.state_dict(),
@@ -439,9 +455,15 @@ if __name__ == "__main__":
                 # I really dislike that this bloats the code and forces us to repeat code
                 # looking at the source of that context manager, it just toggles this variable
                 model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
-            with ctx:
-                logits, loss = model(images, spectra[:, :-1], Y)#, pos=T)
-                loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
+
+            pairs = list(itertools.product(modalities, repeat=2))
+            loss = 0
+            for pair in pairs:
+                with ctx:
+                    X = B["X"][pair[0]].to(device)
+                    Y = B["Y"][pair[1]].to(device)
+                    loss += model(X, pair[0], pair[1], Y, pos=T)[1]
+            loss /= (gradient_accumulation_steps*len(pairs)) # scale the loss to account for gradient accumulation
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
             B = next(tdl)
             # backward pass, with gradient scaling if training in fp16
@@ -464,9 +486,9 @@ if __name__ == "__main__":
         if iter_num % log_interval == 0 and master_process:
             # get loss as float. note: this is a CPU-GPU sync point
             # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
-            lossf = loss.item() * gradient_accumulation_steps
+            lossf = loss.item() * gradient_accumulation_steps * len(pairs)
             if local_iter_num >= 5: # let the training loop settle a bit
-                mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
+                mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps * len(pairs), dt)
                 running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
             if log_via_wandb:
                 wandb.log({"loss": lossf, "time": dt})
