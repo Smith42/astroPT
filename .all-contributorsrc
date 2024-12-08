@@ -1,0 +1,61 @@
+{
+  "projectName": "astroPT",
+  "projectOwner": "Smith42",
+  "repoType": "github",
+  "repoHost": "https://github.com",
+  "files": [
+    "README.md"
+  ],
+  "imageSize": 100,
+  "commit": true,
+  "commitConvention": "angular",
+  "contributors": [
+    {
+      "login": "RJ-Roberts",
+      "name": "Ryan Roberts",
+      "avatar_url": "https://avatars.githubusercontent.com/u/131991163?v=4",
+      "profile": "https://github.com/RJ-Roberts",
+      "contributions": [
+        "code",
+        "ideas",
+        "content"
+      ]
+    },
+    {
+      "login": "Smith42",
+      "name": "Mike Smith",
+      "avatar_url": "https://avatars.githubusercontent.com/u/8194280?v=4",
+      "profile": "https://mjjsmith.com/",
+      "contributions": [
+        "code",
+        "ideas",
+        "content",
+        "data"
+      ]
+    },
+    {
+      "login": "mhuertascompany",
+      "name": "mhuertascompany",
+      "avatar_url": "https://avatars.githubusercontent.com/u/22987973?v=4",
+      "profile": "https://github.com/mhuertascompany",
+      "contributions": [
+        "ideas",
+        "content"
+      ]
+    },
+    {
+      "login": "msiudek",
+      "name": "Malgorzata Siudek",
+      "avatar_url": "https://avatars.githubusercontent.com/u/53626980?v=4",
+      "profile": "https://github.com/msiudek",
+      "contributions": [
+        "ideas",
+        "content",
+        "code",
+        "data"
+      ]
+    }
+  ],
+  "contributorsPerLine": 7,
+  "linkToUsage": true
+}

@@ -1,6 +1,14 @@
 <p align="center">
     <img src="assets/emoji.png" alt="earthPT" width="150"/>
 </p>
+<p align="center">
+[![ICML](https://img.shields.io/badge/AI4Science@ICML-2024---?logo=https%3A%2F%2Fneurips.cc%2Fstatic%2Fcore%2Fimg%2FNeurIPS-logo.svg&labelColor=68448B&color=b3b3b3)](https://openreview.net/forum?id=aOLuuLxqav)
+[![arXiv](https://img.shields.io/badge/arXiv-2405.14930---?logo=arXiv&labelColor=b31b1b&color=grey)](https://arxiv.org/abs/2405.14930)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+<!-- ALL-CONTRIBUTORS-BADGE:START - Do not remove or modify this section -->
+[![All Contributors](https://img.shields.io/badge/all_contributors-4-orange.svg?style=flat-square)](#contributors-)
+<!-- ALL-CONTRIBUTORS-BADGE:END -->
+</p>
 
 # astroPT: a Large Observation Model for astronomy 🔭
 
@@ -84,3 +92,33 @@ Check out the paper here: [https://arxiv.org/abs/2405.14930](https://arxiv.org/a
 We of course release all our model weights checkpointed across our full training runs on [HuggingFace 🤗 here](https://huggingface.co/Smith42/astroPT).
 
 We also release our full dataset and galaxy metadata on [HuggingFace 🔥](https://huggingface.co/datasets/Smith42/galaxies).
+
+## contributors
+
+<!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
+<!-- prettier-ignore-start -->
+<!-- markdownlint-disable -->
+<table>
+  <tbody>
+    <tr>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/RJ-Roberts"><img src="https://avatars.githubusercontent.com/u/131991163?v=4?s=100" width="100px;" alt="Ryan Roberts"/><br /><sub><b>Ryan Roberts</b></sub></a><br /><a href="https://github.com/Smith42/astroPT/commits?author=RJ-Roberts" title="Code">💻</a> <a href="#ideas-RJ-Roberts" title="Ideas, Planning, & Feedback">🤔</a> <a href="#content-RJ-Roberts" title="Content">🖋</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://mjjsmith.com/"><img src="https://avatars.githubusercontent.com/u/8194280?v=4?s=100" width="100px;" alt="Mike Smith"/><br /><sub><b>Mike Smith</b></sub></a><br /><a href="https://github.com/Smith42/astroPT/commits?author=Smith42" title="Code">💻</a> <a href="#ideas-Smith42" title="Ideas, Planning, & Feedback">🤔</a> <a href="#content-Smith42" title="Content">🖋</a> <a href="#data-Smith42" title="Data">🔣</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/mhuertascompany"><img src="https://avatars.githubusercontent.com/u/22987973?v=4?s=100" width="100px;" alt="mhuertascompany"/><br /><sub><b>mhuertascompany</b></sub></a><br /><a href="#ideas-mhuertascompany" title="Ideas, Planning, & Feedback">🤔</a> <a href="#content-mhuertascompany" title="Content">🖋</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/msiudek"><img src="https://avatars.githubusercontent.com/u/53626980?v=4?s=100" width="100px;" alt="Malgorzata Siudek"/><br /><sub><b>Malgorzata Siudek</b></sub></a><br /><a href="#ideas-msiudek" title="Ideas, Planning, & Feedback">🤔</a> <a href="#content-msiudek" title="Content">🖋</a> <a href="https://github.com/Smith42/astroPT/commits?author=msiudek" title="Code">💻</a> <a href="#data-msiudek" title="Data">🔣</a></td>
+    </tr>
+  </tbody>
+  <tfoot>
+    <tr>
+      <td align="center" size="13px" colspan="7">
+        <img src="https://raw.githubusercontent.com/all-contributors/all-contributors-cli/1b8533af435da9854653492b1327a23a4dbd0a10/assets/logo-small.svg">
+          <a href="https://all-contributors.js.org/docs/en/bot/usage">Add your contributions</a>
+        </img>
+      </td>
+    </tr>
+  </tfoot>
+</table>
+
+<!-- markdownlint-restore -->
+<!-- prettier-ignore-end -->
+
+<!-- ALL-CONTRIBUTORS-LIST:END -->
