@@ -31,6 +31,16 @@
         "content",
         "data"
       ]
+    },
+    {
+      "login": "mhuertascompany",
+      "name": "mhuertascompany",
+      "avatar_url": "https://avatars.githubusercontent.com/u/22987973?v=4",
+      "profile": "https://github.com/mhuertascompany",
+      "contributions": [
+        "ideas",
+        "content"
+      ]
     }
   ],
   "contributorsPerLine": 7,
