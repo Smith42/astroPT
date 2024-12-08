@@ -41,6 +41,17 @@
         "ideas",
         "content"
       ]
+    },
+    {
+      "login": "msiudek",
+      "name": "Malgorzata Siudek",
+      "avatar_url": "https://avatars.githubusercontent.com/u/53626980?v=4",
+      "profile": "https://github.com/msiudek",
+      "contributions": [
+        "ideas",
+        "content",
+        "code"
+      ]
     }
   ],
   "contributorsPerLine": 7,
