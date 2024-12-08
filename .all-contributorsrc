@@ -20,6 +20,17 @@
         "ideas",
         "content"
       ]
+    },
+    {
+      "login": "Smith42",
+      "name": "Mike Smith",
+      "avatar_url": "https://avatars.githubusercontent.com/u/8194280?v=4",
+      "profile": "https://mjjsmith.com/",
+      "contributions": [
+        "code",
+        "content",
+        "data"
+      ]
     }
   ],
   "contributorsPerLine": 7,
