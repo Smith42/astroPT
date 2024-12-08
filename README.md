@@ -1,8 +1,10 @@
 <p align="center">
+    <img src="assets/emoji.png" alt="earthPT" width="150"/>
+</p>
+<p align="center">
 <!-- ALL-CONTRIBUTORS-BADGE:START - Do not remove or modify this section -->
 [![All Contributors](https://img.shields.io/badge/all_contributors-4-orange.svg?style=flat-square)](#contributors-)
 <!-- ALL-CONTRIBUTORS-BADGE:END -->
-    <img src="assets/emoji.png" alt="earthPT" width="150"/>
 </p>
 
 # astroPT: a Large Observation Model for astronomy 🔭
