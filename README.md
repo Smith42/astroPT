@@ -85,7 +85,7 @@ We of course release all our model weights checkpointed across our full training
 
 We also release our full dataset and galaxy metadata on [HuggingFace 🔥](https://huggingface.co/datasets/Smith42/galaxies).
 
-## Contributors
+## contributors
 
 <!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
 <!-- prettier-ignore-start -->
