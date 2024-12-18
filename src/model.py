@@ -14,10 +14,19 @@ https://github.com/aspiaspace/earthpt
 
 import math
 import inspect
+import sys
+import random
 from dataclasses import dataclass
+from functools import partial
 
 import torch
 import torch.nn as nn
+try:
+    from torch.nn.attention.flex_attention import flex_attention, create_block_mask, or_masks
+    flex_attention_avail = True
+except:
+    print("WARNING: only causal attention is available. Flex Attention requires PyTorch >= 2.6")
+    flex_attention_avail = False
 from torch.nn import functional as F
 from einops.layers.torch import Rearrange
 
@@ -40,7 +49,31 @@ class LayerNorm(nn.Module):
     def forward(self, input):
         return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
 
-class CausalSelfAttention(nn.Module):
+def generate_prefix_lm_mask(prefix_length):
+    """
+    Generates a prefix LM causal attention mask.
+    From the attention gym 
+    https://github.com/pytorch-labs/attention-gym/blob/bbf437e9ea7d802c0ee71d067787f7b57605f9ff/attn_gym/masks/prefix_lm.py
+
+    Args:
+        prefix_length: The length of the prefix.
+
+    Note:
+        This mask allows full attention within the prefix (first PREFIX_LENGTH tokens)
+        and causal attention for the rest of the sequence.
+    """
+
+    def prefix_mask(b, h, q_idx, kv_idx):
+        return kv_idx < prefix_length
+
+    def causal_mask(b, h, q_idx, kv_idx):
+        return q_idx >= kv_idx
+
+    prefix_lm_causal_mask = or_masks(prefix_mask, causal_mask)
+    prefix_lm_causal_mask.__name__ = f"prefix_lm_causal_mask_{prefix_length}"
+    return prefix_lm_causal_mask
+
+class SelfAttention(nn.Module):
 
     def __init__(self, config):
         super().__init__()
@@ -55,15 +88,24 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.dropout = config.dropout
-        # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-        if not self.flash:
-            print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
-            # causal mask to ensure that attention is only applied to the left in the input sequence
-            self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
-                                        .view(1, 1, config.block_size, config.block_size))
 
-    def forward(self, x):
+        self.attn_type = config.attn_type
+        if self.attn_type == "causal":
+            # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
+            self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+            if not self.flash:
+                print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
+                # causal mask to ensure that attention is only applied to the left in the input sequence
+                self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
+                                            .view(1, 1, config.block_size, config.block_size))
+        elif (self.attn_type == "prefix" and flex_attention_avail):
+            # flex attention also make GPU brrrr for non-causal masking, only available with DDP for PyTorch >= 2.6
+            # need to compile flex attention for performance!
+            self.flex_attention = torch.compile(flex_attention)
+        else:
+            raise NotImplementedError("Attention type must be one of 'causal' or 'prefix'. Prefix requires PyTorch >= 2.6.")
+
+    def forward(self, x, block_mask=None):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
@@ -72,17 +114,22 @@ class CausalSelfAttention(nn.Module):
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
 
-        # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-        if self.flash:
-            # efficient attention using Flash Attention CUDA kernels
-            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
-        else:
-            # manual implementation of attention
-            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
-            att = F.softmax(att, dim=-1)
-            att = self.attn_dropout(att)
-            y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        if self.attn_type == "causal":
+            # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
+            if self.flash:
+                # efficient attention using Flash Attention CUDA kernels
+                y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
+            else:
+                # manual implementation of attention
+                att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+                att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+                att = F.softmax(att, dim=-1)
+                att = self.attn_dropout(att)
+                y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        elif self.attn_type == "prefix":
+            y = self.flex_attention(q, k, v, block_mask=block_mask)
+        else: 
+            raise NotImplementedError("Attention type must be one of 'causal' or 'prefix'. Prefix requires PyTorch >= 2.6.")
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
 
         # output projection
@@ -109,12 +156,12 @@ class Block(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
-        self.attn = CausalSelfAttention(config)
+        self.attn = SelfAttention(config)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
-    def forward(self, x):
-        x = x + self.attn(self.ln_1(x))
+    def forward(self, x, block_mask=None):
+        x = x + self.attn(self.ln_1(x), block_mask=None)
         x = x + self.mlp(self.ln_2(x))
         return x
 
@@ -128,6 +175,7 @@ class GPTConfig:
     dropout: float = 0.0
     patch_size: int = 16
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    attn_type: str = "causal" # causal or prefix
 
 class GPT(nn.Module):
 
@@ -193,10 +241,20 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, targets=None, prefix_len=None):
         device = idx.device
         b, t, c = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        if self.config.attn_type == "prefix":
+            # TODO we need to make sure that the prefix hyperparameters are tuned well:
+            if prefix_len is None:
+                # if we don't pass a prefix length assume we want it sampled at random
+                # TODO do we want this to be an eval mode switch?
+                prefix_len = random.randrange(self.config.block_size - 1)
+            prefix_lm_mask = generate_prefix_lm_mask(prefix_len)
+            block_mask = create_block_mask(prefix_lm_mask, None, None, self.config.block_size, self.config.block_size)
+        else:
+            block_mask = None
         pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0) # shape (1, t)
 
         # forward the GPT model itself
@@ -204,13 +262,18 @@ class GPT(nn.Module):
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
-            x = block(x)
+            x = block(x, block_mask=block_mask)
         x = self.transformer.ln_f(x)
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
-            loss = F.huber_loss(logits, targets)
+            # if we have prefix attention on we only want to backprop through
+            # tokens where our model cannot look ahead! so we mask the loss:
+            prefix_mask = torch.ones_like(targets, dtype=torch.bool)
+            if self.config.attn_type == "prefix":
+                prefix_mask[:, :prefix_len] = False
+            loss = F.huber_loss(logits[prefix_mask], targets[prefix_mask])
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
@@ -218,10 +281,20 @@ class GPT(nn.Module):
 
         return logits, loss
 
-    def get_embeddings(self, idx):
+    def get_embeddings(self, idx, prefix_len=None):
         device = idx.device
         b, t, ch = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        if self.config.attn_type == "prefix":
+            # TODO we need to make sure that the prefix hyperparameters are tuned well:
+            if prefix_len is None:
+                # if we don't pass a prefix length assume we want it sampled at random
+                # TODO do we want this to be an eval mode switch?
+                prefix_len = random.randrange(self.config.block_size - 1)
+            prefix_lm_mask = generate_prefix_lm_mask(prefix_len)
+            block_mask = create_block_mask(prefix_lm_mask, None, None, self.config.block_size, self.config.block_size)
+        else:
+            block_mask = None
         pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0) # shape (1, t)
 
         # forward the GPT model itself
@@ -229,7 +302,7 @@ class GPT(nn.Module):
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
-            x = block(x)
+            x = block(x, block_mask=block_mask)
         embeddings = x
 
         return embeddings
@@ -305,7 +378,7 @@ class GPT(nn.Module):
         return idx
 
     @torch.no_grad()
-    def generate_embeddings(self, idx, average_type="mean"):
+    def generate_embeddings(self, idx, average_type="mean", prefix_len=None):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t))
         and get the embedding from the transformer model for that series.
@@ -314,16 +387,14 @@ class GPT(nn.Module):
         operation for this.
         """
         idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
+        embeddings = self.get_embeddings(idx_cond, prefix_len=None)
         if average_type == "mean":
             # We only care about the average embedding
-            weighted_embeddings = torch.mean(self.get_embeddings(idx_cond), dim=1)
+            return torch.mean(embeddings, dim=1)
         elif average_type == "exp_decay":
-            embeddings = self.get_embeddings(idx_cond)
             weights = torch.logspace(0, -1, embeddings.shape[1], device=embeddings.device).unsqueeze(0).unsqueeze(-1)
-            weighted_embeddings = torch.sum(weights*embeddings, dim=1)/torch.sum(embeddings, dim=1)
+            return torch.sum(weights*embeddings, dim=1)/torch.sum(embeddings, dim=1)
         elif average_type == "none":
-            weighted_embeddings = self.get_embeddings(idx_cond)
+            return embeddings
         else:
             raise NotImplementedError
-
-        return weighted_embeddings

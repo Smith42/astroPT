@@ -6,7 +6,6 @@ import pickle
 from contextlib import nullcontext
 import torch
 from torch.utils.data import DataLoader
-import tiktoken
 from tqdm import tqdm, trange
 import matplotlib.pyplot as plt
 import numpy as np
@@ -19,14 +18,14 @@ import functools
 from einops import rearrange
 import pandas as pd
 
-from sklearn.decomposition import PCA
-
 # -----------------------------------------------------------------------------
 init_from = 'resume'
 out_dir = 'logs/spiralized_astropt_300M' # ignored if init_from is not 'resume'
 refresh_cache = False # resample the embeddings
 batch_size = 256
 seed = 1337
+spiral = True # do we want to process the galaxy patches in spiral order?
+patch_size = 16 # size of image patches for ViT tokenisation
 device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1', etc.
 dtype = 'bfloat16' # 'float32' or 'bfloat16' or 'float16'
 compile = False # use PyTorch 2.0 to compile the model to be faster
@@ -96,18 +95,23 @@ if (not (
     # run generation
     xss = []
     zss = []
-    idss = []
+    idxs = []
     with torch.no_grad():
         with ctx:
             tt = tqdm(unit="galz", unit_scale=True)
             for B in dl:
-                xs = B["image"][:, :64]
-                ids = B["dr8_id"]
-                zs = model.generate_embeddings(xs.to(device))
+                prefix_len = 64
+                xs = B["image"][:, :prefix_len]
+                idx = B["dr8_id"]
+                if model.config.attn_type == "prefix":
+                    # forward and backward attention over whole image if pretrained with prefix attention
+                    zs = model.generate_embeddings(xs.to(device), prefix_len=prefix_len)
+                else:
+                    zs = model.generate_embeddings(xs.to(device))
                 if not os.path.isfile(os.path.join(out_dir, f"xss_{n_tokens}t.npy")):
                     xss.append(rearrange(xs, "b t c -> b (t c)").detach().to(torch.float16).cpu().numpy())
                 zss.append(zs.detach().cpu().numpy())
-                idss.append(ids)
+                idxs.append(idx)
                 tt.update(batch_size)
             tt.close()
 
@@ -115,18 +119,18 @@ if (not (
         xss = np.concatenate(xss, axis=0)
         np.save(os.path.join(out_dir, f"xss_{n_tokens}t.npy"), xss)
     zss = np.concatenate(zss, axis=0)
-    idss = np.concatenate(idss, axis=0)
+    idxs = np.concatenate(idxs, axis=0)
     np.save(os.path.join(out_dir, f"zss_{n_tokens}t_{norm}.npy"), zss)
-    np.save(os.path.join(out_dir, f"idss_{n_tokens}t_{norm}.npy"), idss)
+    np.save(os.path.join(out_dir, f"idxs_{n_tokens}t_{norm}.npy"), idxs)
 
     print("processing metadata file")
     metadata = pd.read_parquet("/raid/data/metadata.parquet")
     metadata = metadata.set_index(["dr8_id"])
-    metadata = metadata.loc[list(idss)]
+    metadata = metadata.loc[list(idxs)]
     metadata.to_parquet(os.path.join(out_dir, "metadata_processed.parquet"))
 else:
     print("loading from cache")
     metadata = pd.read_parquet(os.path.join(out_dir, "metadata_processed.parquet"))
     zss = np.load(os.path.join(out_dir, f"zss_{n_tokens}t_{norm}.npy"))
     #xss = np.load(os.path.join(out_dir, f"xss_{n_tokens}t.npy"))
-    idss = np.load(os.path.join(out_dir, f"idss_{n_tokens}t_{norm}.npy"))
+    idxs = np.load(os.path.join(out_dir, f"idxs_{n_tokens}t_{norm}.npy"))
