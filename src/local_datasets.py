@@ -168,7 +168,7 @@ class GalaxyImageDataset(Dataset):
         patch_galaxy = self.process_galaxy(raw_galaxy)
         patch_spectra = self.process_spectra(raw_spectra)
         return {
-            "X": {"images": patch_galaxy[:-1], "spectra": patch_spectra[:-1]}, 
-            "Y": {"images": patch_galaxy[1:], "spectra": patch_spectra[1:]},
+            "X": {"images": patch_galaxy[:-1], "spectra": patch_spectra},
+            "Y": {"images": patch_galaxy, "spectra": patch_spectra[1:]},
             "idx": idx,
         }

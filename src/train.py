@@ -296,29 +296,29 @@ if __name__ == "__main__":
         # future torch version so check periodically. I tested this on:
         # 2.6.0.dev20241126+cu124
         torch._dynamo.config.optimize_ddp = False
-        model = DDP(model, device_ids=[ddp_local_rank])
+        model = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=True)
     
     # helps estimate an arbitrarily accurate loss over either split using many batches
     @torch.no_grad()
     def estimate_loss():
         out = {}
         model.eval()
-        pairs = modalities
         for dl, split in zip(
                 [tdl, vdl], 
                 ["train", "val"],
               ):
             out[split] = {}
-            for pair in pairs:
-                losses = torch.zeros(eval_iters)
-                for k in range(eval_iters):
-                    B = next(dl) # fetch the very first batch
-                    X = B["X"][pair].to(device)
-                    Y = B["Y"][pair].to(device)
-                    with ctx:
-                        logits, loss = model(X, pair, pair, Y)
-                    losses[k] = loss.item()
-                out[split][f"{pair}_{pair}"] = losses.mean()
+            losses = torch.zeros(eval_iters)
+            for k in range(eval_iters):
+                B = next(dl) # fetch the very first batch
+                with ctx:
+                    logits, loss = model(
+                        B["X"]["spectra"].to(device), 
+                        B["X"]["images"].to(device), 
+                        targets=(B["Y"]["spectra"].to(device), B["Y"]["images"].to(device)),
+                    )
+                losses[k] = loss.item()
+            out[split]["dummy"] = losses.mean()
         model.train()
         return out
     
@@ -326,40 +326,40 @@ if __name__ == "__main__":
     def validate(iter_num, out_dir):
         model.eval()
         for dl, split in zip([tdl, vdl], ["train", "val"]):
-            pairs = modalities
             f, axs = plt.subplots(8, 4, figsize=(6, 12), constrained_layout=True)
             B = next(vdl)
-            for pair in pairs:
-                X = B["X"][pair].to(device)
-                Y = B["Y"][pair].to(device)
-                with ctx:
-                    P, loss = model(X, pair, pair, Y)
+            with ctx:
+                P, loss = model(
+                    B["X"]["spectra"].to(device), 
+                    B["X"]["images"].to(device), 
+                    targets=(B["Y"]["spectra"].to(device), B["Y"]["images"].to(device)),
+                )
 
-                if pair == "images":
-                    b, t, c = Y.size()
-                    zero_block = torch.zeros((b, 1, c)).to(device)
-                    Y = torch.cat((zero_block, Y), dim=1)
-                    if spiral: Y = torch.stack([vds.antispiralise(yy) for yy in Y])
-                    im_patch = patch_size["images"]
-                    Y = einops.rearrange(Y, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=im_patch, p2=im_patch, h=image_size//im_patch, w=image_size//im_patch)
-                    P = torch.cat((zero_block, P), dim=1)
-                    if spiral: P = torch.stack([vds.antispiralise(pp) for pp in P])
-                    P = einops.rearrange(P, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=im_patch, p2=im_patch, h=image_size//im_patch, w=image_size//im_patch)
+                Yim = B["Y"]["images"].to(device)
+                b, t, c = Yim.size()
+                zero_block = torch.zeros((b, 1, c)).to(device)
+                #Yim = torch.cat((zero_block, Yim), dim=1)
+                if spiral: Yim = torch.stack([vds.antispiralise(yy) for yy in Yim])
+                im_patch = patch_size["images"]
+                Yim = einops.rearrange(Yim, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=im_patch, p2=im_patch, h=image_size//im_patch, w=image_size//im_patch)
+                if spiral: Pim = torch.stack([vds.antispiralise(pp) for pp in P[1]])
+                Pim = einops.rearrange(Pim, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=im_patch, p2=im_patch, h=image_size//im_patch, w=image_size//im_patch)
 
-                    for ax, p, y in zip(axs, P.to(float).cpu().numpy(), Y.to(float).cpu().numpy()):
-                        ax[0].imshow(np.clip(y, 0, 1))
-                        ax[1].imshow(np.clip(p, 0, 1))
-                        ax[0].axis("off")
-                        ax[1].axis("off")
+                for ax, p, y in zip(axs, Pim.to(float).cpu().numpy(), Yim.to(float).cpu().numpy()):
+                    ax[0].imshow(np.clip(y, 0, 1))
+                    ax[1].imshow(np.clip(p, 0, 1))
+                    ax[0].axis("off")
+                    ax[1].axis("off")
 
-                    if log_via_wandb:
-                        wandb.log({"Y": wandb.Image(Y.swapaxes(1, -1)), "P": wandb.Image(P.swapaxes(1, -1))})
+                if log_via_wandb:
+                    wandb.log({"Y": wandb.Image(Y.swapaxes(1, -1)), "P": wandb.Image(P.swapaxes(1, -1))})
 
-                if pair == "spectra":
-                    for ax, p, y in zip(axs, P.to(float).cpu().numpy(), Y.to(float).cpu().numpy()):
-                        ax[2].plot(np.concatenate(p, axis=0)) # overlay too cause yolo
-                        ax[2].plot(np.concatenate(y, axis=0))
-                        ax[3].plot(np.concatenate(p, axis=0))
+                Ysp = B["Y"]["spectra"]
+                Psp = P[0]
+                for ax, p, y in zip(axs, Psp.to(float).cpu().numpy(), Ysp.to(float).cpu().numpy()):
+                    ax[2].plot(np.concatenate(p, axis=0)) # overlay too cause yolo
+                    ax[2].plot(np.concatenate(y, axis=0))
+                    ax[3].plot(np.concatenate(p, axis=0))
             f.savefig(
                 os.path.join(out_dir, f"{iter_num:06d}_{split}.jpg"),
                 bbox_inches="tight",
@@ -464,10 +464,12 @@ if __name__ == "__main__":
             loss = 0
             for pair in pairs:
                 with ctx:
-                    X = B["X"][pair].to(device)
-                    Y = B["Y"][pair].to(device)
-                    loss += model(X, pair, pair, Y)[1]
-            loss /= (gradient_accumulation_steps*len(pairs)) # scale the loss to account for gradient accumulation
+                    logits, loss = model(
+                        B["X"]["spectra"].to(device), 
+                        B["X"]["images"].to(device), 
+                        targets=(B["Y"]["spectra"].to(device), B["Y"]["images"].to(device)),
+                    )
+            loss /= (gradient_accumulation_steps*2) # scale the loss to account for gradient accumulation
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
             B = next(tdl)
             # backward pass, with gradient scaling if training in fp16
