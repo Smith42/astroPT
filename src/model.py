@@ -253,16 +253,16 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, spectra, images, targets=None):
+    def forward(self, images, spectra, targets=None):
         device = images.device
-        tt = spectra.size()[1] + images.size()[1]
+        tt = images.size()[1] + spectra.size()[1]
         assert tt <= self.config.block_size, f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
         pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0) # shape (1, tt)
 
         # forward the GPT model itself
         tok_emb = torch.cat((
-           self.transformer.wte["spectra"](spectra),
            self.transformer.wte["images"](images),
+           self.transformer.wte["spectra"](spectra),
         ), dim=1)
         pos_emb = self.transformer.wpe["images"](pos) # position embeddings of shape (1, tt, n_embd)
 
@@ -270,18 +270,22 @@ class GPT(nn.Module):
         for block in self.transformer.h:
             x = block(x)
         x = self.transformer.ln_f(x) # these are the hidden states
-        hidden_states_spectra = x[:, :targets[0].size()[1]]
-        hidden_states_images = x[:, targets[0].size()[1]:]
+        hidden_states_images = x[:, :targets[0].size()[1]]
+        hidden_states_spectra = x[:, targets[0].size()[1]:]
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             loss = 0
             logits = []
-            for modality, hidden_state, target in zip(
-                    ["spectra", "images"], [hidden_states_spectra, hidden_states_images], targets,
+            for modality, lamb, hidden_state, target in zip(
+                    ["images", "spectra"], 
+                    [1, 0.5],
+                    [hidden_states_images, hidden_states_spectra], 
+                    targets,
                 ):
                 logits.append(self.lm_head[modality](hidden_state))
-                loss += F.huber_loss(logits[-1], target)
+                loss += F.huber_loss(logits[-1], target) * lamb
+            loss /= len(["images", "spectra"])
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             #logits = torch.cat((

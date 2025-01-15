@@ -55,14 +55,14 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a model on DESI
     # look at config/astropt300m.py for a prod run example
-    out_dir = 'logs/test_spectra_2024-09-22'
+    out_dir = 'logs/test'
     eval_interval = 1000
     log_interval = 100
     checkpoint_interval = 10000
     assert checkpoint_interval % eval_interval == 0
     eval_iters = 10
     eval_only = False # if True, script exits right after the first eval
-    always_save_checkpoint = True # if True, always save a checkpoint at each checkpoint_interval
+    always_save_checkpoint = False # if True, always save a checkpoint at each checkpoint_interval
     init_from = 'scratch' # 'scratch' or 'resume'
     use_hf = False # use the huggingface dataset version of our galz
     stream_hf_dataset = False # stream the galaxies from huggingface
@@ -80,7 +80,7 @@ if __name__ == "__main__":
     n_chan = 4 # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
     dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
     bias = False # do we use bias inside LayerNorm and Linear layers?
-    patch_size = {"spectra": 32, "images": 16} # size of image patches for ViT tokenisation
+    patch_size = {"spectra": 256, "images": 16} # size of image patches for ViT tokenisation
     modalities = ["spectra", "images"]
     # adamw optimizer
     # we follow the same schedule here as Chinchilla
@@ -152,14 +152,15 @@ if __name__ == "__main__":
             transforms.Lambda(normalise),
         ])
         return transform
+    transforms = {"galaxy": data_transforms()}
     # training dataset and dataloader
-    tpaths = None if use_hf else "./images_train.txt"
-    tpaths_spectra = None if use_hf else "./spectra_train.txt"
-    tds = GalaxyImageDataset(tpaths, paths_spect=tpaths_spectra, spiral=spiral, transform=data_transforms(), patch_size=patch_size)
+    tpaths = None if use_hf else "./data/train_desi_spectra_images.txt"
+    tpaths_spectra = None if use_hf else "./data/train_desi_spectra_spectra.txt"
+    tds = GalaxyImageDataset(tpaths, paths_spect=tpaths_spectra, spiral=spiral, transform=transforms, patch_size=patch_size)
     # validation dataset and dataloader
-    vpaths = None if use_hf else "./images_test.txt"
-    vpaths_spectra = "./spectra_test.txt"
-    vds = GalaxyImageDataset(vpaths, paths_spect=vpaths_spectra, spiral=spiral, transform=data_transforms(), patch_size=patch_size)
+    vpaths = None if use_hf else "./data/test_desi_spectra_images.txt"
+    vpaths_spectra = None if use_hf else "./data/test_desi_spectra_spectra.txt"
+    vds = GalaxyImageDataset(vpaths, paths_spect=vpaths_spectra, spiral=spiral, transform=transforms, patch_size=patch_size)
 
     if use_hf:
         from datasets import load_dataset, Image
@@ -313,9 +314,9 @@ if __name__ == "__main__":
                 B = next(dl) # fetch the very first batch
                 with ctx:
                     logits, loss = model(
-                        B["X"]["spectra"].to(device), 
                         B["X"]["images"].to(device), 
-                        targets=(B["Y"]["spectra"].to(device), B["Y"]["images"].to(device)),
+                        B["X"]["spectra"].to(device), 
+                        targets=(B["Y"]["images"].to(device), B["Y"]["spectra"].to(device)),
                     )
                 losses[k] = loss.item()
             out[split]["dummy"] = losses.mean()
@@ -330,19 +331,20 @@ if __name__ == "__main__":
             B = next(vdl)
             with ctx:
                 P, loss = model(
-                    B["X"]["spectra"].to(device), 
                     B["X"]["images"].to(device), 
-                    targets=(B["Y"]["spectra"].to(device), B["Y"]["images"].to(device)),
+                    B["X"]["spectra"].to(device), 
+                    targets=(B["Y"]["images"].to(device), B["Y"]["spectra"].to(device)),
                 )
 
                 Yim = B["Y"]["images"].to(device)
                 b, t, c = Yim.size()
                 zero_block = torch.zeros((b, 1, c)).to(device)
-                #Yim = torch.cat((zero_block, Yim), dim=1)
+                Yim = torch.cat((zero_block, Yim), dim=1)
                 if spiral: Yim = torch.stack([vds.antispiralise(yy) for yy in Yim])
                 im_patch = patch_size["images"]
                 Yim = einops.rearrange(Yim, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=im_patch, p2=im_patch, h=image_size//im_patch, w=image_size//im_patch)
-                if spiral: Pim = torch.stack([vds.antispiralise(pp) for pp in P[1]])
+                Pim = torch.cat((zero_block, P[0]), dim=1)
+                if spiral: Pim = torch.stack([vds.antispiralise(pp) for pp in Pim])
                 Pim = einops.rearrange(Pim, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=im_patch, p2=im_patch, h=image_size//im_patch, w=image_size//im_patch)
 
                 for ax, p, y in zip(axs, Pim.to(float).cpu().numpy(), Yim.to(float).cpu().numpy()):
@@ -355,10 +357,10 @@ if __name__ == "__main__":
                     wandb.log({"Y": wandb.Image(Y.swapaxes(1, -1)), "P": wandb.Image(P.swapaxes(1, -1))})
 
                 Ysp = B["Y"]["spectra"]
-                Psp = P[0]
+                Psp = P[1]
                 for ax, p, y in zip(axs, Psp.to(float).cpu().numpy(), Ysp.to(float).cpu().numpy()):
-                    ax[2].plot(np.concatenate(p, axis=0)) # overlay too cause yolo
                     ax[2].plot(np.concatenate(y, axis=0))
+                    ax[2].plot(np.concatenate(p, axis=0)) # overlay too cause yolo
                     ax[3].plot(np.concatenate(p, axis=0))
             f.savefig(
                 os.path.join(out_dir, f"{iter_num:06d}_{split}.jpg"),
@@ -465,9 +467,9 @@ if __name__ == "__main__":
             for pair in pairs:
                 with ctx:
                     logits, loss = model(
-                        B["X"]["spectra"].to(device), 
                         B["X"]["images"].to(device), 
-                        targets=(B["Y"]["spectra"].to(device), B["Y"]["images"].to(device)),
+                        B["X"]["spectra"].to(device), 
+                        targets=(B["Y"]["images"].to(device), B["Y"]["spectra"].to(device)),
                     )
             loss /= (gradient_accumulation_steps*2) # scale the loss to account for gradient accumulation
             # immediately async prefetch next batch while model is doing the forward pass on the GPU

@@ -91,8 +91,8 @@ class GalaxyImageDataset(Dataset):
             p1=self.patch_size["images"], p2=self.patch_size["images"]
         )
 
-        if self.transform:
-            patch_galaxy = self.transform(patch_galaxy)
+        if "galaxy" in self.transform:
+            patch_galaxy = self.transform["galaxy"](patch_galaxy)
         if self.spiral:
             patch_galaxy = self.spiralise(patch_galaxy)
 
@@ -112,8 +112,8 @@ class GalaxyImageDataset(Dataset):
             p=window,
         )
 
-        if self.transform:
-            patch_spectra = self.transform(patch_spectra)
+        if "spectra" in self.transform:
+            patch_spectra = self.transform["spectra"](patch_spectra)
 
         return patch_spectra
 
@@ -153,7 +153,7 @@ class GalaxyImageDataset(Dataset):
                             break
                     # Fetch spectrum if we have one
                     with fits.open(self.paths_spect[idx]) as hdul:
-                        raw_spectra = hdul[1].data["Flux"].astype(np.float32)*1e18
+                        raw_spectra = hdul[1].data["Flux"].astype(np.float32)
                     raw_spectra = torch.tensor(raw_spectra).to(torch.bfloat16)
                     break
                 else:
@@ -168,7 +168,7 @@ class GalaxyImageDataset(Dataset):
         patch_galaxy = self.process_galaxy(raw_galaxy)
         patch_spectra = self.process_spectra(raw_spectra)
         return {
-            "X": {"images": patch_galaxy[:-1], "spectra": patch_spectra},
-            "Y": {"images": patch_galaxy, "spectra": patch_spectra[1:]},
+            "X": {"images": patch_galaxy, "spectra": patch_spectra[:-1]},
+            "Y": {"images": patch_galaxy[1:], "spectra": patch_spectra},
             "idx": idx,
         }
