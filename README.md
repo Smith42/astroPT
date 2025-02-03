@@ -24,7 +24,7 @@ Check out the [UniverseTBD](https://universetbd.org/) Discord for updates:
 
 You can install via pip from PyPI:
 ```bash
-pip install your-package-name
+pip install astropt
 ```
 
 Or if you install locally, you can get the dependencies via:
