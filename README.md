@@ -5,6 +5,7 @@
 # astroPT: a Large Observation Model for astronomy 🔭
 
 <div align="center">
+<img src="assets/shoggoth_telescope_sticker_2.png" alt="earthPT" width="300"/>
 
 [![ICML](https://img.shields.io/badge/AI4Science@ICML-2024---?logo=https%3A%2F%2Fneurips.cc%2Fstatic%2Fcore%2Fimg%2FNeurIPS-logo.svg&labelColor=68448B&color=b3b3b3)](https://openreview.net/forum?id=aOLuuLxqav)
 [![arXiv](https://img.shields.io/badge/arXiv-2405.14930---?logo=arXiv&labelColor=b31b1b&color=grey)](https://arxiv.org/abs/2405.14930)
