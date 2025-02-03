@@ -171,6 +171,7 @@ data/
 
 # misc
 python/
+out/
 
 # vi
 *.swp

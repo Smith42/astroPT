@@ -21,6 +21,7 @@ import time
 import math
 from functools import partial
 import pickle
+import itertools
 from pathlib import Path
 from contextlib import nullcontext
 import einops
@@ -28,6 +29,7 @@ import PIL
 
 import numpy as np
 import torch
+import torchvision
 import matplotlib.pyplot as plt
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Dataset, DataLoader
@@ -62,7 +64,7 @@ if __name__ == "__main__":
     eval_only = False # if True, script exits right after the first eval
     always_save_checkpoint = True # if True, always save a checkpoint at each checkpoint_interval
     init_from = 'scratch' # 'scratch' or 'resume'
-    use_hf = True # use the huggingface dataset version of our galz
+    use_hf = False # use the huggingface dataset version of our galz
     stream_hf_dataset = False # stream the galaxies from huggingface
     # data
     gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
@@ -77,8 +79,10 @@ if __name__ == "__main__":
     n_embd = 768
     n_chan = 1 # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
     dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
+    patch_size = 16
+    # NB dropout is NOT implemented for flex attention
     bias = False # do we use bias inside LayerNorm and Linear layers?
-    patch_size = 16 # size of image patches for ViT tokenisation
+    attn_type = "causal" # causal or prefix
     # adamw optimizer
     # we follow the same schedule here as Chinchilla
     learning_rate = 2e-4 # max learning rate
@@ -213,7 +217,7 @@ if __name__ == "__main__":
     best_val_loss = 1e9
     
     # model init
-    model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, n_chan=n_chan, block_size=block_size, dropout=dropout, patch_size=patch_size)
+    model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, n_chan=n_chan, block_size=block_size, dropout=dropout, patch_size=patch_size, attn_type=attn_type)
     
     if init_from == 'scratch':
         # init a new model from scratch
@@ -266,7 +270,10 @@ if __name__ == "__main__":
     model.to(device)
     
     # initialize a GradScaler. If enabled=False scaler is a no-op
-    scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
+    try: # initting gradscaler changed in Pytorch 2.5.1
+        scaler = torch.amp.GradScaler(enabled=(dtype == 'float16'))
+    except: # fallback to old scaler if we hit an error
+        scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
     
     # optimizer
     optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
@@ -282,6 +289,7 @@ if __name__ == "__main__":
     
     # wrap model into DDP container
     if ddp:
+        if master_process: print("Wrapping in DDP")
         model = DDP(model, device_ids=[ddp_local_rank])
     
     # helps estimate an arbitrarily accurate loss over either split using many batches
