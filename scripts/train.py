@@ -44,7 +44,7 @@ except:
     log_via_wandb = False
 try:
     from codecarbon import EmissionsTracker
-    log_emissions = True
+    log_emissions = False
 except:
     log_emissions = False
 
@@ -53,31 +53,31 @@ from astropt.local_datasets import GalaxyImageDataset
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
-    # default config values designed to test run a model on DESI
-    # look at config/astropt300m.py for a prod run example
-    out_dir = 'logs/test'
+    # default config values designed to test run a 70M parameter model on DESI imagery
+    # look at `config/astropt*.py` for a prod run example
+    out_dir = 'logs/astropt0070M'
     eval_interval = 1000
     log_interval = 100
     checkpoint_interval = 10000
     assert checkpoint_interval % eval_interval == 0
-    eval_iters = 10
+    eval_iters = 100
     eval_only = False # if True, script exits right after the first eval
-    always_save_checkpoint = True # if True, always save a checkpoint at each checkpoint_interval
+    always_save_checkpoint = False # if True, always save a checkpoint at each checkpoint_interval
     init_from = 'scratch' # 'scratch' or 'resume'
     use_hf = True # use the huggingface dataset version of our galz
     stream_hf_dataset = True # stream the galaxies from huggingface
     # data
     # used to simulate larger batch sizes, want this roughly as 5 * WORLD_SIZE:
-    # we assume world_size=1 as sane default:
-    gradient_accumulation_steps = 5 # * WORLD_SIZE
+    # we assume world_size=8 as sane default:
+    gradient_accumulation_steps = 5 * 8 # * WORLD_SIZE
     batch_size = 8 # if gradient_accumulation_steps > 1, this is the micro-batch size
     spiral = True # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     image_size = 512
-    num_workers = 64 
+    num_workers = 32#64 
     # astroPT model
-    n_layer = 26
-    n_head = 16
+    n_layer = 12
+    n_head = 12
     n_embd = 768
     n_chan = 3 # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
     dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
@@ -87,7 +87,7 @@ if __name__ == "__main__":
     attn_type = "causal" # causal or prefix
     # adamw optimizer
     # we follow the same schedule here as Chinchilla
-    learning_rate = 2e-4 # max learning rate
+    learning_rate = 6e-4 # max learning rate
     max_iters = 30000 # total number of training iterations for one pass over our dataset
     weight_decay = 1e-1
     beta1 = 0.9
@@ -377,8 +377,8 @@ if __name__ == "__main__":
     local_iter_num = 0 # number of iterations in the lifetime of this process
     raw_model = model.module if ddp else model # unwrap DDP container if needed
     running_mfu = -1.0
-    if log_emissions:
-        tracker = EmissionsTracker(output_dir=out_dir, log_level="error", save_to_file=True)
+    if log_emissions and master_process:
+        tracker = EmissionsTracker(output_dir=out_dir, log_level="error", save_to_file=True, on_csv_write="update")
         tracker.start()
     while True:
     
