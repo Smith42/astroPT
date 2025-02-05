@@ -48,8 +48,8 @@ try:
 except:
     log_emissions = False
 
-from model import GPTConfig, GPT
-from local_datasets import GalaxyImageDataset
+from astropt.model import GPTConfig, GPT
+from astropt.local_datasets import GalaxyImageDataset
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
