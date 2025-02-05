@@ -64,8 +64,8 @@ if __name__ == "__main__":
     eval_only = False # if True, script exits right after the first eval
     always_save_checkpoint = True # if True, always save a checkpoint at each checkpoint_interval
     init_from = 'scratch' # 'scratch' or 'resume'
-    use_hf = False # use the huggingface dataset version of our galz
-    stream_hf_dataset = False # stream the galaxies from huggingface
+    use_hf = True # use the huggingface dataset version of our galz
+    stream_hf_dataset = True # stream the galaxies from huggingface
     # data
     gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
     batch_size = 8 # if gradient_accumulation_steps > 1, this is the micro-batch size
@@ -105,7 +105,7 @@ if __name__ == "__main__":
     log_via_wandb = False
     # -----------------------------------------------------------------------------
     config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
-    exec(open('src/configurator.py').read()) # overrides from command line or config file
+    exec(open('src/astropt/configurator.py').read()) # overrides from command line or config file
     config = {k: globals()[k] for k in config_keys} # will be useful for logging
     # -----------------------------------------------------------------------------
     
