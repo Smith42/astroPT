@@ -27,10 +27,10 @@ You can install via pip from PyPI:
 pip install astropt
 ```
 
-Or if you install locally, you can get the dependencies via:
+Or if you install locally via a git clone, you can pip install via:
 
 ```bash
-pip install -r requirements.txt
+pip install -e .
 ```
 
 ## results
