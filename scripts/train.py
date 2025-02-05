@@ -67,17 +67,19 @@ if __name__ == "__main__":
     use_hf = True # use the huggingface dataset version of our galz
     stream_hf_dataset = True # stream the galaxies from huggingface
     # data
-    gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
+    # used to simulate larger batch sizes, want this roughly as 5 * WORLD_SIZE:
+    # we assume world_size=1 as sane default:
+    gradient_accumulation_steps = 5 # * WORLD_SIZE
     batch_size = 8 # if gradient_accumulation_steps > 1, this is the micro-batch size
     spiral = True # do we want to process the galaxy patches in spiral order?
     block_size = 1024
-    image_size = 224
+    image_size = 512
     num_workers = 64 
     # astroPT model
     n_layer = 26
     n_head = 16
     n_embd = 768
-    n_chan = 1 # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
+    n_chan = 3 # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
     dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
     patch_size = 16
     # NB dropout is NOT implemented for flex attention
@@ -145,8 +147,11 @@ if __name__ == "__main__":
 
     # dataset init
     def normalise(x):
+        # HF is in numpy format. Need to change that here if so:
+        if use_hf: x = torch.from_numpy(x).to(torch.float32)
         std, mean = torch.std_mean(x, dim=1, keepdim=True)
-        return (x - mean)/(std + 1e-8)
+        x_norm = (x - mean)/(std + 1e-8)
+        return x_norm.to(torch.float16)
     def data_transforms():
         transform = transforms.Compose([
             #transforms.Lambda(lambda x: x/255.),
@@ -303,6 +308,10 @@ if __name__ == "__main__":
                 B = next(dl)
                 X = B["X"].to(device)
                 Y = B["Y"].to(device)
+                if torch.isnan(Y).any():
+                    print(Y)
+                if torch.isnan(X).any():
+                    print(X)
                 with ctx:
                     logits, loss = model(X, Y)
                 losses[k] = loss.item()
@@ -461,7 +470,7 @@ if __name__ == "__main__":
                 wandb.log({"loss": lossf, "time": dt})
             if log_emissions:
                 emissions: float = tracker.flush()
-                print(f"iter {iter_num}: loss {lossf:.6f}, time {np.mean(dts)*1000:.2f}ms, mfu {running_mfu*100:.2f}%, co2 {emissions:.1f}kg")
+                print(f"iter {iter_num}: loss {lossf:.6f}, time {np.mean(dts)*1000:.2f}ms, mfu {running_mfu*100:.2f}%, tot co2 {emissions:.1f}kg")
             else:
                 print(f"iter {iter_num}: loss {lossf:.6f}, time {np.mean(dts)*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
             dts = []
