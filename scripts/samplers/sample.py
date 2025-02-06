@@ -9,9 +9,9 @@ import tiktoken
 from tqdm import tqdm, trange
 import matplotlib.pyplot as plt
 import numpy as np
-from model import GPTConfig, GPT
+from astropt.model import GPTConfig, GPT
 from datasets import load_dataset
-from train import GalaxyImageDataset
+from astropt.local_datasets import GalaxyImageDataset
 from torchvision import transforms
 import functools
 import einops
@@ -28,7 +28,7 @@ seed = 1337
 device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1', etc.
 dtype = 'bfloat16' # 'float32' or 'bfloat16' or 'float16'
 compile = False # use PyTorch 2.0 to compile the model to be faster
-exec(open('src/configurator.py').read()) # overrides from command line or config file
+exec(open('src/astropt/configurator.py').read()) # overrides from command line or config file
 # -----------------------------------------------------------------------------
 
 torch.manual_seed(seed)

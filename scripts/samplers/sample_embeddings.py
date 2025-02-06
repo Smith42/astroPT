@@ -1,5 +1,5 @@
 """
-Sample from a trained astropt model for Euclid data
+Sample from a trained astropt model
 """
 import os
 import pickle
@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from model import GPTConfig, GPT
 from datasets import load_dataset, concatenate_datasets 
-from train import GalaxyImageDataset
+from astropt.local_datasets import GalaxyImageDataset
 from torchvision import transforms
 from torchvision.transforms import ToTensor
 import functools
@@ -20,7 +20,7 @@ import pandas as pd
 
 # -----------------------------------------------------------------------------
 init_from = 'resume'
-out_dir = 'logs/astropt090M_euclid/' # ignored if init_from is not 'resume'
+out_dir = 'logs/spiralized_astropt_300M' # ignored if init_from is not 'resume'
 refresh_cache = False # resample the embeddings
 batch_size = 256
 seed = 1337
@@ -29,7 +29,7 @@ patch_size = 16 # size of image patches for ViT tokenisation
 device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1', etc.
 dtype = 'bfloat16' # 'float32' or 'bfloat16' or 'float16'
 compile = False # use PyTorch 2.0 to compile the model to be faster
-exec(open('src/configurator.py').read()) # overrides from command line or config file
+exec(open('src/astropt/configurator.py').read()) # overrides from command line or config file
 # -----------------------------------------------------------------------------
 
 torch.manual_seed(seed)
@@ -43,7 +43,7 @@ ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=
 # model
 if init_from == 'resume':
     # init from a model saved in a specific directory
-    ckpt_path = os.path.join(out_dir, '002500_ckpt.pt')
+    ckpt_path = os.path.join(out_dir, '030000_ckpt.pt')
     checkpoint = torch.load(ckpt_path, map_location=device)
     # TODO remove this for latest models
     gptconf = GPTConfig(**checkpoint['model_args'])
@@ -60,7 +60,7 @@ model.to(device)
 if compile:
     model = torch.compile(model) # requires PyTorch 2.0 (optional)
 
-# set up Euclid galaxies in test set to be processed
+# set up HF galaxies in test set to be processed
 def normalise(x):
     std, mean = torch.std_mean(x, dim=1, keepdim=True)
     return (x - mean)/(std + 1e-8)
@@ -69,42 +69,40 @@ def data_transforms():
         transforms.Lambda(normalise),
     ])
     return transform
-ds = GalaxyImageDataset(
-    paths='test.txt',
-    spiral=spiral, 
-    transform=data_transforms(), 
-    patch_size=patch_size,
-    stochastic=False,
-)
+def _process_galaxy_wrapper(gal, func):
+    gal = ToTensor()(gal["image"]).to(torch.float16)
+    patch_galaxy = func(gal)
+    return {"image": patch_galaxy}
+galproc = GalaxyImageDataset(None, spiral=True, transform=data_transforms())
+ds = concatenate_datasets(( 
+    load_dataset("Smith42/galaxies", split="test", streaming=True),
+    load_dataset("Smith42/galaxies", split="validation", streaming=True),
+))
+ds = ds.map(
+    functools.partial(_process_galaxy_wrapper, func=galproc.process_galaxy)
+).with_format("torch")
 dl = iter(DataLoader(
-    ds,
-    batch_size=batch_size,
-    num_workers=8,
-    pin_memory=True,
+    ds, batch_size=batch_size, num_workers=2,
 ))
 
 n_tokens = 64
 norm = "mean"
 if (not (
         os.path.isfile(os.path.join(out_dir, f"zss_{n_tokens}t_{norm}.npy")) and 
-        os.path.isfile(os.path.join(out_dir, f"idxs_{n_tokens}t_{norm}.npy")))
-   ) or refresh_cache:
+        os.path.isfile(os.path.join(out_dir, f"idss_{n_tokens}t_{norm}.npy")) and
+        os.path.isfile(os.path.join(out_dir, "metadata_processed.parquet"))
+   )) or refresh_cache:
     # run generation
     xss = []
     zss = []
     idxs = []
     with torch.no_grad():
         with ctx:
-            tt = tqdm(unit="galz", total=len(ds), unit_scale=True)
+            tt = tqdm(unit="galz", unit_scale=True)
             for B in dl:
-                if n_tokens == "all":
-                    prefix_len = B["X"].shape[1]
-                else:
-                    prefix_len = n_tokens
-                # flex attention does not yet work with variable inputs so error on compiled flex attention
-                # see https://github.com/pytorch/pytorch/issues/139064
-                xs = B["X"][:, :prefix_len]
-                idx = B["idx"]
+                prefix_len = 64
+                xs = B["image"][:, :prefix_len]
+                idx = B["dr8_id"]
                 if model.config.attn_type == "prefix":
                     # forward and backward attention over whole image if pretrained with prefix attention
                     zs = model.generate_embeddings(xs.to(device), prefix_len=prefix_len)
@@ -124,8 +122,15 @@ if (not (
     idxs = np.concatenate(idxs, axis=0)
     np.save(os.path.join(out_dir, f"zss_{n_tokens}t_{norm}.npy"), zss)
     np.save(os.path.join(out_dir, f"idxs_{n_tokens}t_{norm}.npy"), idxs)
+
+    print("processing metadata file")
+    metadata = pd.read_parquet("/raid/data/metadata.parquet")
+    metadata = metadata.set_index(["dr8_id"])
+    metadata = metadata.loc[list(idxs)]
+    metadata.to_parquet(os.path.join(out_dir, "metadata_processed.parquet"))
 else:
     print("loading from cache")
+    metadata = pd.read_parquet(os.path.join(out_dir, "metadata_processed.parquet"))
     zss = np.load(os.path.join(out_dir, f"zss_{n_tokens}t_{norm}.npy"))
     #xss = np.load(os.path.join(out_dir, f"xss_{n_tokens}t.npy"))
     idxs = np.load(os.path.join(out_dir, f"idxs_{n_tokens}t_{norm}.npy"))
