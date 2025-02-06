@@ -165,6 +165,29 @@ class Block(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return x
 
+class KSparseLayer(nn.Module):
+    """Implements k-sparsity with overcomplete representation"""
+
+    def __init__(self, config):
+        super().__init__()
+        self.k = int(self.hidden_dim * config.k_ratio)  # Number of activations to keep
+        # Linear projections with overcomplete middle layer
+        self.to_overcomplete = nn.Linear(config.n_embd, 4 * config.n_embed, bias=config.bias)
+        self.from_overcomplete = nn.Linear(4 * config.n_embed, config.n_embd, bias=config.bias)
+        # Layer norm for numerical stability
+        self.norm = LayerNorm(self.hidden_dim, bias=config.bias)
+ 
+    def forward(self, x):
+        # Project to overcomplete space and normalize
+        h = self.norm(self.to_overcomplete(x))
+
+        # Get top k activations in overcomplete space
+        values, indices = torch.topk(h, self.k, dim=-1)
+        mask = torch.zeros_like(h).scatter_(-1, indices, 1.0)
+
+        # Apply mask and project back to original space
+        return self.from_overcomplete(h * mask)
+
 @dataclass
 class GPTConfig:
     block_size: int = 1024
@@ -175,6 +198,7 @@ class GPTConfig:
     dropout: float = 0.0
     patch_size: int = 16
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    k_ratio: float = 0.05 # Number of sparse ks to keep. If k_ratio == 0 disable sparsity.
     attn_type: str = "causal" # causal or prefix
 
 class GPT(nn.Module):
@@ -183,6 +207,10 @@ class GPT(nn.Module):
         super().__init__()
         assert config.block_size is not None
         self.config = config
+
+        # Split transformer blocks into pre and post sparse sections
+        n_pre = config.n_layer // 2
+        n_post = config.n_layer - n_pre
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Sequential(
@@ -193,9 +221,14 @@ class GPT(nn.Module):
             ),
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            pre_blocks = nn.ModuleList([Block(config) for _ in range(n_pre)]),
+            post_blocks = nn.ModuleList([Block(config) for _ in range(n_post)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
+
+        # Add central sparse layer
+        self.sparse = KSparseLayer(config) if config.k_ratio > 0 else nn.Identity()
+        
         self.lm_head = nn.Sequential(
             nn.Linear(config.n_embd, config.n_embd*2),
             nn.ReLU(),
@@ -261,7 +294,10 @@ class GPT(nn.Module):
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
-        for block in self.transformer.h:
+        for block in self.transformer.pre_blocks:
+            x = block(x, block_mask=block_mask)
+        x = self.sparse(x)  # Central sparse layer
+        for block in self.transformer.post_blocks:
             x = block(x, block_mask=block_mask)
         x = self.transformer.ln_f(x)
 
