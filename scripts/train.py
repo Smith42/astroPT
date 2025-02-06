@@ -173,8 +173,11 @@ if __name__ == "__main__":
             """ Lazily remove galaxies that are borked """
             try:
                 gal = PIL.Image.open(io.BytesIO(galdict["image"]["bytes"]))
+                # Force full image load to catch truncation errors
+                gal.load()
                 return True
-            except:
+            except Exception as e:
+                print(f"Filtering out corrupted image: {e}")
                 return False
         def process_galaxy_wrapper(galdict, func):
             gal = PIL.Image.open(io.BytesIO(galdict["image"]["bytes"]))
