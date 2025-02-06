@@ -170,10 +170,10 @@ class KSparseLayer(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.k = int(self.hidden_dim * config.k_ratio)  # Number of activations to keep
+        self.k = int(config.n_embed * config.k_ratio)  # Number of activations to keep
         # Linear projections with overcomplete middle layer
-        self.to_overcomplete = nn.Linear(config.n_embd, 4 * config.n_embed, bias=config.bias)
-        self.from_overcomplete = nn.Linear(4 * config.n_embed, config.n_embd, bias=config.bias)
+        self.to_overcomplete = nn.Linear(config.n_embed, 4 * config.n_embed, bias=config.bias)
+        self.from_overcomplete = nn.Linear(4 * config.n_embed, config.n_embed, bias=config.bias)
         # Layer norm for numerical stability
         self.norm = LayerNorm(self.hidden_dim, bias=config.bias)
  
