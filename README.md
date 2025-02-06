@@ -49,7 +49,7 @@ and define a patch as a 16 by 16 pixel square, and feed the galaxy patches
 in a spiral order:
 
 <p align="center">
-    <img src="https://github.com/Smith42/astroPT/raw/main/explore/galaxy.png" alt="galaxy" width="128"/>
+    <img src="https://github.com/Smith42/astroPT/raw/main/scripts/scaling/galaxy.png" alt="galaxy" width="128"/>
 </p>
 
 The trained model results are promising -- below we show our full training run
@@ -57,7 +57,7 @@ validation losses across a parameter sweep of `{1,5,12,21,89,309,830,2100}M`
 trainable parameters:
 
 <p align="center">
-    <img src="https://github.com/Smith42/astroPT/raw/main/explore/scaling_xkcd.png" alt="scaling" width="512"/>
+    <img src="https://github.com/Smith42/astroPT/raw/main/scripts/scaling/scaling_xkcd.png" alt="scaling" width="512"/>
 </p>
 
 We also test our astroPT models on some scientifically-useful downstream tasks by
@@ -65,7 +65,7 @@ taking the models' penultimate layer outputs and finetuning linear probes to
 predict emergent physical properties of the galaxies:
 
 <p align="center">
-    <img src="https://github.com/Smith42/astroPT/raw/main/explore/downstream_xkcd.png" alt="downstream" width="512"/>
+    <img src="https://github.com/Smith42/astroPT/raw/main/scripts/scaling/downstream_xkcd.png" alt="downstream" width="512"/>
 </p>
 
 In the above pic, $M_g$ and $M_z$ are the absolute magnitudes (or brightness at
@@ -87,7 +87,7 @@ learnt some knowledge about physics simply from our next-token prediction
 pretraining task!
 
 <p align="center">
-    <img src="https://github.com/Smith42/astroPT/raw/main/explore/hexbin_xkcd.png" alt="hexbin" width="512"/>
+    <img src="https://github.com/Smith42/astroPT/raw/main/scripts/scaling/hexbin_xkcd.png" alt="hexbin" width="512"/>
 </p>
 
 ## pretrained weights, and full galaxy dataset
