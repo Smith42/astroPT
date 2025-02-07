@@ -77,6 +77,18 @@ class GalaxyImageDataset(Dataset):
         antispiraled = [galaxy[ii] for ii in indices]
         return torch.stack(antispiraled) if isinstance(antispiraled[0], torch.Tensor) else np.stack(antispiraled)
 
+    def surprisal_patch(self, galaxy):
+        """
+        Implement a 'surprisal patching' on a stream of data.
+        """
+        galaxy = einops.rearrange(
+            galaxy, 
+            '(h w) (p1 p2 c) -> (h w p1) (p2 c)', 
+            p1=self.patch_size, p2=self.patch_size, 
+            h=self.image_size//self.patch_size, 
+            w=self.image_size//self.patch_size
+        )
+
     def process_galaxy(self, raw_galaxy):
         patch_galaxy = einops.rearrange(
             raw_galaxy,
@@ -88,6 +100,8 @@ class GalaxyImageDataset(Dataset):
             patch_galaxy = self.transform(patch_galaxy)
         if self.spiral:
             patch_galaxy = self.spiralise(patch_galaxy)
+        if self.surprisal_patching:
+            patch_galaxy = self.surprisal_patch(patch_galaxy)
 
         return patch_galaxy
 
