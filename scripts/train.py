@@ -85,6 +85,7 @@ if __name__ == "__main__":
     # NB dropout is NOT implemented for flex attention
     bias = False # do we use bias inside LayerNorm and Linear layers?
     attn_type = "causal" # causal or prefix
+    k_ratio = 0 # enforced sparsity as fraction 0 for off
     # adamw optimizer
     # we follow the same schedule here as Chinchilla
     learning_rate = 6e-4 # max learning rate
@@ -105,6 +106,7 @@ if __name__ == "__main__":
     dtype = 'bfloat16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
     compile = True # use PyTorch 2.0 to compile the model to be faster
     log_via_wandb = False
+    project_name = out_dir.split('/')[-1]
     # -----------------------------------------------------------------------------
     config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
     exec(open('src/astropt/configurator.py').read()) # overrides from command line or config file
@@ -225,7 +227,7 @@ if __name__ == "__main__":
     best_val_loss = 1e9
     
     # model init
-    model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, n_chan=n_chan, block_size=block_size, dropout=dropout, patch_size=patch_size, attn_type=attn_type)
+    model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, n_chan=n_chan, block_size=block_size, dropout=dropout, patch_size=patch_size, attn_type=attn_type, k_ratio=k_ratio)
     
     if init_from == 'scratch':
         # init a new model from scratch
@@ -261,7 +263,7 @@ if __name__ == "__main__":
     # this is here so we can get the number of params from model()
     if log_via_wandb and master_process:
         wandb.init(
-            project = f"AstroPT-{model.get_num_params()/1e6:06.1f}M",
+            project = project_name,
             config = config,
         )
     # write config and important information to log file
