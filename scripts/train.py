@@ -82,6 +82,7 @@ if __name__ == "__main__":
     n_chan = 3 # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
     dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
     patch_size = 16
+    surprisal_patching = False
     # NB dropout is NOT implemented for flex attention
     bias = False # do we use bias inside LayerNorm and Linear layers?
     attn_type = "causal" # causal or prefix
@@ -160,10 +161,16 @@ if __name__ == "__main__":
         return transform
     # training dataset and dataloader
     tpaths = None if use_hf else "./train.txt"
-    tds = GalaxyImageDataset(tpaths, spiral=spiral, transform=data_transforms(), patch_size=patch_size)
+    tds = GalaxyImageDataset(
+        tpaths, spiral=spiral, transform=data_transforms(), 
+        patch_size=patch_size, surprisal_patching=surprisal_patching
+    )
     # validation dataset and dataloader
     vpaths = None if use_hf else "./test.txt"
-    vds = GalaxyImageDataset(vpaths, spiral=spiral, transform=data_transforms(), patch_size=patch_size)
+    vds = GalaxyImageDataset(
+        vpaths, spiral=spiral, transform=data_transforms(), 
+        patch_size=patch_size, surprisal_patching=surprisal_patching
+    )
 
     if use_hf:
         from datasets import load_dataset, Image

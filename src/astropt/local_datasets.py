@@ -9,10 +9,14 @@ import sys
 from torch.utils.data import Dataset
 from torchvision import io
 from astropy.io import fits
+import matplotlib.pyplot as plt
 
 class GalaxyImageDataset(Dataset):
 
-    def __init__(self, paths=None, transform=None, stochastic=True, spiral=False, patch_size=16):
+    def __init__(
+            self, paths=None, transform=None, stochastic=True, spiral=False, 
+            patch_size=16, surprisal_patching=False
+        ):
         """
         Arguments:
             paths: file with all the galaxy paths. Paths can be None if streaming from HF.
@@ -26,6 +30,8 @@ class GalaxyImageDataset(Dataset):
         self.patch_size = patch_size
         self.stochastic = stochastic
         self.spiral = spiral
+        self.surprisal_patching = surprisal_patching
+        self.image_size = 512
 
     def __len__(self):
         # set to a big number if stochastic as a fudge for epochism in pytorch
@@ -81,6 +87,11 @@ class GalaxyImageDataset(Dataset):
         """
         Implement a 'surprisal patching' on a stream of data.
         """
+        def _rolling_z(values, new_value):
+            mean = np.mean(values)
+            std = np.std(values)
+            return (new_value - mean) / std if std > 0 else 0
+
         galaxy = einops.rearrange(
             galaxy, 
             '(h w) (p1 p2 c) -> (h w p1) (p2 c)', 
@@ -89,6 +100,40 @@ class GalaxyImageDataset(Dataset):
             w=self.image_size//self.patch_size
         )
 
+        # Settings
+        window = self.patch_size * 4
+        rel_threshold = 1.0
+        patch_starts = [0]  # Always start first patch at 0
+        prev_z = 0
+    
+        z_scores = []
+        rel_scores = []
+        # For each value, is it surprising compared to previous window?
+        for i in range(2, len(galaxy)):
+            window_size = min(i, window)
+            recent = galaxy[i-window_size:i]
+            z_score = np.mean((galaxy[i] - np.mean(recent)) / (np.std(recent) + 1e-5))
+            if np.abs(z_score - prev_z) > rel_threshold:
+                patch_starts.append(i)
+            
+            z_scores.append(z_score)
+            rel_scores.append(z_score - prev_z)
+            prev_z = z_score
+    
+        #return patch_starts
+        f, axs = plt.subplots(2, 1, sharex=True, figsize=(32, 4))
+        axs[0].imshow(galaxy[:1600].T, aspect='auto')
+        for start in patch_starts:
+            axs[0].axvline(x=start, color='r', alpha=0.3)
+            axs[1].axvline(x=start, color='r', alpha=0.3)
+        axs[0].set_xlim(0, 1600)
+        axs[1].set_ylim(-5, 5)
+        axs[1].plot(z_scores)
+        axs[1].plot(rel_scores)
+        plt.savefig("/beegfs/general/mjsmith/tmp/surprisal_patching.png", dpi=300)
+        print(patch_starts)
+        exit(0)
+
     def process_galaxy(self, raw_galaxy):
         patch_galaxy = einops.rearrange(
             raw_galaxy,
@@ -96,12 +141,12 @@ class GalaxyImageDataset(Dataset):
             p1=self.patch_size, p2=self.patch_size
         )
 
-        if self.transform:
-            patch_galaxy = self.transform(patch_galaxy)
         if self.spiral:
             patch_galaxy = self.spiralise(patch_galaxy)
         if self.surprisal_patching:
             patch_galaxy = self.surprisal_patch(patch_galaxy)
+        if self.transform:
+            patch_galaxy = self.transform(patch_galaxy)
 
         return patch_galaxy
 
