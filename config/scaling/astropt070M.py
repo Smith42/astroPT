@@ -1,5 +1,5 @@
-# this file will train a ~400m parameter model with the same hyperparams as
-# EleutherAI's Pythia-410M (https://arxiv.org/abs/2304.01373)
+# this file will train a ~70m parameter model with the same hyperparams as
+# EleutherAI's Pythia-70M (https://arxiv.org/abs/2304.01373)
 #
 # launch as the following (e.g. in a tmux session) and wait ~5 days:
 # $ OMP_NUM_THREADS=32 torchrun --standalone --nproc_per_node=8 src/train.py config/astropt300m.py
@@ -7,13 +7,13 @@
 # don't forget to $(mkdir logs) !
 
 # params
-n_layer=24
-n_head=16
-n_embd=1024
-block_size=4096
+n_layer=12
+n_head=12
+n_embd=768
+block_size=1024
 
-# here we follow chinchilla
-learning_rate = 3e-4 # max learning rate
+# here we follow chinchilla and pythia
+learning_rate = 6e-4 # max learning rate
 min_lr = learning_rate/10 
 
 # these make the total batch size be ~0.328M
@@ -22,8 +22,6 @@ min_lr = learning_rate/10
 init_from = "scratch"
 batch_size = 8
 gradient_accumulation_steps = 5 * 8
-patch_size=8
-num_workers=32
 
 # this makes total number of tokens be 8.5B (one epoch of GZ DESI)
 max_iters = 30000
@@ -34,5 +32,4 @@ eval_interval = 1000
 checkpoint_interval = 5000
 eval_iters = 200
 log_interval = 100
-log_via_wandb=True
-out_dir ='logs/astropt300M'
+out_dir ='logs/9B_tokens/astropt070m'
