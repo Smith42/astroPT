@@ -182,6 +182,10 @@ class KSparseLayer(nn.Module):
         h = self.norm(self.to_overcomplete(x))
         # Get top k activations in overcomplete space
         values, indices = torch.topk(h, self.k, dim=-1)
+        # Reshape indices and values for embedding_bag
+        batch_size, seq_len, _ = indices.shape
+        indices = indices.reshape(batch_size * seq_len, self.k)
+        values = values.reshape(batch_size * seq_len, self.k)
         # Use embedding_bag for efficient sparse decoding
         # (see https://x.com/norabelrose/status/1887585218145755581)
         decoded = F.embedding_bag(
@@ -189,7 +193,7 @@ class KSparseLayer(nn.Module):
             self.from_overcomplete.weight.t(),  # Transpose weight matrix to match expected shape
             per_sample_weights=values,
             mode="sum"
-        )
+        ).reshape(batch_size, seq_len, -1)
         return decoded
 
 @dataclass
