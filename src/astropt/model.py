@@ -166,27 +166,31 @@ class Block(nn.Module):
         return x
 
 class KSparseLayer(nn.Module):
-    """Implements k-sparsity with overcomplete representation"""
+    """Implements k-sparsity with overcomplete representation using embedding_bag for efficient decoding"""
 
     def __init__(self, config):
         super().__init__()
-        self.k = int(config.n_embed * config.k_ratio)  # Number of activations to keep
+        self.k = int(config.n_embd * config.k_ratio)  # Number of activations to keep
         # Linear projections with overcomplete middle layer
-        self.to_overcomplete = nn.Linear(config.n_embed, 4 * config.n_embed, bias=config.bias)
-        self.from_overcomplete = nn.Linear(4 * config.n_embed, config.n_embed, bias=config.bias)
+        self.to_overcomplete = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
+        self.from_overcomplete = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
         # Layer norm for numerical stability
-        self.norm = LayerNorm(self.hidden_dim, bias=config.bias)
+        self.norm = LayerNorm(4 * config.n_embd, bias=config.bias)
  
     def forward(self, x):
         # Project to overcomplete space and normalize
         h = self.norm(self.to_overcomplete(x))
-
         # Get top k activations in overcomplete space
         values, indices = torch.topk(h, self.k, dim=-1)
-        mask = torch.zeros_like(h).scatter_(-1, indices, 1.0)
-
-        # Apply mask and project back to original space
-        return self.from_overcomplete(h * mask)
+        # Use embedding_bag for efficient sparse decoding
+        # (see https://x.com/norabelrose/status/1887585218145755581)
+        decoded = F.embedding_bag(
+            indices, 
+            self.from_overcomplete.weight.t(),  # Transpose weight matrix to match expected shape
+            per_sample_weights=values,
+            mode="sum"
+        )
+        return decoded
 
 @dataclass
 class GPTConfig:
