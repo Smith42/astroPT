@@ -51,6 +51,66 @@ except:
 from astropt.model import GPTConfig, GPT
 from astropt.local_datasets import GalaxyImageDataset
 
+def log_sparse_activations(model, iter_num):
+    """Log sparse layer activation statistics to wandb"""
+    if k_ratio == 0:
+        return
+
+    # Get the raw model if using DDP
+    if hasattr(model, 'module'):
+        raw_model = model.module
+    else:
+        raw_model = model
+
+    # Get top activations
+    values, indices = raw_model.sparse.get_top_activations(k=10)
+    
+    # Create activation frequency plot
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.bar(indices.cpu().numpy(), values.cpu().numpy())
+    ax.set_title('Top 10 Most Common Sparse Layer Activations')
+    ax.set_xlabel('Activation Index')
+    ax.set_ylabel('Activation Count')
+    
+    # Log the plot
+    wandb.log({
+        'activation_frequencies': wandb.Image(fig),
+        'iteration': iter_num
+    })
+    plt.close(fig)
+    
+    # For each top activation, show example inputs that triggered it
+    for i, idx in enumerate(indices[:5]):  # Only show top 5 to keep the log size reasonable
+        example_inputs = raw_model.sparse.get_example_inputs(idx.item())
+        if len(example_inputs) == 0:
+            continue
+            
+        # Create a figure showing up to 4 example inputs
+        fig, axes = plt.subplots(1, min(4, len(example_inputs)), figsize=(12, 3))
+        if len(example_inputs) == 1:
+            axes = [axes]  # Make iterable for single image case
+            
+        for j, (ax, input_tensor) in enumerate(zip(axes, example_inputs[:4])):
+            # Convert patch sequence back to image
+            img = vds.antispiralise(input_tensor) if spiral else input_tensor
+            img = einops.rearrange(
+                img, 
+                '(h w) (p1 p2 c) -> (h p1) (w p2) c', 
+                p1=patch_size, p2=patch_size,
+                h=image_size//patch_size, w=image_size//patch_size
+            )
+            ax.imshow(img.cpu().numpy())
+            ax.axis('off')
+            
+        fig.suptitle(f'Example Inputs for Activation {idx.item()}')
+        
+        # Log the examples
+        wandb.log({
+            f'activation_{idx.item()}_examples': wandb.Image(fig),
+            'iteration': iter_num
+        })
+        plt.close(fig)
+
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a 70M parameter model on DESI imagery
@@ -344,6 +404,7 @@ if __name__ == "__main__":
             P = einops.rearrange(P, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=image_size//patch_size, w=image_size//patch_size)
             if log_via_wandb:
                 wandb.log({"Y": wandb.Image(Y.swapaxes(1, -1)), "P": wandb.Image(P.swapaxes(1, -1))})
+                log_sparse_activations(model, iter_num)
 
             for ax, p, y in zip(axs.T, P.to(float).cpu().numpy(), Y.cpu().numpy()):
                 ax[0].imshow(np.clip(y, 0, 1))

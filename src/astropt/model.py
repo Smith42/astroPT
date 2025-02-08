@@ -176,12 +176,44 @@ class KSparseLayer(nn.Module):
         self.from_overcomplete = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
         # Layer norm for numerical stability
         self.norm = LayerNorm(4 * config.n_embd, bias=config.bias)
+
+        # For tracking activations
+        self.register_buffer('activation_counts', torch.zeros(4 * config.n_embd))
+        self.register_buffer('recent_inputs', torch.zeros(8, config.block_size, config.patch_size*config.patch_size*config.n_chan))
+        self.register_buffer('activation_indices', torch.zeros(8, dtype=torch.long))
+        self.input_ptr = 0
+
+    def get_top_activations(self, k=10):
+        """Returns the indices of the k most common activations"""
+        return torch.topk(self.activation_counts, k)
+    
+    def get_example_inputs(self, feature_idx):
+        """Returns stored inputs that strongly activated a given feature"""
+        matches = (self.activation_indices == feature_idx)
+        return self.recent_inputs[matches]
  
-    def forward(self, x):
+    def forward(self, x, img=None):
         # Project to overcomplete space and normalize
         h = self.norm(self.to_overcomplete(x))
         # Get top k activations in overcomplete space
         values, indices = torch.topk(h, self.k, dim=-1)
+        # Update activation statistics
+        if self.training and img is not None:
+            # Count which features are being activated
+            batch_indices = indices.reshape(-1)
+            unique_indices, counts = torch.unique(batch_indices, return_counts=True)
+            self.activation_counts[unique_indices] += counts.float()
+            # Store recent inputs that strongly activated each feature
+            batch_size = img.size(0)
+            for b in range(batch_size):
+                # Get the most strongly activated feature for this input
+                strongest_activation = indices[b, 0, 0]  # Take first occurrence
+                # Store the input that caused this activation
+                # We need to add a zero block to make the galaxy square
+                zero_block = torch.zeros((1, img.size(-1)), device=img.device)
+                self.recent_inputs[self.input_ptr] = torch.cat((zero_block, img[b].detach()), dim=0)
+                self.activation_indices[self.input_ptr] = strongest_activation
+                self.input_ptr = (self.input_ptr + 1) % 8
         # Reshape indices and values for embedding_bag
         batch_size, seq_len, _ = indices.shape
         indices = indices.reshape(batch_size * seq_len, self.k)
@@ -304,7 +336,7 @@ class GPT(nn.Module):
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.pre_blocks:
             x = block(x, block_mask=block_mask)
-        x = self.sparse(x)  # Central sparse layer
+        x = self.sparse(x, img=idx)  # Central sparse layer
         for block in self.transformer.post_blocks:
             x = block(x, block_mask=block_mask)
         x = self.transformer.ln_f(x)
