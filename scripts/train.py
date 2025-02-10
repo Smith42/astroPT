@@ -51,7 +51,7 @@ except:
 from astropt.model import GPTConfig, GPT
 from astropt.local_datasets import GalaxyImageDataset
 
-def log_sparse_activations(model, iter_num):
+def log_sparse_activations(model, iter_num, image_size):
     """Log sparse layer activation statistics to wandb"""
     if k_ratio == 0:
         return
@@ -291,7 +291,7 @@ if __name__ == "__main__":
     best_val_loss = 1e9
     
     # model init
-    model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, n_chan=n_chan, block_size=block_size, dropout=dropout, patch_size=patch_size, attn_type=attn_type, k_ratio=k_ratio)
+    model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, n_chan=n_chan, block_size=block_size, dropout=dropout, patch_size=patch_size, attn_type=attn_type, k_ratio=k_ratio, image_size=image_size)
     
     if init_from == 'scratch':
         # init a new model from scratch
@@ -408,7 +408,7 @@ if __name__ == "__main__":
             P = einops.rearrange(P, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=patch_size, p2=patch_size, h=image_size//patch_size, w=image_size//patch_size)
             if log_via_wandb:
                 wandb.log({"Y": wandb.Image(Y.swapaxes(1, -1)), "P": wandb.Image(P.swapaxes(1, -1))})
-                log_sparse_activations(model, iter_num)
+                log_sparse_activations(model, iter_num, image_size)
 
             for ax, p, y in zip(axs.T, P.to(float).cpu().numpy(), Y.cpu().numpy()):
                 ax[0].imshow(np.clip(y, 0, 1))

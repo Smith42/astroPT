@@ -180,7 +180,7 @@ class KSparseLayer(nn.Module):
         # For tracking activations
         self.buffer_size = 1024
         self.register_buffer('activation_counts', torch.zeros(4 * config.n_embd))
-        self.register_buffer('recent_inputs', torch.zeros(self.buffer_size, config.n_chan, 256, 256))
+        self.register_buffer('recent_inputs', torch.zeros(self.buffer_size, config.n_chan, config.image_size, config.image_size))
         self.register_buffer('activation_indices', torch.zeros(self.buffer_size, dtype=torch.long) - 1)
         self.register_buffer('activation_values', torch.zeros(self.buffer_size))
         self.input_ptr = 0
@@ -256,6 +256,7 @@ class GPTConfig:
     patch_size: int = 16
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     k_ratio: float = 0.05 # Number of sparse ks to keep. If k_ratio == 0 disable sparsity.
+    image_size: int = 512 # Size of an image used during training.
     attn_type: str = "causal" # causal or prefix
 
 class GPT(nn.Module):
