@@ -113,7 +113,9 @@ if __name__ == "__main__":
     eval_only = False # if True, script exits right after the first eval
     always_save_checkpoint = False # if True, always save a checkpoint at each checkpoint_interval
     init_from = 'scratch' # 'scratch' or 'resume'
-    use_hf = True # use the huggingface dataset version of our galz
+    # can be None (loads a local dataset), or a HF URL such as: 
+    # (Smith42/galaxies, matthieulel/galaxy10_decals)
+    hf_url = "matthieulel/galaxy10_decals" 
     stream_hf_dataset = True # stream the galaxies from huggingface
     # data
     # used to simulate larger batch sizes, want this roughly as 5 * WORLD_SIZE:
@@ -130,7 +132,7 @@ if __name__ == "__main__":
     n_embd = 768
     n_chan = 3 # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
     dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
-    patch_size = 16
+    patch_size = 8 
     # NB dropout is NOT implemented for flex attention
     bias = False # do we use bias inside LayerNorm and Linear layers?
     attn_type = "causal" # causal or prefix
@@ -155,12 +157,12 @@ if __name__ == "__main__":
     dtype = 'bfloat16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
     compile = True # use PyTorch 2.0 to compile the model to be faster
     log_via_wandb = False
-    project_name = out_dir.split('/')[-1]
     # -----------------------------------------------------------------------------
     config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
     exec(open('src/astropt/configurator.py').read()) # overrides from command line or config file
     config = {k: globals()[k] for k in config_keys} # will be useful for logging
     # -----------------------------------------------------------------------------
+    project_name = out_dir.split('/')[-1] # project name for wandb
     
     # various inits, derived attributes, I/O setup
     ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -199,7 +201,7 @@ if __name__ == "__main__":
     # dataset init
     def normalise(x):
         # HF is in numpy format. Need to change that here if so:
-        if use_hf: x = torch.from_numpy(x).to(torch.float32)
+        if hf_url is not None: x = torch.from_numpy(x).to(torch.float32)
         std, mean = torch.std_mean(x, dim=1, keepdim=True)
         x_norm = (x - mean)/(std + 1e-8)
         return x_norm.to(torch.float16)
@@ -210,13 +212,13 @@ if __name__ == "__main__":
         ])
         return transform
     # training dataset and dataloader
-    tpaths = None if use_hf else "./train.txt"
+    tpaths = None if hf_url is not None else "./train.txt"
     tds = GalaxyImageDataset(tpaths, spiral=spiral, transform=data_transforms(), patch_size=patch_size)
     # validation dataset and dataloader
-    vpaths = None if use_hf else "./test.txt"
+    vpaths = None if hf_url is not None else "./test.txt"
     vds = GalaxyImageDataset(vpaths, spiral=spiral, transform=data_transforms(), patch_size=patch_size)
 
-    if use_hf:
+    if hf_url is not None:
         from datasets import load_dataset, Image
         import io
 
@@ -231,45 +233,58 @@ if __name__ == "__main__":
                 print(f"Filtering out corrupted image: {e}")
                 return False
         def process_galaxy_wrapper(galdict, func):
-            gal = PIL.Image.open(io.BytesIO(galdict["image"]["bytes"]))
-            patch_galaxy = func(np.array(gal).swapaxes(0, 2))
-            return { "X": patch_galaxy[:-1], "Y": patch_galaxy[1:], }
+            gal = np.array(
+                PIL.Image.open(io.BytesIO(galdict["image"]["bytes"]))
+            ).swapaxes(0, 2)
+            patch_galaxy = func(gal)
+            return { "X": patch_galaxy[:-1], "Y": patch_galaxy[1:], "raw_image":gal,}
 
         tds_hf = load_dataset(
-            "Smith42/galaxies",
+            hf_url,
             split="train",
             streaming=(True if stream_hf_dataset else False),
             cache_dir="/raid/data/cache",
         )
+        columns_to_remove = tds_hf.column_names
         tds_hf = tds_hf.cast_column("image", Image(decode=False))
         tds_hf = tds_hf.filter(filter_bumf).map(partial(process_galaxy_wrapper, func=tds.process_galaxy))
-        tds_hf = tds_hf.remove_columns(["image", "dr8_id"])
+        tds_hf = tds_hf.remove_columns(columns_to_remove)
 
         vds_hf = load_dataset(
-            "Smith42/galaxies",
+            hf_url,
             split="test",
             streaming=(True if stream_hf_dataset else False),
             cache_dir="/raid/data/cache",
         )
+        columns_to_remove = vds_hf.column_names
         vds_hf = vds_hf.cast_column("image", Image(decode=False))
         vds_hf = vds_hf.filter(filter_bumf).map(partial(process_galaxy_wrapper, func=vds.process_galaxy))
-        vds_hf = vds_hf.remove_columns(["image", "dr8_id"])
+        vds_hf = vds_hf.remove_columns(columns_to_remove)
+
+    def infinite_loader(dataset, **dataloader_args):
+        while True:
+            loader = iter(DataLoader(dataset, **dataloader_args))
+            try:
+                for batch in loader:
+                    yield batch
+            except StopIteration:
+                continue
 
     sampler = None #DistributedSampler(dataset) if ddp else None
-    tdl = iter(DataLoader(
-        tds_hf if use_hf else tds,
+    tdl = infinite_loader(
+        tds_hf.shuffle() if hf_url is not None else tds,
         sampler=sampler,
         batch_size=batch_size,
         num_workers=num_workers,
         pin_memory=True,
-    ))
-    vdl = iter(DataLoader(
-        vds_hf if use_hf else vds,
+    )
+    vdl = infinite_loader(
+        vds_hf.shuffle() if hf_url is not None else vds,
         sampler=sampler,
         batch_size=batch_size,
         num_workers=num_workers,
         pin_memory=True,
-    ))
+    )
     
     # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
     iter_num = 0
