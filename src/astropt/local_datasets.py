@@ -133,4 +133,4 @@ class GalaxyImageDataset(Dataset):
                     sys.exit(1)
 
         patch_galaxy = self.process_galaxy(raw_galaxy)
-        return {"X": patch_galaxy[:-1], "Y": patch_galaxy[1:], "idx": idx}
+        return {"X": patch_galaxy[:-1], "Y": patch_galaxy[1:], "idx": idx, "raw_image": raw_galaxy}

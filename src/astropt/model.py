@@ -178,9 +178,11 @@ class KSparseLayer(nn.Module):
         self.norm = LayerNorm(4 * config.n_embd, bias=config.bias)
 
         # For tracking activations
+        self.buffer_size = 1024
         self.register_buffer('activation_counts', torch.zeros(4 * config.n_embd))
-        self.register_buffer('recent_inputs', torch.zeros(8, config.block_size, config.patch_size*config.patch_size*config.n_chan))
-        self.register_buffer('activation_indices', torch.zeros(8, dtype=torch.long))
+        self.register_buffer('recent_inputs', torch.zeros(self.buffer_size, config.n_chan, 256, 256))
+        self.register_buffer('activation_indices', torch.zeros(self.buffer_size, dtype=torch.long) - 1)
+        self.register_buffer('activation_values', torch.zeros(self.buffer_size))
         self.input_ptr = 0
 
     def get_top_activations(self, k=10):
@@ -190,30 +192,45 @@ class KSparseLayer(nn.Module):
     def get_example_inputs(self, feature_idx):
         """Returns stored inputs that strongly activated a given feature"""
         matches = (self.activation_indices == feature_idx)
-        return self.recent_inputs[matches]
+        return self.recent_inputs[matches], self.activation_values[matches]
  
     def forward(self, x, img=None):
         # Project to overcomplete space and normalize
         h = self.norm(self.to_overcomplete(x))
         # Get top k activations in overcomplete space
         values, indices = torch.topk(h, self.k, dim=-1)
+
+        summed_values = []
+        for B in range(len(h)):
+            summed_values.append(
+                torch.bincount(indices[B].flatten(), weights=values[B].flatten(), minlength=h.shape[-1])
+            )
+        summed_values = torch.stack(summed_values)
+        final_values, final_indices = torch.topk(summed_values, self.k, dim=-1)
+                    
         # Update activation statistics
-        if self.training and img is not None:
+        if self.training:
             # Count which features are being activated
-            batch_indices = indices.reshape(-1)
-            unique_indices, counts = torch.unique(batch_indices, return_counts=True)
+            batch_indices = final_indices.reshape(-1)
+            unique_indices, counts = torch.unique(final_indices, return_counts=True)
+
+            batch_counts = torch.zeros_like(self.activation_counts)
+            batch_counts[unique_indices] = counts.float()
+            self.activation_counts.mul_(0.99).add_(batch_counts * (1 - 0.99))
+
             self.activation_counts[unique_indices] += counts.float()
+        if img is not None:
+            B, _, = final_indices.shape
             # Store recent inputs that strongly activated each feature
-            batch_size = img.size(0)
-            for b in range(batch_size):
-                # Get the most strongly activated feature for this input
-                strongest_activation = indices[b, 0, 0]  # Take first occurrence
+            for b in range(B):
+                strongest_activation = final_indices[b, 0]  # Take first occurrence
+                strongest_value = final_values[b, 0]  # Take first occurrence
                 # Store the input that caused this activation
-                # We need to add a zero block to make the galaxy square
-                zero_block = torch.zeros((1, img.size(-1)), device=img.device)
-                self.recent_inputs[self.input_ptr] = torch.cat((zero_block, img[b].detach()), dim=0)
+                self.recent_inputs[self.input_ptr] = img[b].detach()
                 self.activation_indices[self.input_ptr] = strongest_activation
-                self.input_ptr = (self.input_ptr + 1) % 8
+                self.activation_values[self.input_ptr] = strongest_value
+                # Move pointer forward, wrapping around when we hit buffer size
+                self.input_ptr = (self.input_ptr + 1) % self.buffer_size
         # Reshape indices and values for embedding_bag
         batch_size, seq_len, _ = indices.shape
         indices = indices.reshape(batch_size * seq_len, self.k)
@@ -314,7 +331,7 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None, prefix_len=None):
+    def forward(self, idx, targets=None, prefix_len=None, raw_im=None):
         device = idx.device
         b, t, c = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
@@ -336,7 +353,7 @@ class GPT(nn.Module):
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.pre_blocks:
             x = block(x, block_mask=block_mask)
-        x = self.sparse(x, img=idx)  # Central sparse layer
+        x = self.sparse(x, img=raw_im)  # Central sparse layer
         for block in self.transformer.post_blocks:
             x = block(x, block_mask=block_mask)
         x = self.transformer.ln_f(x)
