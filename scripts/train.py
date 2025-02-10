@@ -67,7 +67,9 @@ def log_sparse_activations(model, iter_num):
     
     # Create activation frequency plot
     fig, ax = plt.subplots(figsize=(10, 4))
-    ax.bar(indices.cpu().numpy(), values.cpu().numpy())
+    ax.bar(range(10), values.cpu().numpy())
+    ax.set_xticks(range(10))
+    ax.set_xticklabels([f'#{i}' for i in indices.cpu().numpy()])
     ax.set_title('Top 10 Most Common Sparse Layer Activations')
     ax.set_xlabel('Activation Index')
     ax.set_ylabel('Activation Count')
@@ -78,39 +80,26 @@ def log_sparse_activations(model, iter_num):
         'iteration': iter_num
     })
     plt.close(fig)
-    
-    # For each top activation, show example inputs that triggered it
-    for i, idx in enumerate(indices[:5]):  # Only show top 5 to keep the log size reasonable
-        example_inputs = raw_model.sparse.get_example_inputs(idx.item())
-        if len(example_inputs) == 0:
-            continue
-            
-        # Create a figure showing up to 4 example inputs
-        fig, axes = plt.subplots(1, min(4, len(example_inputs)), figsize=(12, 3))
-        if len(example_inputs) == 1:
-            axes = [axes]  # Make iterable for single image case
-            
-        for j, (ax, input_tensor) in enumerate(zip(axes, example_inputs[:4])):
-            # Convert patch sequence back to image
-            img = vds.antispiralise(input_tensor) if spiral else input_tensor
-            img = einops.rearrange(
-                img, 
-                '(h w) (p1 p2 c) -> (h p1) (w p2) c', 
-                p1=patch_size, p2=patch_size,
-                h=image_size//patch_size, w=image_size//patch_size
-            )
-            ax.imshow(img.cpu().numpy())
-            ax.axis('off')
-            
-        fig.suptitle(f'Example Inputs for Activation {idx.item()}')
-        
-        # Log the examples
-        wandb.log({
-            f'activation_{idx.item()}_examples': wandb.Image(fig),
-            'iteration': iter_num
-        })
-        plt.close(fig)
 
+    raw_indices, raw_counts = torch.unique(raw_model.sparse.activation_indices, return_counts=True, sorted=True)
+    buffer_values = raw_model.sparse.activation_values
+    buffer_indices = raw_indices[torch.argsort(raw_counts, descending=True)]
+    counts = raw_counts[torch.argsort(raw_counts, descending=True)]
+    examples = torch.zeros(160, n_chan, image_size, image_size).to(indices.device)
+    for i, feature_idx in enumerate(buffer_indices[buffer_indices != -1][:16]):
+        start_idx = i * 10
+        end_idx = start_idx + 10
+        real_examples, real_values = raw_model.sparse.get_example_inputs(feature_idx.item())
+        if len(real_examples) > 0:
+            # inverse list to get most recent 10 examples
+            sorted_examples = real_examples[torch.argsort(real_values, descending=True)]
+            examples[start_idx:start_idx + min(len(sorted_examples), 10)] = sorted_examples[:10]
+    # Normalise per image
+    examples = examples - examples.min(dim=2, keepdim=True)[0].min(dim=3, keepdim=True)[0]
+    examples = examples / (examples.max(dim=2, keepdim=True)[0].max(dim=3, keepdim=True)[0] + 1e-8)
+    grid = torchvision.utils.make_grid(examples, nrow=10, normalize=False)
+    wandb.log({'activation_examples': wandb.Image(grid.cpu())})
+    
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a 70M parameter model on DESI imagery
