@@ -162,7 +162,7 @@ if __name__ == "__main__":
     exec(open('src/astropt/configurator.py').read()) # overrides from command line or config file
     config = {k: globals()[k] for k in config_keys} # will be useful for logging
     # -----------------------------------------------------------------------------
-    project_name = out_dir.split('/')[-1] # project name for wandb
+    project_name = out_dir.split('/')[-1] if project_name is None else project_name # project name for wandb
     
     # various inits, derived attributes, I/O setup
     ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
