@@ -64,21 +64,11 @@ if __name__ == "__main__":
     eval_only = False # if True, script exits right after the first eval
     always_save_checkpoint = False # if True, always save a checkpoint at each checkpoint_interval
     init_from = 'scratch' # 'scratch' or 'resume'
-<<<<<<<< HEAD:src/astropt/train.py
     use_hf = False # use the huggingface dataset version of our galz
     stream_hf_dataset = False # stream the galaxies from huggingface
     # data
-    gradient_accumulation_steps = 5#5 * 8 # used to simulate larger batch sizes
-    batch_size = 64#8 # if gradient_accumulation_steps > 1, this is the micro-batch size
-========
-    use_hf = True # use the huggingface dataset version of our galz
-    stream_hf_dataset = True # stream the galaxies from huggingface
-    # data
-    # used to simulate larger batch sizes, want this roughly as 5 * WORLD_SIZE:
-    # we assume world_size=8 as sane default:
-    gradient_accumulation_steps = 5 * 8 # * WORLD_SIZE
-    batch_size = 8 # if gradient_accumulation_steps > 1, this is the micro-batch size
->>>>>>>> main:scripts/train.py
+    gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
+    batch_size =  # if gradient_accumulation_steps > 1, this is the micro-batch size
     spiral = True # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     image_size = 512
@@ -87,21 +77,18 @@ if __name__ == "__main__":
     n_layer = 12
     n_head = 12
     n_embd = 768
-<<<<<<<< HEAD:src/astropt/train.py
     n_chan = 4 # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
-========
-    n_chan = 3 # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
->>>>>>>> main:scripts/train.py
     dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
     patch_size = 16
     # NB dropout is NOT implemented for flex attention
     bias = False # do we use bias inside LayerNorm and Linear layers?
-<<<<<<<< HEAD:src/astropt/train.py
-    patch_size = {"spectra": 256, "images": 16} # size of image patches for ViT tokenisation
-    modalities = ["spectra", "images"]
-========
-    attn_type = "causal" # causal or prefix
->>>>>>>> main:scripts/train.py
+    # Define modalities configuration
+    modalities = [
+        ModalityConfig(name="images", input_size=16*16*n_chan, patch_size=16, loss_weight=1.0),
+        ModalityConfig(name="spectra", input_size=256, patch_size=32, loss_weight=0.5)
+    ]
+    # Create modality registry
+    modality_registry = ModalityRegistry(modalities)
     # adamw optimizer
     # we follow the same schedule here as Chinchilla
     learning_rate = 6e-4 # max learning rate
@@ -245,17 +232,13 @@ if __name__ == "__main__":
     best_val_loss = 1e9
     
     # model init
-<<<<<<<< HEAD:src/astropt/train.py
-    model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, n_chan=n_chan, block_size=block_size, dropout=dropout, patch_size_images=patch_size["images"], patch_size_spectra=patch_size["spectra"])
-========
-    model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, n_chan=n_chan, block_size=block_size, dropout=dropout, patch_size=patch_size, attn_type=attn_type)
->>>>>>>> main:scripts/train.py
+    model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, n_chan=n_chan, block_size=block_size, dropout=dropout, modalities=modalities)
     
     if init_from == 'scratch':
         # init a new model from scratch
         if master_process: print("initializing a new model from scratch")
         gptconf = GPTConfig(**model_args)
-        model = GPT(gptconf, master_process=master_process)
+        model = GPT(gptconf, modality_registry, master_process=master_process)
     if init_from == 'resume':
         if master_process: print(f"resuming training from {out_dir}")
         # resume training from a checkpoint.
@@ -269,7 +252,7 @@ if __name__ == "__main__":
             model_args[k] = checkpoint_model_args[k]
         # create the model
         gptconf = GPTConfig(**model_args)
-        model = GPT(gptconf, master_process=master_process)
+        model = GPT(gptconf, modality_registry, master_process=master_process)
         state_dict = checkpoint['model']
         # fix the keys of the state dictionary :(
         # honestly no idea how checkpoints sometimes get this prefix, have to debug more
@@ -322,16 +305,12 @@ if __name__ == "__main__":
     # wrap model into DDP container
     if ddp:
         if master_process: print("Wrapping in DDP")
-<<<<<<<< HEAD:src/astropt/train.py
         # Note to future people: we had to turn off optimize_ddp due to a
         # torch compiler error when running DDP. This _may_ be fixed in a
         # future torch version so check periodically. I tested this on:
         # 2.6.0.dev20241126+cu124
         torch._dynamo.config.optimize_ddp = False
         model = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=True)
-========
-        model = DDP(model, device_ids=[ddp_local_rank])
->>>>>>>> main:scripts/train.py
     
     # helps estimate an arbitrarily accurate loss over either split using many batches
     @torch.no_grad()
@@ -345,17 +324,7 @@ if __name__ == "__main__":
             out[split] = {}
             losses = torch.zeros(eval_iters)
             for k in range(eval_iters):
-<<<<<<<< HEAD:src/astropt/train.py
                 B = next(dl) # fetch the very first batch
-========
-                B = next(dl)
-                X = B["X"].to(device)
-                Y = B["Y"].to(device)
-                if torch.isnan(Y).any():
-                    print(Y)
-                if torch.isnan(X).any():
-                    print(X)
->>>>>>>> main:scripts/train.py
                 with ctx:
                     logits, loss = model(
                         B["X"]["images"].to(device), 

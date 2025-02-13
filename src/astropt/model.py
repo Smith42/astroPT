@@ -23,6 +23,29 @@ import torch.nn as nn
 from torch.nn import functional as F
 from einops.layers.torch import Rearrange
 
+@dataclass
+class ModalityConfig:
+    """Configuration for a single modality"""
+    name: str
+    input_size: int
+    patch_size: int
+    loss_weight: float = 1.0
+
+class ModalityRegistry:
+    """Central registry for model modalities"""
+    def __init__(self, modalities):
+        self.modalities = {m.name: m for m in modalities}
+        
+    def get_config(self, name):
+        """Get configuration for a specific modality"""
+        return self.modalities[name]
+        
+    def generate_sequence(self, available_modalities, num_sequences=1, random_order=True):
+        """Generate a modality sequence from available modalities"""
+        if random_order:
+            return random.sample(available_modalities, len(available_modalities))
+        return sorted(available_modalities)
+
 # @torch.jit.script # good to enable when not using torch.compile, disable when using (our default)
 def new_gelu(x):
     """
@@ -186,33 +209,34 @@ class GPTConfig:
     n_chan: int = 1
     dropout: float = 0.0
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-    patch_size_images: int = 16
-    patch_size_spectra: int = 32
+    modalities: List[ModalityConfig] = None
 
 class GPT(nn.Module):
 
-    def __init__(self, config, master_process=True):
+    def __init__(self, config: GPTConfig, modality_registry: ModalityRegistry, master_process=True):
         super().__init__()
         assert config.block_size is not None
         self.config = config
+        self.modality_registry = modality_registry
+
+        # create encoders and decoders
+        encoders = {}
+        decoders = {}
+        for name, mod_config in modality_registry.modalities.items():
+            encoders[name] = Encoder(config, mod_config.input_size)
+            decoders[name] = Decoder(config, mod_config.input_size)
 
         self.transformer = nn.ModuleDict(dict(
-            wte = nn.ModuleDict(dict(
-                spectra = Encoder(config, config.patch_size_spectra),
-                images = Encoder(config, config.patch_size_images*config.patch_size_images*config.n_chan),
-            )),
-            wpe = nn.ModuleDict(dict(
-                spectra = Embedder(config),
-                images = Embedder(config),
-            )),
+            wte = nn.ModuleDict(encoders)
+            wpe = nn.ModuleDict({
+                name: Embedder(config)
+                for name in modality_registry.get_modality_names()
+            }),
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
-        self.lm_head = nn.ModuleDict(dict( 
-            spectra = Decoder(config, config.patch_size_spectra),
-            images = Decoder(config, config.patch_size_images*config.patch_size_images*config.n_chan),
-        ))
+        self.lm_head = nn.ModuleDict(decoders)
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
         # This behavior is deprecated and will be an error in future versions"
@@ -253,49 +277,43 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, images, spectra, targets=None):
+    def forward(self, inputs, targets=None):
         device = images.device
-        tt = images.size()[1] + spectra.size()[1]
+        tt = sum(x.size(1) for x in inputs.values())
         assert tt <= self.config.block_size, f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
-        pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0) # shape (1, tt)
-
         # forward the GPT model itself
-        tok_emb = torch.cat((
-           self.transformer.wte["images"](images),
-           self.transformer.wte["spectra"](spectra),
-        ), dim=1)
+        embeddings = []
+        for mod_name, x in inputs.items():
+            embeddings.append(self.transformer.wte[mod_name](x))
+        tok_emb = torch.cat(embeddings, dim=1)
+        pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0) # shape (1, tt)
         pos_emb = self.transformer.wpe["images"](pos) # position embeddings of shape (1, tt, n_embd)
 
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x)
         x = self.transformer.ln_f(x) # these are the hidden states
-        hidden_states_images = x[:, :targets[0].size()[1]]
-        hidden_states_spectra = x[:, targets[0].size()[1]:]
+ 
+        outputs = {}
+        current_idx = 0
+        for mod_name, input_tensor in inputs.items():
+            seq_len = input_tensor.size(1)
+            hidden_state = x[:, current_idx:current_idx + seq_len]
+            outputs[mod_name] = self.lm_head[mod_name](hidden_state)
+            current_idx += seq_len
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             loss = 0
-            logits = []
-            for modality, lamb, hidden_state, target in zip(
-                    ["images", "spectra"], 
-                    [1, 0.5],
-                    [hidden_states_images, hidden_states_spectra], 
-                    targets,
-                ):
-                logits.append(self.lm_head[modality](hidden_state))
-                loss += F.huber_loss(logits[-1], target) * lamb
-            loss /= len(["images", "spectra"])
+            for mod_name, target in targets.items():
+                mod_config = self.modality_registry.get_config(mod_name)
+                pred = outputs[mod_name]
+                loss += F.huber_loss(pred, target) * mod_config.loss_weight
+            loss /= self.modality_registry.num_modalities
         else:
-            # inference-time mini-optimization: only forward the lm_head on the very last position
-            #logits = torch.cat((
-            #    self.lm_head["spectra"](hidden_states_spectra),
-            #    self.lm_head["images"](hidden_states_images),
-            #), dim=1)
-            ##logits = self.lm_head[out_modality](x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
 
-        return logits, loss
+        return outputs, loss
 
     def get_embeddings(self, idx, in_modality, pos=None, draw_from_centre=True, prefix_len=None):
         """
