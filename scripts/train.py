@@ -44,47 +44,67 @@ except:
     log_via_wandb = False
 try:
     from codecarbon import EmissionsTracker
-    log_emissions = True
+    log_emissions = False
 except:
     log_emissions = False
 
-from model import GPTConfig, GPT
-from local_datasets import GalaxyImageDataset
+from astropt.model import GPTConfig, GPT
+from astropt.local_datasets import GalaxyImageDataset
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
-    # default config values designed to test run a model on DESI
-    # look at config/astropt300m.py for a prod run example
-    out_dir = 'logs/test'
+    # default config values designed to test run a 70M parameter model on DESI imagery
+    # look at `config/astropt*.py` for a prod run example
+    out_dir = 'logs/astropt0070M'
     eval_interval = 1000
     log_interval = 100
     checkpoint_interval = 10000
     assert checkpoint_interval % eval_interval == 0
-    eval_iters = 10
+    eval_iters = 100
     eval_only = False # if True, script exits right after the first eval
     always_save_checkpoint = False # if True, always save a checkpoint at each checkpoint_interval
     init_from = 'scratch' # 'scratch' or 'resume'
+<<<<<<<< HEAD:src/astropt/train.py
     use_hf = False # use the huggingface dataset version of our galz
     stream_hf_dataset = False # stream the galaxies from huggingface
     # data
     gradient_accumulation_steps = 5#5 * 8 # used to simulate larger batch sizes
     batch_size = 64#8 # if gradient_accumulation_steps > 1, this is the micro-batch size
+========
+    use_hf = True # use the huggingface dataset version of our galz
+    stream_hf_dataset = True # stream the galaxies from huggingface
+    # data
+    # used to simulate larger batch sizes, want this roughly as 5 * WORLD_SIZE:
+    # we assume world_size=8 as sane default:
+    gradient_accumulation_steps = 5 * 8 # * WORLD_SIZE
+    batch_size = 8 # if gradient_accumulation_steps > 1, this is the micro-batch size
+>>>>>>>> main:scripts/train.py
     spiral = True # do we want to process the galaxy patches in spiral order?
     block_size = 1024
-    image_size = 224
-    num_workers = 64 
+    image_size = 512
+    num_workers = 32#64 
     # astroPT model
-    n_layer = 26
-    n_head = 16
+    n_layer = 12
+    n_head = 12
     n_embd = 768
+<<<<<<<< HEAD:src/astropt/train.py
     n_chan = 4 # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
+========
+    n_chan = 3 # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
+>>>>>>>> main:scripts/train.py
     dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
+    patch_size = 16
+    # NB dropout is NOT implemented for flex attention
     bias = False # do we use bias inside LayerNorm and Linear layers?
+<<<<<<<< HEAD:src/astropt/train.py
     patch_size = {"spectra": 256, "images": 16} # size of image patches for ViT tokenisation
     modalities = ["spectra", "images"]
+========
+    attn_type = "causal" # causal or prefix
+>>>>>>>> main:scripts/train.py
     # adamw optimizer
     # we follow the same schedule here as Chinchilla
-    learning_rate = 2e-4 # max learning rate
+    learning_rate = 6e-4 # max learning rate
     max_iters = 30000 # total number of training iterations for one pass over our dataset
     weight_decay = 1e-1
     beta1 = 0.9
@@ -104,7 +124,7 @@ if __name__ == "__main__":
     log_via_wandb = False
     # -----------------------------------------------------------------------------
     config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
-    exec(open('src/configurator.py').read()) # overrides from command line or config file
+    exec(open('src/astropt/configurator.py').read()) # overrides from command line or config file
     config = {k: globals()[k] for k in config_keys} # will be useful for logging
     # -----------------------------------------------------------------------------
     
@@ -144,8 +164,11 @@ if __name__ == "__main__":
 
     # dataset init
     def normalise(x):
+        # HF is in numpy format. Need to change that here if so:
+        if use_hf: x = torch.from_numpy(x).to(torch.float32)
         std, mean = torch.std_mean(x, dim=1, keepdim=True)
-        return (x - mean)/(std + 1e-8)
+        x_norm = (x - mean)/(std + 1e-8)
+        return x_norm.to(torch.float16)
     def data_transforms():
         transform = transforms.Compose([
             #transforms.Lambda(lambda x: x/255.),
@@ -170,8 +193,11 @@ if __name__ == "__main__":
             """ Lazily remove galaxies that are borked """
             try:
                 gal = PIL.Image.open(io.BytesIO(galdict["image"]["bytes"]))
+                # Force full image load to catch truncation errors
+                gal.load()
                 return True
-            except:
+            except Exception as e:
+                print(f"Filtering out corrupted image: {e}")
                 return False
         def process_galaxy_wrapper(galdict, func):
             gal = PIL.Image.open(io.BytesIO(galdict["image"]["bytes"]))
@@ -219,7 +245,11 @@ if __name__ == "__main__":
     best_val_loss = 1e9
     
     # model init
+<<<<<<<< HEAD:src/astropt/train.py
     model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, n_chan=n_chan, block_size=block_size, dropout=dropout, patch_size_images=patch_size["images"], patch_size_spectra=patch_size["spectra"])
+========
+    model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, n_chan=n_chan, block_size=block_size, dropout=dropout, patch_size=patch_size, attn_type=attn_type)
+>>>>>>>> main:scripts/train.py
     
     if init_from == 'scratch':
         # init a new model from scratch
@@ -292,12 +322,16 @@ if __name__ == "__main__":
     # wrap model into DDP container
     if ddp:
         if master_process: print("Wrapping in DDP")
+<<<<<<<< HEAD:src/astropt/train.py
         # Note to future people: we had to turn off optimize_ddp due to a
         # torch compiler error when running DDP. This _may_ be fixed in a
         # future torch version so check periodically. I tested this on:
         # 2.6.0.dev20241126+cu124
         torch._dynamo.config.optimize_ddp = False
         model = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=True)
+========
+        model = DDP(model, device_ids=[ddp_local_rank])
+>>>>>>>> main:scripts/train.py
     
     # helps estimate an arbitrarily accurate loss over either split using many batches
     @torch.no_grad()
@@ -311,7 +345,17 @@ if __name__ == "__main__":
             out[split] = {}
             losses = torch.zeros(eval_iters)
             for k in range(eval_iters):
+<<<<<<<< HEAD:src/astropt/train.py
                 B = next(dl) # fetch the very first batch
+========
+                B = next(dl)
+                X = B["X"].to(device)
+                Y = B["Y"].to(device)
+                if torch.isnan(Y).any():
+                    print(Y)
+                if torch.isnan(X).any():
+                    print(X)
+>>>>>>>> main:scripts/train.py
                 with ctx:
                     logits, loss = model(
                         B["X"]["images"].to(device), 
@@ -392,8 +436,8 @@ if __name__ == "__main__":
     local_iter_num = 0 # number of iterations in the lifetime of this process
     raw_model = model.module if ddp else model # unwrap DDP container if needed
     running_mfu = -1.0
-    if log_emissions:
-        tracker = EmissionsTracker(output_dir=out_dir, log_level="error", save_to_file=True)
+    if log_emissions and master_process:
+        tracker = EmissionsTracker(output_dir=out_dir, log_level="error", save_to_file=True, on_csv_write="update")
         tracker.start()
     while True:
     
@@ -502,7 +546,7 @@ if __name__ == "__main__":
                 wandb.log({"loss": lossf, "time": dt})
             if log_emissions:
                 emissions: float = tracker.flush()
-                print(f"iter {iter_num}: loss {lossf:.6f}, time {np.mean(dts)*1000:.2f}ms, mfu {running_mfu*100:.2f}%, co2 {emissions:.1f}kg")
+                print(f"iter {iter_num}: loss {lossf:.6f}, time {np.mean(dts)*1000:.2f}ms, mfu {running_mfu*100:.2f}%, tot co2 {emissions:.1f}kg")
             else:
                 print(f"iter {iter_num}: loss {lossf:.6f}, time {np.mean(dts)*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
             dts = []

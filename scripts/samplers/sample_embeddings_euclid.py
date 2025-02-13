@@ -6,20 +6,17 @@ import pickle
 from contextlib import nullcontext
 import torch
 from torch.utils.data import DataLoader
-import tiktoken
 from tqdm import tqdm, trange
 import matplotlib.pyplot as plt
 import numpy as np
-from model import GPTConfig, GPT
+from astropt.model import GPTConfig, GPT
 from datasets import load_dataset, concatenate_datasets 
-from train import GalaxyImageDataset
+from astropt.local_datasets import GalaxyImageDataset
 from torchvision import transforms
 from torchvision.transforms import ToTensor
 import functools
 from einops import rearrange
 import pandas as pd
-
-from sklearn.decomposition import PCA
 
 # -----------------------------------------------------------------------------
 init_from = 'resume'
@@ -100,9 +97,19 @@ if (not (
         with ctx:
             tt = tqdm(unit="galz", total=len(ds), unit_scale=True)
             for B in dl:
-                xs = B["X"][:, :64]
+                if n_tokens == "all":
+                    prefix_len = B["X"].shape[1]
+                else:
+                    prefix_len = n_tokens
+                # flex attention does not yet work with variable inputs so error on compiled flex attention
+                # see https://github.com/pytorch/pytorch/issues/139064
+                xs = B["X"][:, :prefix_len]
                 idx = B["idx"]
-                zs = model.generate_embeddings(xs.to(device))
+                if model.config.attn_type == "prefix":
+                    # forward and backward attention over whole image if pretrained with prefix attention
+                    zs = model.generate_embeddings(xs.to(device), prefix_len=prefix_len)
+                else:
+                    zs = model.generate_embeddings(xs.to(device))
                 if not os.path.isfile(os.path.join(out_dir, f"xss_{n_tokens}t.npy")):
                     xss.append(rearrange(xs, "b t c -> b (t c)").detach().to(torch.float16).cpu().numpy())
                 zss.append(zs.detach().cpu().numpy())

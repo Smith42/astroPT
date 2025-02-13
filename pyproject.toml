@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling", "hatch-requirements-txt", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "astropt"
+dynamic = [
+    "dependencies",
+    "version"
+]
+authors = [
+  { name="Michael J. Smith", email="mike@mjjsmith.com" },
+]
+description = "Transformer for galaxy images (and general astronomy)"
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = [
+    "astropt",
+    "astronomy",
+    "scientific computing",
+    "astrophysics",
+    "pytorch"
+]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent"
+]
+
+[project.urls]
+Homepage = "https://github.com/smith42/astropt"
+Issues = "https://github.com/smith42/astropt/issues"
+
+[tool.hatch.metadata.hooks.requirements_txt]
+files = ["requirements.txt"]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/astropt/_version.py"
+
+[tool.hatch.version.raw-options]
+local_scheme = "no-local-version"
