@@ -11,7 +11,6 @@ https://github.com/huggingface/transformers/blob/main/src/transformers/models/gp
 3) Aspia Space's earthPT code:
 https://github.com/aspiaspace/earthpt
 """
-
 import math
 import inspect
 import sys
@@ -20,6 +19,7 @@ from dataclasses import dataclass
 from functools import partial
 
 import torch
+import loralib as lora
 import torch.nn as nn
 try:
     from torch.nn.attention.flex_attention import flex_attention, create_block_mask, or_masks
@@ -79,7 +79,15 @@ class SelfAttention(nn.Module):
         super().__init__()
         assert config.n_embd % config.n_head == 0
         # key, query, value projections for all heads, but in a batch
-        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
+        if hasattr(config, 'lora_r') and config.lora_r > 0:
+            self.c_attn = lora.Linear(
+                config.n_embd, 
+                3 * config.n_embd, 
+                r=config.lora_r,
+                bias=config.bias
+            )
+        else:
+            self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
         # output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
         # regularization
@@ -165,6 +173,23 @@ class Block(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return x
 
+class TaskHead(nn.Module):
+    def __init__(self, config, output_dim):
+        super().__init__()
+        self.ln = LayerNorm(config.n_embd, bias=config.bias)
+        self.head = nn.Sequential(
+            nn.Linear(config.n_embd, config.n_embd // 2),
+            nn.ReLU(),
+            nn.Linear(config.n_embd // 2, output_dim)
+        )
+        
+    def forward(self, x):
+        # Global average pooling over sequence length
+        x = x.mean(dim=1)  # (batch, n_embd)
+        x = self.ln(x)
+        x = self.head(x)
+        return x
+
 @dataclass
 class GPTConfig:
     block_size: int = 1024
@@ -176,6 +201,10 @@ class GPTConfig:
     patch_size: int = 16
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     attn_type: str = "causal" # causal or prefix
+    # LoRA params
+    lora_r: int = 0  # rank, 0 disables LoRA
+    lora_alpha: int = 16
+    lora_dropout: float = 0.1
 
 class GPT(nn.Module):
 
@@ -210,6 +239,11 @@ class GPT(nn.Module):
         # TODO rethink weight tying
         #self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
 
+        # optional task head for finetuning
+        self.task_head = None
+        if hasattr(config, 'output_dim'):
+            self.task_head = TaskHead(config, config.output_dim)
+         
         # init all weights
         self.apply(self._init_weights)
         # apply special scaled init to the residual projections, per GPT-2 paper
@@ -306,6 +340,38 @@ class GPT(nn.Module):
         embeddings = x
 
         return embeddings
+
+    def get_task_prediction(self, idx, targets=None):
+        """Forward pass for task prediction during finetuning"""
+        if self.task_head is None:
+            raise ValueError("Model not configured for task prediction. Set config.output_dim")
+            
+        device = idx.device
+        b, t, c = idx.size()
+        assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        if self.config.attn_type == "prefix":
+            # TODO we need to make sure that the prefix hyperparameters are tuned well:
+            if prefix_len is None:
+                # if we don't pass a prefix length assume we want it sampled at random
+                # TODO do we want this to be an eval mode switch?
+                prefix_len = random.randrange(self.config.block_size - 1)
+            prefix_lm_mask = generate_prefix_lm_mask(prefix_len)
+            block_mask = create_block_mask(prefix_lm_mask, None, None, self.config.block_size, self.config.block_size)
+        else:
+            block_mask = None
+        pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0) # shape (1, t)
+
+        # forward the GPT model itself
+        tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
+        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
+        x = self.transformer.drop(tok_emb + pos_emb)
+        for i, block in enumerate(self.transformer.h):
+            x = block(x)
+            if i == len(self.transformer.h)//2:  # Take features from middle layer
+                break
+        
+        outputs = self.task_head(x)
+        return (outputs, F.huber_loss(outputs, targets)) if targets is not None else outputs
 
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary
