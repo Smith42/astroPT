@@ -1,8 +1,13 @@
 import os
 from datasets import load_dataset, concatenate_datasets
 from itertools import chain
+from multiprocessing import Pool
 from google import genai
+from functools import partial
 from tqdm import tqdm
+import json
+from PIL import Image
+import io
 
 # Configure Google API key
 os.environ["GOOGLE_API_KEY"] = KEY
@@ -170,60 +175,200 @@ Based on this information and what you see in the image, provide a detailed scie
     
     return formatted_prompt
 
-def caption_image(image, information):
+def create_cosmo_conversation_prompt(example):
+    """
+    Generate a prompt for creating a synthetic conversation about a galaxy
+    between a curious human and Cosmo, an enthusiastic astronomical AI.
+    
+    Args:
+        example: Dictionary containing galaxy metadata
+    
+    Returns:
+        str: Formatted prompt to generate an entertaining educational conversation
+    """
+    # First get all the organized galaxy data using our existing function
+    galaxy_data = create_galaxy_prompt(example).split(
+        "Here is additional information about this galaxy:\n\n")[1].split(
+        "\n\nBased on this information")[0]
+    
+    conversation_prompt = f"""
+Generate an entertaining and educational conversation between a curious human and Cosmo, an astronomical AI assistant passionate about galaxies. The conversation should use the following galaxy data as a rough guide (but not reference it directly):
+{galaxy_data}
+
+The conversation should follow this pattern:
+
+1. Human asks Cosmo about the galaxy in the image
+2. Cosmo explains the basic features enthusiastically, using a friendly tone with occasional astronomy puns
+3. Human asks a follow-up question about something specific (morphology, color, size, etc.)
+4. Cosmo provides a more detailed explanation, connecting the feature to broader astronomical concepts
+5. Human expresses amazement and asks another question
+6. Cosmo shares an interesting fact or comparison about this type of galaxy
+
+Guidelines for Cosmo's personality:
+- Enthusiastic and passionate about astronomy
+- Uses accessible language but includes proper scientific terminology
+- Occasionally uses space-related puns or expressions ("out of this world," "stellar example," etc.)
+- Anthropomorphizes galaxies occasionally ("this galaxy seems to be having an identity crisis")
+- Connects observations to broader astronomical concepts
+- Expresses wonder at cosmic beauty
+
+Your response must be valid JSON following this structure:
+{{
+  "conversation": [
+    {{
+      "speaker": "human",
+      "text": "Question about the galaxy..."
+    }},
+    {{
+      "speaker": "cosmo",
+      "text": "Enthusiastic, educational response about the galaxy..."
+    }},
+    // Additional turns following the pattern below
+  ]
+}}
+
+The conversation should be informative while remaining scientifically accurate. 
+Do not include references to the values above, simply use them to roughly guide your conversation."""
+    return conversation_prompt
+
+def caption_image(image, information, conversation=False):
     """Generate caption for an image using Gemini Flash 2.0"""
     # Prepare the prompt
-    prompt = create_galaxy_prompt(information)
+    prompt = create_cosmo_conversation_prompt(information) if conversation else create_galaxy_prompt(information)
     
     # Generate response from Gemini
     response = client.models.generate_content(
         contents=[prompt, image],
         model="gemini-2.0-flash",
     )
-    
-    return response.text
 
-def main():
-    galaxies = load_dataset("Smith42/galaxies", split="test", name="with_crops", revision="refs/pr/2", streaming=True)
-    metadata = load_dataset("Smith42/galaxies_metadata", split="test", streaming=True).remove_columns("dr8_id")
-    dataset = concatenate_datasets([galaxies, metadata], axis=1)
-    
-    results = []
-    for i, example in tqdm(enumerate(dataset), total=4):
-        if i >= 4:
-            break
-            
-        try:
-            # Get image from dataset
-            # Adjust the key based on actual dataset structure
-            image = example['image_crop']
-            image_id = example['dr8_id']
-            
-            # Generate caption
-            caption = caption_image(image, example)
-            
-            # Store results
-            results.append({
+    if conversation:
+        for attempt in range(10):
+            if attempt > 0: print(f"Attempting try {attempt}/10 for {information['dr8_id']}")
+            try:
+                # Get response text
+                text = response.text
+                
+                # Remove markdown code blocks if present
+                if text.startswith("```json") and text.endswith("```"):
+                    text = text[7:-3]  # Remove ```json at start and ``` at end
+                elif text.startswith("```") and text.endswith("```"):
+                    text = text[3:-3]  # Remove ``` at start and end
+                    
+                # Trim whitespace
+                text = text.strip()
+                
+                # Parse JSON response
+                conversation_data = json.loads(text)
+                return conversation_data
+            except json.JSONDecodeError as e:
+                # Fallback if JSON parsing fails
+                print(f"Retrying due to failure to parse JSON response: {e}")
+
+                response = client.models.generate_content(
+                    contents=[prompt, image],
+                    model="gemini-2.0-flash",
+                )
+    else:
+        return response.text
+
+def process_example(example, conversation=False):
+    """Process a single example in parallel"""
+    try:
+        image = Image.open(io.BytesIO(example['image_crop']['bytes']))
+        image_id = example['dr8_id']
+        caption = caption_image(image, example, conversation=conversation)
+        
+        if conversation:
+            return {
+                'dr8_id': image_id,
+                'conversation': caption['conversation']
+            }
+        else:
+            return {
                 'dr8_id': image_id,
                 'caption': caption
-            })
-            
-            # Optional: save results periodically
-            #if i > 0 and i % 10 == 0:
-            #    save_results(results, f"galaxy_captions_batch_{i//10}.json")
-                
-        except Exception as e:
-            print(f"Error processing image {i}: {str(e)}")
-    
-    # Save final results
-    save_results(results, "gemini2.json")
-    print(f"Completed captioning {len(results)} galaxy images")
+            }
+    except Exception as e:
+        print(f"Error processing image {example.get('dr8_id', 'unknown')}: {str(e)}")
+        if conversation:
+            return {
+                'dr8_id': example['dr8_id'],
+                'conversation': None
+            }
+        else:
+            return {
+                'dr8_id': example['dr8_id'],
+                'caption': None
+            }
 
 def save_results(results, filename):
     """Save captioning results to JSON file"""
-    import json
     with open(filename, 'w') as f:
         json.dump(results, f, indent=2)
+
+def main():
+    # Check for existing results
+    conversation = False
+    split = "validation"
+    if conversation:
+        checkpoint_file = f"galaxy_convos_{split}_partial.json"
+    else:
+        checkpoint_file = f"galaxy_caption_{split}_partial.json"
+    results = []
+    completed_count = 0
+    
+    if os.path.exists(checkpoint_file):
+        try:
+            with open(checkpoint_file, 'r') as f:
+                results = json.load(f)
+                completed_count = len(results)
+                print(f"Loaded {completed_count} existing results. Resuming...")
+        except:
+            print("Couldn't load checkpoint. Starting fresh.")
+    
+    # Load datasets and use skip() to efficiently skip processed examples
+    galaxies = load_dataset("Smith42/galaxies", split=split, name="with_crops", revision="refs/pr/2", streaming=True)
+    metadata = load_dataset("Smith42/galaxies_metadata", split=split, streaming=True).remove_columns("dr8_id")
+    
+    # Skip already processed examples using HF's skip() method
+    if completed_count > 0:
+        galaxies = galaxies.skip(completed_count)
+        metadata = metadata.skip(completed_count)
+    
+    dataset = concatenate_datasets([galaxies, metadata], axis=1)
+
+    max_examples = metadata.info.splits[split].num_examples
+    if completed_count >= max_examples:
+        print("All examples already processed.")
+        save_results(results, "galaxy_captions.json")
+        return
+
+    remaining_count = max_examples - completed_count
+    batch_size = 1024
+    dataset = dataset.batch(batch_size=batch_size)
+    num_processes = 64
+    proc_example = partial(process_example, conversation=conversation)
+    
+    for i, batch in enumerate(dataset):
+        # Process batch in parallel
+        # We want list of dicts not dict of lists
+        batch = [{k: batch[k][i] for k in batch.keys()} for i in range(len(batch[list(batch.keys())[0]]))]
+        with Pool(processes=num_processes) as pool:
+            batch_results = list(tqdm(
+                pool.imap(proc_example, batch),
+                total=len(batch),
+                desc=f"Batch {i}/{(remaining_count+batch_size-1)//batch_size}"
+            ))
+            
+        # Add batch results and save checkpoint
+        results.extend(batch_results)
+        save_results(results, checkpoint_file)
+        print(f"Saved checkpoint with {len(results)} galaxies")
+
+    # Save final results
+    save_results(results, f"{checkpoint_file.split('_partial')[0]}.json")
+    print(f"Completed captioning {len(results)} galaxy images")
 
 if __name__ == "__main__":
     main()
