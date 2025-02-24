@@ -115,7 +115,7 @@ if __name__ == "__main__":
     init_from = 'scratch' # 'scratch' or 'resume'
     # can be None (loads a local dataset), or a HF URL such as: 
     # (Smith42/galaxies, matthieulel/galaxy10_decals)
-    hf_url = "matthieulel/galaxy10_decals" 
+    hf_url = "smith42/galaxies" 
     stream_hf_dataset = True # stream the galaxies from huggingface
     # data
     # used to simulate larger batch sizes, want this roughly as 5 * WORLD_SIZE:
@@ -125,7 +125,7 @@ if __name__ == "__main__":
     spiral = True # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     image_size = 512
-    num_workers = 32#64 
+    num_workers = 64 
     # astroPT model
     n_layer = 12
     n_head = 12
@@ -157,6 +157,7 @@ if __name__ == "__main__":
     dtype = 'bfloat16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
     compile = True # use PyTorch 2.0 to compile the model to be faster
     log_via_wandb = False
+    project_name = None
     # -----------------------------------------------------------------------------
     config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
     exec(open('src/astropt/configurator.py').read()) # overrides from command line or config file
@@ -225,7 +226,7 @@ if __name__ == "__main__":
         def filter_bumf(galdict):
             """ Lazily remove galaxies that are borked """
             try:
-                gal = PIL.Image.open(io.BytesIO(galdict["image"]["bytes"]))
+                gal = PIL.Image.open(io.BytesIO(galdict["image_crop"]["bytes"]))
                 # Force full image load to catch truncation errors
                 gal.load()
                 return True
@@ -234,7 +235,7 @@ if __name__ == "__main__":
                 return False
         def process_galaxy_wrapper(galdict, func):
             gal = np.array(
-                PIL.Image.open(io.BytesIO(galdict["image"]["bytes"]))
+                PIL.Image.open(io.BytesIO(galdict["image_crop"]["bytes"]))
             ).swapaxes(0, 2)
             patch_galaxy = func(gal)
             return { "X": patch_galaxy[:-1], "Y": patch_galaxy[1:], "raw_image":gal,}
@@ -244,8 +245,10 @@ if __name__ == "__main__":
             split="train",
             streaming=(True if stream_hf_dataset else False),
             cache_dir="/raid/data/cache",
+            revision="refs/pr/2",
         )
         columns_to_remove = tds_hf.column_names
+        tds_hf = tds_hf.cast_column("image_crop", Image(decode=False))
         tds_hf = tds_hf.cast_column("image", Image(decode=False))
         tds_hf = tds_hf.filter(filter_bumf).map(partial(process_galaxy_wrapper, func=tds.process_galaxy))
         tds_hf = tds_hf.remove_columns(columns_to_remove)
@@ -255,8 +258,10 @@ if __name__ == "__main__":
             split="test",
             streaming=(True if stream_hf_dataset else False),
             cache_dir="/raid/data/cache",
+            revision="refs/pr/2",
         )
         columns_to_remove = vds_hf.column_names
+        vds_hf = vds_hf.cast_column("image_crop", Image(decode=False))
         vds_hf = vds_hf.cast_column("image", Image(decode=False))
         vds_hf = vds_hf.filter(filter_bumf).map(partial(process_galaxy_wrapper, func=vds.process_galaxy))
         vds_hf = vds_hf.remove_columns(columns_to_remove)

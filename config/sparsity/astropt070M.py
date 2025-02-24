@@ -11,8 +11,9 @@ n_layer=12
 n_head=12
 n_chan=3
 n_embd=768
-block_size=4096
+block_size=1024
 k_ratio=0.1
+image_size=256
 
 # here we follow chinchilla and pythia
 learning_rate=6e-4 # max learning rate
@@ -22,10 +23,10 @@ min_lr=learning_rate/10
 # 8 batch size * 1024 block size * 5 gradaccum * 8 GPUs = 327,680
 # here we assume a world size of 8!
 init_from="scratch"
-batch_size=8
-gradient_accumulation_steps=5 * 4
+batch_size=16
+gradient_accumulation_steps=5 * 2#4
 patch_size=8
-num_workers=32
+num_workers=64
 
 # this makes total number of tokens be 8.5B (one epoch of GZ DESI)
 max_iters=30000
@@ -37,4 +38,4 @@ checkpoint_interval=5000
 eval_iters=200
 log_interval=100
 log_via_wandb=True
-out_dir='logs/astropt070M_sparse'
+out_dir='logs/astropt070M_sparse_big'
