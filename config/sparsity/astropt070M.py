@@ -11,7 +11,7 @@ n_layer=12
 n_head=12
 n_chan=3
 n_embd=768
-block_size=1024
+block_size=256
 k_ratio=0.1
 image_size=256
 
@@ -23,19 +23,19 @@ min_lr=learning_rate/10
 # 8 batch size * 1024 block size * 5 gradaccum * 8 GPUs = 327,680
 # here we assume a world size of 8!
 init_from="scratch"
-batch_size=16
-gradient_accumulation_steps=5 * 2#4
-patch_size=8
+batch_size=64
+gradient_accumulation_steps=5 * 8
+patch_size=16
 num_workers=64
 
 # this makes total number of tokens be 8.5B (one epoch of GZ DESI)
-max_iters=30000
-lr_decay_iters=27000 * 1.1
+max_iters=3500
+lr_decay_iters=3000 * 1.1
 
 # eval stuff
-eval_interval=1000
-checkpoint_interval=5000
-eval_iters=200
-log_interval=100
+eval_interval=100
+checkpoint_interval=500
+eval_iters=100
+log_interval=10
 log_via_wandb=True
-out_dir='logs/astropt070M_sparse_big'
+out_dir='logs/astropt070M_sparse_rsrct'

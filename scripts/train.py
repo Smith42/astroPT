@@ -15,7 +15,6 @@ $ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=0 --master_addr=123.456.123
 $ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=1 --master_addr=123.456.123.456 --master_port=1234 train.py
 (If your cluster does not have Infiniband interconnect prepend NCCL_IB_DISABLE=1)
 """
-
 import os
 import time
 import math
@@ -277,18 +276,20 @@ if __name__ == "__main__":
 
     sampler = None #DistributedSampler(dataset) if ddp else None
     tdl = infinite_loader(
-        tds_hf.shuffle() if hf_url is not None else tds,
+        tds_hf if hf_url is not None else tds,
         sampler=sampler,
         batch_size=batch_size,
         num_workers=num_workers,
         pin_memory=True,
+        prefetch_factor=10,
     )
     vdl = infinite_loader(
-        vds_hf.shuffle() if hf_url is not None else vds,
+        vds_hf if hf_url is not None else vds,
         sampler=sampler,
         batch_size=batch_size,
         num_workers=num_workers,
         pin_memory=True,
+        prefetch_factor=10,
     )
     
     # init these up here, can override if init_from='resume' (i.e. from a checkpoint)

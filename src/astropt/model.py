@@ -166,24 +166,34 @@ class Block(nn.Module):
         return x
 
 class KSparseLayer(nn.Module):
-    """Implements k-sparsity with overcomplete representation using embedding_bag for efficient decoding"""
+    """Implements k-sparsity with overcomplete representation using embedding_bag for efficient decoding
+    with mechanisms to prevent dying neurons through forward integration of dead neurons"""
 
     def __init__(self, config):
         super().__init__()
-        self.k = int(config.n_embd * config.k_ratio)  # Number of activations to keep
+        self.k = int(config.n_embd * config.k_ratio)  # number of activations to keep
+        self.kaux = int(config.n_embd * 0.2)  # number of dead latents to use (20% of embedding dimension)
+        self.n_embd = config.n_embd
+        self.overcomplete_size = 4 * config.n_embd
+        
         # Linear projections with overcomplete middle layer
-        self.to_overcomplete = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
-        self.from_overcomplete = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
+        self.to_overcomplete = nn.Linear(config.n_embd, self.overcomplete_size, bias=config.bias)
+        self.from_overcomplete = nn.Linear(self.overcomplete_size, config.n_embd, bias=config.bias)
         # Layer norm for numerical stability
-        self.norm = LayerNorm(4 * config.n_embd, bias=config.bias)
+        self.norm = LayerNorm(self.overcomplete_size, bias=config.bias)
 
         # For tracking activations
         self.buffer_size = 1024
-        self.register_buffer('activation_counts', torch.zeros(4 * config.n_embd))
+        self.register_buffer('activation_counts', torch.zeros(self.overcomplete_size))
+        self.register_buffer('activation_last_used', torch.zeros(self.overcomplete_size))
         self.register_buffer('recent_inputs', torch.zeros(self.buffer_size, config.n_chan, config.image_size, config.image_size))
         self.register_buffer('activation_indices', torch.zeros(self.buffer_size, dtype=torch.long) - 1)
         self.register_buffer('activation_values', torch.zeros(self.buffer_size))
         self.input_ptr = 0
+        self.iteration = 0
+        self.dead_neuron_factor = 1.0/32.0  # Alpha in 2406.04093v1 A.2
+        self.dead_threshold = 5000  # Consider a neuron dead if not used for this many iterations
+        self.noise_factor = 0.01  # Small noise to break ties and wake up neurons
 
     def get_top_activations(self, k=10):
         """Returns the indices of the k most common activations"""
@@ -193,10 +203,28 @@ class KSparseLayer(nn.Module):
         """Returns stored inputs that strongly activated a given feature"""
         matches = (self.activation_indices == feature_idx)
         return self.recent_inputs[matches], self.activation_values[matches]
- 
+    
+    def get_dead_neuron_indices(self):
+        """Identify neurons that haven't been activated for a while"""
+        if self.iteration < self.dead_threshold:
+            return torch.tensor([], device=self.activation_last_used.device, dtype=torch.long)
+        
+        # Neurons that haven't been used for dead_threshold iterations
+        dead_mask = (self.iteration - self.activation_last_used) > self.dead_threshold
+        dead_indices = torch.where(dead_mask)[0]
+        return dead_indices
+
     def forward(self, x, img=None):
+        self.iteration += 1
+        batch_size, seq_len, _ = x.shape
+        
         # Project to overcomplete space and normalize
         h = self.norm(self.to_overcomplete(x))
+        
+        # Add small noise to break ties and help wake up neurons during training
+        if self.training:
+            h = h + torch.randn_like(h) * self.noise_factor
+        
         # Get top k activations in overcomplete space
         values, indices = torch.topk(h, self.k, dim=-1)
 
@@ -206,35 +234,49 @@ class KSparseLayer(nn.Module):
                 torch.bincount(indices[B].flatten(), weights=values[B].flatten(), minlength=h.shape[-1])
             )
         summed_values = torch.stack(summed_values)
-        final_values, final_indices = torch.topk(summed_values, self.k, dim=-1)
-                    
+        topk_summed_values, topk_summed_indices = torch.topk(summed_values, self.k, dim=-1)
+        
+        # revive dead neurons in a way analagous to the k aux loss in 2406.04093
+        dead_contribution = None
+        if self.training:
+            dead_indices = self.get_dead_neuron_indices()
+            # use dead neurons if we have any
+            if len(dead_indices) > 0:
+                kaux = min(self.kaux, len(dead_indices))
+                if kaux > 0:
+                    # get the activations for dead neurons
+                    h_dead = h[:, :, dead_indices[:kaux]]
+                    # extract weights for dead neurons 
+                    dead_weights = self.from_overcomplete.weight.t()[dead_indices[:kaux]]
+                    # calculate the contribution from dead neurons (but don't perform topk on them)
+                    dead_contribution = torch.matmul(h_dead, dead_weights) * self.dead_neuron_factor
+        
         # Update activation statistics
         if self.training:
-            # Count which features are being activated
-            batch_indices = final_indices.reshape(-1)
-            unique_indices, counts = torch.unique(final_indices, return_counts=True)
-
+            # mark when neurons were last used
+            self.activation_last_used[indices.reshape(-1)] = self.iteration
+            # count which features are being activated
+            unique_indices, counts = torch.unique(indices, return_counts=True)
             batch_counts = torch.zeros_like(self.activation_counts)
             batch_counts[unique_indices] = counts.float()
             self.activation_counts.mul_(0.99).add_(batch_counts * (1 - 0.99))
-
-            self.activation_counts[unique_indices] += counts.float()
         if img is not None:
-            B, _, = final_indices.shape
             # Store recent inputs that strongly activated each feature
-            for b in range(B):
-                strongest_activation = final_indices[b, 0]  # Take first occurrence
-                strongest_value = final_values[b, 0]  # Take first occurrence
+            for b in range(topk_summed_indices.size(0)):
+                strongest_activation = topk_summed_indices[b, 0]  # Take first occurrence
+                strongest_value = topk_summed_values[b, 0]
                 # Store the input that caused this activation
                 self.recent_inputs[self.input_ptr] = img[b].detach()
                 self.activation_indices[self.input_ptr] = strongest_activation
                 self.activation_values[self.input_ptr] = strongest_value
                 # Move pointer forward, wrapping around when we hit buffer size
                 self.input_ptr = (self.input_ptr + 1) % self.buffer_size
+
         # Reshape indices and values for embedding_bag
         batch_size, seq_len, _ = indices.shape
         indices = indices.reshape(batch_size * seq_len, self.k)
         values = values.reshape(batch_size * seq_len, self.k)
+        
         # Use embedding_bag for efficient sparse decoding
         # (see https://x.com/norabelrose/status/1887585218145755581)
         decoded = F.embedding_bag(
@@ -243,6 +285,11 @@ class KSparseLayer(nn.Module):
             per_sample_weights=values,
             mode="sum"
         ).reshape(batch_size, seq_len, -1)
+        
+        # add contribution from dead neurons if available
+        if dead_contribution is not None and self.training:
+            decoded = decoded + dead_contribution
+
         return decoded
 
 @dataclass
