@@ -332,7 +332,7 @@ class GPT(nn.Module):
         ))
 
         # Add central sparse layer
-        self.sparse = KSparseLayer(config) if config.k_ratio > 0 else nn.Identity()
+        self.sparse = KSparseLayer(config) if config.k_ratio > 0 else None
         
         self.lm_head = nn.Sequential(
             nn.Linear(config.n_embd, config.n_embd*2),
@@ -401,7 +401,7 @@ class GPT(nn.Module):
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.pre_blocks:
             x = block(x, block_mask=block_mask)
-        x = self.sparse(x, img=raw_im)  # Central sparse layer
+        x = self.sparse(x, img=raw_im) if self.sparse is not None else x  # Central sparse layer
         for block in self.transformer.post_blocks:
             x = block(x, block_mask=block_mask)
         x = self.transformer.ln_f(x)
