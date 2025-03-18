@@ -26,15 +26,15 @@ def compute_catalog_statistics(catalog_path, parameter):
 
 
     if parameter == 'PhotoZ':
-        specz = catalog_data['Z']
-        photoz = catalog_data['phz_median']
+        specz = catalog_data['Z'] # DESI spec-z
+        photoz = catalog_data['phz_median'] # NNPZ photo-z
         valid_indices = (
             ~np.isnan(specz) &
             ~np.isnan(photoz)         
         )        
     elif parameter == 'logM':
-        specz = catalog_data['LOGM']
-        photoz = catalog_data['phz_pp_median_stellarmass']
+        specz = catalog_data['LOGM'] # DESI stellar mass
+        photoz = catalog_data['phz_pp_median_stellarmass'] # NNPZ stellar mass
         valid_indices = (
             ~np.isnan(specz) &
             ~np.isnan(photoz) &
@@ -46,7 +46,7 @@ def compute_catalog_statistics(catalog_path, parameter):
             (catalog_data['LOGM_ERR'] < 0.25) &
             (catalog_data['phz_flags'] == 0)          
         )                 
-    elif parameter == 'logM_Enia':
+    elif parameter == 'logM_Enia': #Stellar masses from Enia et al. 2025 (including IRAC bands)
         specz = catalog_data['LOGM']
         photoz = catalog_data['opp_median_stellarmass']
         valid_indices = (
@@ -71,11 +71,12 @@ def compute_catalog_statistics(catalog_path, parameter):
     # Plot the true vs predicted redshifts
     plt.rc('text', usetex=True)
     plt.rc('font', family='serif')
+
     fig = plt.figure(figsize=(22, 10)) 
-    plt.subplots_adjust(left=0.18, bottom=None, right=None, top=None, wspace=0.02, hspace=0)
+    plt.subplots_adjust(left=0.18, bottom=None, right=0.98, top=None, wspace=0.02, hspace=0)
 
     ax = sns.kdeplot(x=valid_specz, y=valid_photoz, cmap="RdYlBu_r", fill=True, 
-                     levels=15, thresh=0.05)  # `fill=False` avoids the filled area
+                     levels=15, thresh=0.05)  
                      
     plt.gca().set_facecolor('white')
 
@@ -84,39 +85,39 @@ def compute_catalog_statistics(catalog_path, parameter):
     min_val = min(valid_specz.min(), valid_photoz.min())
     if parameter =="PhotoZ":
             plt.plot([-0.5,1.1], [-0.5,1.1], '--', linewidth=3, color='black')
-            plt.plot([-0.5, 1.1], [-0.5 + 0.15, 1.1 + 0.15], ':', linewidth=3, color='black')  # Upper threshold
-            plt.plot([-0.5, 1.1], [-0.5 - 0.15, 1.1 - 0.15], ':', linewidth=3, color='black')  # Lower threshold
+            plt.plot([-0.5, 1.1], [-0.5 + 0.15, 1.1 + 0.15], ':', linewidth=3, color='black')  
+            plt.plot([-0.5, 1.1], [-0.5 - 0.15, 1.1 - 0.15], ':', linewidth=3, color='black')  
     else:
             plt.plot([0.5*min_val, 1.5*max_val], [0.5*min_val, 1.5*max_val], '--', linewidth=3, color='black')
-            plt.plot([0.5 * min_val, 1.5 * max_val], [0.5 * min_val + 0.25, 1.5 * max_val + 0.25], ':', linewidth=3, color='black')  # Upper threshold
-            plt.plot([0.5 * min_val, 1.5 * max_val], [0.5 * min_val - 0.25, 1.5 * max_val - 0.25], ':', linewidth=3, color='black')  # Lower threshold
+            plt.plot([0.5 * min_val, 1.5 * max_val], [0.5 * min_val + 0.25, 1.5 * max_val + 0.25], ':', linewidth=3, color='black')  
+            plt.plot([0.5 * min_val, 1.5 * max_val], [0.5 * min_val - 0.25, 1.5 * max_val - 0.25], ':', linewidth=3, color='black') 
 
     #plt.text(
     #0.15, 0.75, r'$\rm \eta_{out} = %.2f \pm %.2f\%%$' % (outlier_fraction, outlier_fraction_err),
     #horizontalalignment='left', verticalalignment='bottom',
-    #fontsize=50, transform=plt.gca().transAxes
+    #fontsize=55, transform=plt.gca().transAxes
     #)
 
 
     if parameter == 'PhotoZ':
-        plt.xlabel(r'$z_{\mathrm{DESI}}$', fontsize=50)
-        plt.ylabel(r'$\mathrm{photo-}z_{{\tt NNPZ}}$', fontsize=50)
+        plt.xlabel(r'$z_{\mathrm{DESI}}$', fontsize=60)
+        plt.ylabel(r'$\mathrm{photo-}z_{{\tt NNPZ}}$', fontsize=60)
     elif parameter == 'logM':
-        plt.xlabel(r'$\mathrm{log(M_{star}/M_{\odot})_{DESI}}$', fontsize=50)
-        plt.ylabel(r"$\rm log(M_{star}/M_{\odot})_{\tt NNPZ}$", fontsize=50)
+        plt.xlabel(r"$\log_{10} (M_*/M_{\odot})_{\rm DESI}$", fontsize=60)
+        plt.ylabel(r"$\log_{10} (M_*/M_{\odot})_{\tt NNPZ}$", fontsize=60)
     elif parameter == 'logM_Enia':
-        plt.xlabel(r'$\mathrm{True \, z \, log(M_{star}/M_{\odot})_{DESI}}$', fontsize=50)
-        plt.ylabel(r"$\rm Euclid\mbox{ } log(M_{star}/M_{\odot})_{IRAC}$", fontsize=50)
+        plt.xlabel(r'$\mathrm{True \, z \, log(M_{star}/M_{\odot})_{DESI}}$', fontsize=60)
+        plt.ylabel(r"$\rm Euclid\mbox{ } log(M_{star}/M_{\odot})_{IRAC}$", fontsize=60)
 
     # Adjust ticks and formatting
     plt.minorticks_on()
-    plt.tick_params(axis='x', which='major', labelsize=45)
-    plt.tick_params(axis='both', which='both', direction='in', top=True, right=True, labelsize=45)  
-    plt.tick_params(axis='both', which='major', length=15)  # Major ticks length
-    plt.tick_params(axis='both', which='minor', length=10)   # Minor ticks length
+    plt.tick_params(axis='x', which='major', labelsize=55)
+    plt.tick_params(axis='both', which='both', direction='in', top=True, right=True, labelsize=55)  
+    plt.tick_params(axis='both', which='major', length=15, width=2, direction='in', labelsize=55)  
+    plt.tick_params(axis='both', which='minor', length=10, width=2, direction='in', labelsize=55)  
 
-    plt.xticks(fontsize=50)
-    plt.yticks(fontsize=50)
+    plt.xticks(fontsize=55)
+    plt.yticks(fontsize=55)
     if parameter == 'PhotoZ':
         plt.xlim(-0.18,1.1)
         plt.ylim(-0.18,1.1)        
@@ -177,13 +178,9 @@ def compute_catalog_statistics(catalog_path, parameter):
     }
 
 # Path to the catalog file
-parameter = 'PhotoZ' 
-if parameter == 'PhotoZ':
-    catalog_path = "../../../Q1_data/DESISpecZ.fits"
-elif parameter == 'logM' or parameter == 'logM_Enia':
-    catalog_path = "../../../Q1_data/DESI_logM.fits" 
-else:
-    print("No catalog")
+parameter = 'PhotoZ' # set PhotoZ or logM
+catalog_path = "../../../Q1_data/EuclidMorphPhysPropSpecZ.fits"
+
     
 metrics = compute_catalog_statistics(catalog_path, parameter)
 write_results_to_file(metrics,parameter)

@@ -25,7 +25,7 @@ class DataLoader:
         file_names_selected = [file_names[idx] for idx in idxs]
 
         # Create a mapping from catalog name to index
-        catalog_name_to_idx = {name: i for i, name in enumerate(catalog_data['name'])}
+        catalog_name_to_idx = {name: i for i, name in enumerate(catalog_data['VIS_name'])}
 
         # Load embeddings and labels
         embeddings, labels = [], []
@@ -55,6 +55,7 @@ class DataLoader:
                     embeddings.append(zss[file_names_selected.index(file_name)])
 
         return np.array(embeddings), np.array(labels)
+
 # Function to sample the dataset at different percentages
 def get_sampled_data(embeddings, labels, percentage, random_seed=42):
     total_samples = len(embeddings)

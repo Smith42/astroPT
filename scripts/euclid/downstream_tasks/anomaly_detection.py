@@ -617,7 +617,7 @@ if __name__ == "__main__":
 
     # Extract catalog properties
     object_ids = catalog_data['object_id']
-    catalog_file_names = catalog_data['name']
+    catalog_file_names = catalog_data['VIS_name']
     print("Number of galaxies in the catalog:", len(catalog_file_names))
 
 

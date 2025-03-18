@@ -341,7 +341,7 @@ with fits.open(catalog_path) as hdul:
     catalog_data = hdul[1].data
 
 object_ids = catalog_data['object_id']
-catalog_file_names = catalog_data['name']
+catalog_file_names = catalog_data['VIS_name']
 print("Number of galaxies in the catalog:", len(catalog_file_names))
 
 print("Keys in catalog_data:", catalog_data.columns.names)
