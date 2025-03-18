@@ -11,7 +11,7 @@ We provide three AstroPT models trained on different input data:
 
 These models are accompanied by corresponding **datasets** containing FITS images and SEDs.  
 Additionally, the `metadata` directory includes **physical and morphological properties** of Euclid galaxies, complemented with:  
-- **Spectroscopic redshifts (spec-z)**, from DESI EDR *[DESI Collaboration et al. 2024](https://ui.adsabs.harvard.edu/abs/2024AJ....168...58D/abstract)*
+- **Spectroscopic redshifts (spec-z)**, from DESI EDR (*[DESI Collaboration et al. 2024](https://ui.adsabs.harvard.edu/abs/2024AJ....168...58D/abstract)*),
 - **Stellar masses** from the DESI EDR VAC of physical properties (*[Siudek et al. 2024](https://ui.adsabs.harvard.edu/abs/2024A%26A...691A.308S/abstract)*).
 
 ## Repository Structure  
