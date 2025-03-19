@@ -54,8 +54,19 @@
         "code",
         "data"
       ]
+    },
+    {
+      "login": "gimarso",
+      "name": "gimarso",
+      "avatar_url": "https://avatars.githubusercontent.com/u/52239656?v=4",
+      "profile": "https://github.com/gimarso",
+      "contributions": [
+        "ideas",
+        "code"
+      ]
     }
   ],
   "contributorsPerLine": 7,
-  "linkToUsage": true
+  "linkToUsage": true,
+  "commitType": "docs"
 }
