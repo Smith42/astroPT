@@ -6,7 +6,7 @@
 [![arXiv](https://img.shields.io/badge/arXiv-2405.14930---?logo=arXiv&labelColor=b31b1b&color=grey)](https://arxiv.org/abs/2405.14930)
 [![arXiv](https://img.shields.io/badge/arXiv-2503.15312---?logo=arXiv&labelColor=b31b1b&color=grey)](https://arxiv.org/abs/2503.15312)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![All Contributors](https://img.shields.io/badge/all_contributors-4-orange.svg?style=flat-square)](#contributors-)
+[![All Contributors](https://img.shields.io/badge/all_contributors-5-orange.svg?style=flat-square)](#contributors-)
 </div>
 
 # astroPT: a Large Observation Model for astronomy 🔭
