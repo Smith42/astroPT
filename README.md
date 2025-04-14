@@ -34,6 +34,24 @@ Or if you install locally via a git clone, you can pip install via:
 pip install -e .
 ```
 
+## how to run
+
+To load and run a pre-trained AstroPT model from HuggingFace you can use the `load_astropt` function:
+
+```python
+from astropt.model_utils import load_astropt
+
+model, model_args = load_astropt(
+    repo_id="smith42/astropt_sparse",
+    path="astropt/p16k10",
+    weights_filename="ckpt.pt",
+)
+model = model.to("cuda")
+```
+
+where repo_id is the HuggingFace repository ID, and path is the path within the repository that contains the AstroPT model checkpoint.
+
+
 ## results
 
 AstroPT v1.0.0 has been trained on 8.6M galaxy grz band `*.png` postage stamps 
