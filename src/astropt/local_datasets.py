@@ -149,12 +149,14 @@ class GalaxyImageDataset(Dataset):
                                 raw_galaxy.append(hdul[0].data.astype(np.float32))  # Assuming the image data is in the first HDU
                                 # we need to convert to float32 as FITS has bigendian issues
                         raw_galaxy = torch.tensor(np.stack(raw_galaxy)).to(torch.bfloat16)
+                        patch_galaxy = self.process_galaxy(raw_galaxy)
                         if self.paths_spect is None:
                             break
                     # Fetch spectrum if we have one
                     with fits.open(self.paths_spect[idx]) as hdul:
                         raw_spectra = hdul[1].data["Flux"].astype(np.float32)
                     raw_spectra = torch.tensor(raw_spectra).to(torch.bfloat16)
+                    patch_spectra = self.process_spectra(raw_spectra)
                     break
                 else:
                     raise NotImplementedError(f"File must be FITS or JPEG, it is instead {ext}.")
@@ -165,7 +167,6 @@ class GalaxyImageDataset(Dataset):
                 else:
                     sys.exit(1)
 
-        patch_galaxy = self.process_galaxy(raw_galaxy)
         if self.paths_spect is None:
             return {
                 "X": {"images": patch_galaxy[:-1]},
@@ -173,7 +174,6 @@ class GalaxyImageDataset(Dataset):
                 "idx": idx,
             }
         else:
-            patch_spectra = self.process_spectra(raw_spectra)
             return {
                 "X": {"images": patch_galaxy, "spectra": patch_spectra[:-1]},
                 "Y": {"images": patch_galaxy[1:], "spectra": patch_spectra},
