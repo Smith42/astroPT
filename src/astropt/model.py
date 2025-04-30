@@ -39,6 +39,10 @@ class ModalityRegistry:
     def get_config(self, name):
         """Get configuration for a specific modality"""
         return self.modalities[name]
+
+    def names(self):
+        """Get names of modalities"""
+        return sorted(self.modalities.keys())
         
     def generate_sequence(self, available_modalities, num_sequences=1, random_order=True):
         """Generate a modality sequence from available modalities"""
@@ -148,47 +152,28 @@ class Encoder(nn.Module):
      
     def __init__(self, config, in_size):
         super().__init__()
-        self.encode = nn.Sequential(
-             nn.Linear(in_size, config.n_embd),
-             nn.ReLU(),
-             nn.Linear(config.n_embd, config.n_embd),
-             nn.ReLU(),
-        )
-        # TODO activate these after first tests on euclid model done
-        #self.c_fc    = nn.Linear(in_size, 4 * config.n_embd, bias=config.bias)
-        #self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
+        self.c_fc    = nn.Linear(in_size, 4 * config.n_embd, bias=config.bias)
+        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
 
     def forward(self, x):
-        x = self.encode(x)
+        x = self.c_fc(x)
+        x = new_gelu(x)
+        x = self.c_proj(x)
         return x
-        #x = self.c_fc(x)
-        #x = new_gelu(x)
-        #x = self.c_proj(x)
-        #return x
 
 class Decoder(nn.Module):
     """ base module to move from embedding space to data space  """
 
     def __init__(self, config, out_size):
         super().__init__()
-        self.decode = nn.Sequential(
-            nn.Linear(config.n_embd, config.n_embd*2),
-            nn.ReLU(),
-            nn.Linear(config.n_embd*2, config.n_embd),
-            nn.ReLU(),
-            nn.Linear(config.n_embd, out_size)
-        )
-        # TODO activate these after first tests on euclid model done
-        #self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
-        #self.c_proj  = nn.Linear(4 * config.n_embd, out_size, bias=config.bias)
+        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
+        self.c_proj  = nn.Linear(4 * config.n_embd, out_size, bias=config.bias)
 
     def forward(self, x):
-        x = self.decode(x)
+        x = self.c_fc(x)
+        x = new_gelu(x)
+        x = self.c_proj(x)
         return x
-        #x = self.c_fc(x)
-        #x = new_gelu(x)
-        #x = self.c_proj(x)
-        #return x
 
 class Embedder(nn.Module):
     """ base module to move from embedding space to data space  """
@@ -209,7 +194,7 @@ class GPTConfig:
     n_chan: int = 1
     dropout: float = 0.0
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-    modalities: List[ModalityConfig] = None
+    modalities: list[ModalityConfig] = None
 
 class GPT(nn.Module):
 
@@ -227,10 +212,10 @@ class GPT(nn.Module):
             decoders[name] = Decoder(config, mod_config.input_size)
 
         self.transformer = nn.ModuleDict(dict(
-            wte = nn.ModuleDict(encoders)
+            wte = nn.ModuleDict(encoders),
             wpe = nn.ModuleDict({
                 name: Embedder(config)
-                for name in modality_registry.get_modality_names()
+                for name in modality_registry.modalities.keys()
             }),
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
@@ -278,7 +263,7 @@ class GPT(nn.Module):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, inputs, targets=None):
-        device = images.device
+        device = next(iter(inputs.values())).device # get device from first modality in our dict
         tt = sum(x.size(1) for x in inputs.values())
         assert tt <= self.config.block_size, f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
         # forward the GPT model itself
@@ -309,7 +294,7 @@ class GPT(nn.Module):
                 mod_config = self.modality_registry.get_config(mod_name)
                 pred = outputs[mod_name]
                 loss += F.huber_loss(pred, target) * mod_config.loss_weight
-            loss /= self.modality_registry.num_modalities
+            loss /= len(self.modality_registry.names())
         else:
             loss = None
 

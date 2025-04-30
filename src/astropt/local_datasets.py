@@ -88,7 +88,7 @@ class GalaxyImageDataset(Dataset):
         patch_galaxy = einops.rearrange(
             raw_galaxy,
             'c (h p1) (w p2) -> (h w) (p1 p2 c)', 
-            p1=self.patch_size["images"], p2=self.patch_size["images"]
+            p1=self.patch_size, p2=self.patch_size
         )
 
         if "galaxy" in self.transform:
@@ -166,9 +166,16 @@ class GalaxyImageDataset(Dataset):
                     sys.exit(1)
 
         patch_galaxy = self.process_galaxy(raw_galaxy)
-        patch_spectra = self.process_spectra(raw_spectra)
-        return {
-            "X": {"images": patch_galaxy, "spectra": patch_spectra[:-1]},
-            "Y": {"images": patch_galaxy[1:], "spectra": patch_spectra},
-            "idx": idx,
-        }
+        if self.paths_spect is None:
+            return {
+                "X": {"images": patch_galaxy[:-1]},
+                "Y": {"images": patch_galaxy[1:]},
+                "idx": idx,
+            }
+        else:
+            patch_spectra = self.process_spectra(raw_spectra)
+            return {
+                "X": {"images": patch_galaxy, "spectra": patch_spectra[:-1]},
+                "Y": {"images": patch_galaxy[1:], "spectra": patch_spectra},
+                "idx": idx,
+            }
