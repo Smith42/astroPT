@@ -434,14 +434,10 @@ if __name__ == "__main__":
                 # looking at the source of that context manager, it just toggles this variable
                 model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
 
-            pairs = modalities
-            loss = 0
-            for pair in pairs:
-                with ctx:
-                    logits, loss = model(
-                        to_device_dict(B["X"], device), targets=to_device_dict(B["Y"], device),
-                    )
-            loss /= (gradient_accumulation_steps*2) # scale the loss to account for gradient accumulation
+            with ctx:
+                logits, loss = model(
+                    to_device_dict(B["X"], device), targets=to_device_dict(B["Y"], device),
+                )
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
             B = next(tdl)
             # backward pass, with gradient scaling if training in fp16
