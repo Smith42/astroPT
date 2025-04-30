@@ -4,8 +4,9 @@
 
 [![ICML](https://img.shields.io/badge/AI4Science@ICML-2024---?logo=https%3A%2F%2Fneurips.cc%2Fstatic%2Fcore%2Fimg%2FNeurIPS-logo.svg&labelColor=68448B&color=b3b3b3)](https://openreview.net/forum?id=aOLuuLxqav)
 [![arXiv](https://img.shields.io/badge/arXiv-2405.14930---?logo=arXiv&labelColor=b31b1b&color=grey)](https://arxiv.org/abs/2405.14930)
+[![arXiv](https://img.shields.io/badge/arXiv-2503.15312---?logo=arXiv&labelColor=b31b1b&color=grey)](https://arxiv.org/abs/2503.15312)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![All Contributors](https://img.shields.io/badge/all_contributors-4-orange.svg?style=flat-square)](#contributors-)
+[![All Contributors](https://img.shields.io/badge/all_contributors-5-orange.svg?style=flat-square)](#contributors-)
 </div>
 
 # astroPT: a Large Observation Model for astronomy 🔭
@@ -32,6 +33,24 @@ Or if you install locally via a git clone, you can pip install via:
 ```bash
 pip install -e .
 ```
+
+## how to run
+
+To load and run a pre-trained AstroPT model from HuggingFace you can use the `load_astropt` function:
+
+```python
+from astropt.model_utils import load_astropt
+
+model, model_args = load_astropt(
+    repo_id="smith42/astropt_sparse",
+    path="astropt/p16k10",
+    weights_filename="ckpt.pt",
+)
+model = model.to("cuda")
+```
+
+where repo_id is the HuggingFace repository ID, and path is the path within the repository that contains the AstroPT model checkpoint.
+
 
 ## results
 
@@ -110,6 +129,7 @@ We also release our full dataset and galaxy metadata on [HuggingFace 🔥](https
       <td align="center" valign="top" width="14.28%"><a href="https://mjjsmith.com/"><img src="https://avatars.githubusercontent.com/u/8194280?v=4?s=100" width="100px;" alt="Mike Smith"/><br /><sub><b>Mike Smith</b></sub></a><br /><a href="https://github.com/Smith42/astroPT/commits?author=Smith42" title="Code">💻</a> <a href="#ideas-Smith42" title="Ideas, Planning, & Feedback">🤔</a> <a href="#content-Smith42" title="Content">🖋</a> <a href="#data-Smith42" title="Data">🔣</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/mhuertascompany"><img src="https://avatars.githubusercontent.com/u/22987973?v=4?s=100" width="100px;" alt="mhuertascompany"/><br /><sub><b>mhuertascompany</b></sub></a><br /><a href="#ideas-mhuertascompany" title="Ideas, Planning, & Feedback">🤔</a> <a href="#content-mhuertascompany" title="Content">🖋</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/msiudek"><img src="https://avatars.githubusercontent.com/u/53626980?v=4?s=100" width="100px;" alt="Malgorzata Siudek"/><br /><sub><b>Malgorzata Siudek</b></sub></a><br /><a href="#ideas-msiudek" title="Ideas, Planning, & Feedback">🤔</a> <a href="#content-msiudek" title="Content">🖋</a> <a href="https://github.com/Smith42/astroPT/commits?author=msiudek" title="Code">💻</a> <a href="#data-msiudek" title="Data">🔣</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/gimarso"><img src="https://avatars.githubusercontent.com/u/52239656?v=4?s=100" width="100px;" alt="gimarso"/><br /><sub><b>gimarso</b></sub></a><br /><a href="#ideas-gimarso" title="Ideas, Planning, & Feedback">🤔</a> <a href="https://github.com/Smith42/astroPT/commits?author=gimarso" title="Code">💻</a></td>
     </tr>
   </tbody>
   <tfoot>
