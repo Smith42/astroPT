@@ -300,27 +300,56 @@ class GPT(nn.Module):
 
         return outputs, loss
 
-    def get_embeddings(self, idx, in_modality, pos=None, draw_from_centre=True, prefix_len=None):
+    def get_embeddings(self, inputs, pos=None, draw_from_centre=True, prefix_len=None):
         """
-        idx = patch input
-        in_modality = modality to process
-        pos = position
-        draw_from_centre = get embedding from centre from model not from penultimate layer
+        Get embeddings from AstroPT.
+
+        Args:
+            inputs: dict of tensors with modality names as keys
+            pos: position
+            draw_from_centre = get embedding from centre from model not from penultimate layer
+            prefix_len: optional prefix length to consider
+
+        Returns:
+            dictionary of embeddings for each modality
         """
-        device = idx.device
-        bb, tt_im, ch = images.size()
+        device = next(iter(inputs.values())).device # get device from first modality
+        tt = sum(x.size(1) for x in inputs.values())
         assert tt <= self.config.block_size, f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
-        pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0) # shape (1, tt)
 
-        # forward the GPT model itself
-        tok_emb = self.transformer.wte[in_modality](idx) # token embeddings of shape (b, t, n_embd)
-        pos_emb = self.transformer.wpe[in_modality](pos) # position embeddings of shape (1, t, n_embd)
+        # generate token embeddings per modality
+        embeddings = []
+        for mod_name, x in inputs.items():
+            embeddings.append(self.transformer.wte[mod_name](x))
+        tok_emb = torch.cat(embeddings, dim=1)
+
+        if pos is None:
+            pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0) # shape (1, tt)
+
+        first_modality = self.modality_registry.names()[0]
+        pos_emb = self.transformer.wpe[first_modality](pos)
+
         x = self.transformer.drop(tok_emb + pos_emb)
-        for block in self.transformer.h: # by default we take the penultimate layer as the embedding layer
-            x = block(x)
-        embeddings = x
 
-        return embeddings
+        for i, block in enumerate(self.transformer.h): # by default we take the penultimate layer as the embedding layer
+            x = block(x)
+            if draw_from_centre and i == len(self.transformer.h) // 2:
+                centre_embeddings = x
+
+        if not draw_from_centre:
+            embeddings_out = self.transformer.ln_f(x)
+        else:
+            embeddings_out = centre_embeddings
+
+        # split embeddings by modality
+        result = {}
+        current_idx = 0
+        for mod_name, input_tensor in inputs.items()
+            seq_len = input_tensor.size(1)
+            result[mod_name] = embeddings_out[:, current_idx:current_idx + seq_len]
+            current_idx += seq_len
+
+        return result
 
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary
