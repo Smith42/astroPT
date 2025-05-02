@@ -63,7 +63,7 @@ if __name__ == "__main__":
     out_dir = 'logs/astropt0070M'
     eval_interval = 1000
     log_interval = 100
-    checkpoint_interval = 10000
+    checkpoint_interval = 1000
     assert checkpoint_interval % eval_interval == 0
     eval_iters = 100
     eval_only = False # if True, script exits right after the first eval
@@ -72,7 +72,7 @@ if __name__ == "__main__":
     use_hf = False # use the huggingface dataset version of our galz
     stream_hf_dataset = False # stream the galaxies from huggingface
     # data
-    gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
+    gradient_accumulation_steps = 2#5 * 8 # used to simulate larger batch sizes
     batch_size = 16 # if gradient_accumulation_steps > 1, this is the micro-batch size
     spiral = True # do we want to process the galaxy patches in spiral order?
     block_size = 1024
@@ -156,7 +156,6 @@ if __name__ == "__main__":
 
     # dataset init
     def normalise(x):
-        # HF is in numpy format. Need to change that here if so:
         if use_hf: x = torch.from_numpy(x).to(torch.float32)
         std, mean = torch.std_mean(x, dim=1, keepdim=True)
         x_norm = (x - mean)/(std + 1e-8)

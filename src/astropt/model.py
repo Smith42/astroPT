@@ -360,7 +360,7 @@ class GPT(nn.Module):
         # split embeddings by modality
         result = {}
         current_idx = 0
-        for mod_name, input_tensor in inputs.items()
+        for mod_name, input_tensor in inputs.items():
             seq_len = input_tensor.size(1)
             result[mod_name] = embeddings_out[:, current_idx:current_idx + seq_len]
             current_idx += seq_len
@@ -441,7 +441,7 @@ class GPT(nn.Module):
             # forward the model to get the logits for the index in the sequence
             outputs, _ = self(inputs, target_modality=target_modality)
             next_token = outputs[target_modality][:, -1:, :]
-            next_token = pred + torch.randn_like(next_token) * temperature
+            next_token = next_token + torch.randn_like(next_token) * temperature
 
             if target_modality not in inputs:
                 inputs[target_modality] = next_token
@@ -468,7 +468,9 @@ class GPT(nn.Module):
                 result[mod_name] = torch.mean(embeddings, dim=1)
             elif reduction == "exp_decay":
                 weights = torch.logspace(0, -1, embeddings.shape[1], device=embeddings.device).unsqueeze(0).unsqueeze(-1)
-                result[mod_name] = torch.sum(weights*embeddings, dim=1)/torch.sum(embeddings, dim=1)
+                result[mod_name] = torch.sum(weights*embeddings, dim=1)/torch.sum(weights, dim=1)
+            elif reduction == "last":
+                result[mod_name] = embeddings[:, -1, :]
             elif reduction == "none":
                 result[mod_name] = embeddings
             else:
