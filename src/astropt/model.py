@@ -402,14 +402,15 @@ class GPT(nn.Module):
 
         return result
 
-    def get_task_prediction(self, idx, targets=None):
+    def get_task_prediction(self, inputs, targets=None):
         """Forward pass for task prediction during finetuning"""
         if self.task_head is None:
             raise ValueError("Model not configured for task prediction. Set config.output_dim")
             
-        device = idx.device
-        b, t, c = idx.size()
-        assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        device = next(iter(inputs.values())).device # get device from first modality
+        tt = sum(x.size(1) for x in inputs.values())
+        assert tt <= self.config.block_size, f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
+
         if self.config.attn_type == "prefix":
             # TODO we need to make sure that the prefix hyperparameters are tuned well:
             if prefix_len is None:
@@ -420,10 +421,15 @@ class GPT(nn.Module):
             block_mask = create_block_mask(prefix_lm_mask, None, None, self.config.block_size, self.config.block_size)
         else:
             block_mask = None
-        pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0) # shape (1, t)
+        pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0) # shape (1, tt)
 
         # forward the GPT model itself
-        tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
+        # generate token embeddings per modality
+        embeddings = []
+        for mod_name, x in inputs.items():
+            embeddings.append(self.transformer.wte[mod_name](x))
+        tok_emb = torch.cat(embeddings, dim=1)
+
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for i, block in enumerate(self.transformer.h):
