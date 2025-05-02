@@ -262,10 +262,11 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, inputs, targets=None):
+    def forward(self, inputs, targets=None, target_modality=None):
         device = next(iter(inputs.values())).device # get device from first modality in our dict
         tt = sum(x.size(1) for x in inputs.values())
         assert tt <= self.config.block_size, f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
+            
         # forward the GPT model itself
         embeddings = []
         for mod_name, x in inputs.items():
@@ -281,6 +282,21 @@ class GPT(nn.Module):
  
         outputs = {}
         current_idx = 0
+
+        if target_modality is not None:
+            # continue sequence if target modality is in inputs
+            if target_modality in inputs:
+                for mod_name, input_tensor in inputs.items():
+                    if mod_name == target_modality:
+                        seq_len = input_tensor.size(1)
+                        hidden_state = x[:, current_idx:current_idx + seq_len]
+                        outputs[mod_name] = self.lm_head[mod_name](hidden_state)
+                    current_idx += input_tensor.size(1)
+            # target modality not in inputs so start a new sequence
+            else:
+                hidden_state = x[:, -1:, :]
+                outputs[target_modality] = self.lm_head[target_modality](hidden_state)
+
         for mod_name, input_tensor in inputs.items():
             seq_len = input_tensor.size(1)
             hidden_state = x[:, current_idx:current_idx + seq_len]
@@ -404,22 +420,35 @@ class GPT(nn.Module):
         return mfu
 
     @torch.no_grad()
-    def generate(self, idx, new_tokens, temperature=0.0):
+    def generate(self, inputs, new_tokens, target_modality, temperature=0.0):
         """
-        Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
-        the sequence new_tokens times, feeding the predictions back into the model each time.
+        Take a conditioning sequence for each modality and generate new tokens for the target modality.
+        
+        Args:
+            inputs: dict of tokens with modality names as keys
+            new_tokens: number of new tokens to generate
+            target_modality: modality to generate tokens for
+            temperature: temperature for sampling (0.0 = deterministic)
+
         Most likely you'll want to make sure to be in model.eval() mode of operation for this.
         """
         for i in range(new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
-            idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
-            # forward the model to get the logits for the index in the sequence
-            logits, _ = self(idx_cond, in_modality, out_modality)
-            idx_next = logits + (torch.randn(logits.size())*temperature).to(logits.device)
-            # append sampled index to the running sequence and continue
-            idx = torch.cat((idx, idx_next), dim=1)
+            for mod_name in inputs:
+                if inputs[mod_name].size(1) > self.config.block_size:
+                    inputs[mod_name] = inputs[mod_name][:, -self.config.block_size:]
 
-        return idx
+            # forward the model to get the logits for the index in the sequence
+            outputs, _ = self(inputs, target_modality=target_modality)
+            next_token = outputs[target_modality][:, -1:, :]
+            next_token = pred + torch.randn_like(next_token) * temperature
+
+            if target_modality not in inputs:
+                inputs[target_modality] = next_token
+            else:
+                inputs[target_modality] = torch.cat([inputs[target_modality], next_token], dim=1)
+    
+        return inputs
 
     @torch.no_grad()
     def generate_embeddings(self, idx, modality, average_type="mean"):
