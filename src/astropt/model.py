@@ -451,7 +451,7 @@ class GPT(nn.Module):
         return inputs
 
     @torch.no_grad()
-    def generate_embeddings(self, idx, modality, average_type="mean"):
+    def generate_embeddings(self, inputs, reduction="mean"):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t))
         and get the embedding from the transformer model for that series.
@@ -459,15 +459,19 @@ class GPT(nn.Module):
         Most likely you'll want to make sure to be in model.eval() mode of
         operation for this.
         """
-        idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
-        # We only care about the average embedding
-        embeddings = self.get_embeddings(idx_cond, in_modality=in_modality, pos=pos, prefix_len=None)
-        if reduction == "mean":
-            return torch.mean(embeddings, dim=1)
-        elif reduction == "exp_decay":
-            weights = torch.logspace(0, -1, embeddings.shape[1], device=embeddings.device).unsqueeze(0).unsqueeze(-1)
-            return torch.sum(weights*embeddings, dim=1)/torch.sum(embeddings, dim=1)
-        elif reduction == "none":
-            return embeddings
-        else:
-            raise NotImplementedError
+        embeddings_dict = self.get_embeddings(inputs)
+        result = {}
+
+        # apply reduction for each modality
+        for mod_name, embeddings in embeddings_dict.items():
+            if reduction == "mean":
+                result[mod_name] = torch.mean(embeddings, dim=1)
+            elif reduction == "exp_decay":
+                weights = torch.logspace(0, -1, embeddings.shape[1], device=embeddings.device).unsqueeze(0).unsqueeze(-1)
+                result[mod_name] = torch.sum(weights*embeddings, dim=1)/torch.sum(embeddings, dim=1)
+            elif reduction == "none":
+                result[mod_name] = embeddings
+            else:
+                raise NotImplementedError(f"Reduction method '{reduction}' not implemented")
+
+        return result
