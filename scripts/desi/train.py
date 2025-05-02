@@ -48,17 +48,22 @@ try:
 except:
     log_emissions = False
 
-from astropt.model import GPTConfig, GPT
+from astropt.model import GPTConfig, GPT, ModalityConfig, ModalityRegistry
 from astropt.local_datasets import GalaxyImageDataset
+
+## helper functions
+def to_device_dict(x, device):
+    """Move all tensor values in dictionary x to the specified device."""
+    return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in x.items()}
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
-    # default config values designed to test run a 70M parameter model on DESI imagery
+    # default config values designed to test run a 70M parameter model on DESI FITS imagery
     # look at `config/astropt*.py` for a prod run example
     out_dir = 'logs/astropt0070M'
     eval_interval = 1000
     log_interval = 100
-    checkpoint_interval = 10000
+    checkpoint_interval = 1000
     assert checkpoint_interval % eval_interval == 0
     eval_iters = 100
     eval_only = False # if True, script exits right after the first eval
@@ -67,11 +72,11 @@ if __name__ == "__main__":
     use_hf = False # use the huggingface dataset version of our galz
     stream_hf_dataset = False # stream the galaxies from huggingface
     # data
-    gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
+    gradient_accumulation_steps = 2#5 * 8 # used to simulate larger batch sizes
     batch_size = 16 # if gradient_accumulation_steps > 1, this is the micro-batch size
     spiral = True # do we want to process the galaxy patches in spiral order?
     block_size = 1024
-    image_size = 512
+    image_size = 224
     num_workers = 32#64 
     # astroPT model
     n_layer = 12
@@ -85,7 +90,7 @@ if __name__ == "__main__":
     # Define modalities configuration
     modalities = [
         ModalityConfig(name="images", input_size=16*16*n_chan, patch_size=16, loss_weight=1.0),
-        ModalityConfig(name="spectra", input_size=256, patch_size=32, loss_weight=0.5)
+        #ModalityConfig(name="spectra", input_size=256, patch_size=32, loss_weight=0.5)
     ]
     # Create modality registry
     modality_registry = ModalityRegistry(modalities)
@@ -151,7 +156,6 @@ if __name__ == "__main__":
 
     # dataset init
     def normalise(x):
-        # HF is in numpy format. Need to change that here if so:
         if use_hf: x = torch.from_numpy(x).to(torch.float32)
         std, mean = torch.std_mean(x, dim=1, keepdim=True)
         x_norm = (x - mean)/(std + 1e-8)
@@ -164,73 +168,31 @@ if __name__ == "__main__":
         return transform
     transforms = {"galaxy": data_transforms()}
     # training dataset and dataloader
-    tpaths = None if use_hf else "./data/train_desi_spectra_images.txt"
-    tpaths_spectra = None if use_hf else "./data/train_desi_spectra_spectra.txt"
+    tpaths = "./decam_imagery.txt"
+    tpaths_spectra = None #"./data/train_desi_spectra.txt"
     tds = GalaxyImageDataset(tpaths, paths_spect=tpaths_spectra, spiral=spiral, transform=transforms, patch_size=patch_size)
     # validation dataset and dataloader
-    vpaths = None if use_hf else "./data/test_desi_spectra_images.txt"
-    vpaths_spectra = None if use_hf else "./data/test_desi_spectra_spectra.txt"
+    vpaths = "./decam_imagery.txt"
+    vpaths_spectra = None #"./data/test_desi_spectra_spectra.txt"
     vds = GalaxyImageDataset(vpaths, paths_spect=vpaths_spectra, spiral=spiral, transform=transforms, patch_size=patch_size)
 
-    if use_hf:
-        from datasets import load_dataset, Image
-        import io
-
-        def filter_bumf(galdict):
-            """ Lazily remove galaxies that are borked """
-            try:
-                gal = PIL.Image.open(io.BytesIO(galdict["image"]["bytes"]))
-                # Force full image load to catch truncation errors
-                gal.load()
-                return True
-            except Exception as e:
-                print(f"Filtering out corrupted image: {e}")
-                return False
-        def process_galaxy_wrapper(galdict, func):
-            gal = PIL.Image.open(io.BytesIO(galdict["image"]["bytes"]))
-            patch_galaxy = func(np.array(gal).swapaxes(0, 2))
-            return { "X": patch_galaxy[:-1], "Y": patch_galaxy[1:], }
-
-        tds_hf = load_dataset(
-            "Smith42/galaxies",
-            split="train",
-            streaming=(True if stream_hf_dataset else False),
-            cache_dir="/raid/data/cache",
-        )
-        tds_hf = tds_hf.cast_column("image", Image(decode=False))
-        tds_hf = tds_hf.filter(filter_bumf).map(partial(process_galaxy_wrapper, func=tds.process_galaxy))
-        tds_hf = tds_hf.remove_columns(["image", "dr8_id"])
-
-        vds_hf = load_dataset(
-            "Smith42/galaxies",
-            split="test",
-            streaming=(True if stream_hf_dataset else False),
-            cache_dir="/raid/data/cache",
-        )
-        vds_hf = vds_hf.cast_column("image", Image(decode=False))
-        vds_hf = vds_hf.filter(filter_bumf).map(partial(process_galaxy_wrapper, func=vds.process_galaxy))
-        vds_hf = vds_hf.remove_columns(["image", "dr8_id"])
-
-    sampler = None
     tdl = iter(DataLoader(
-        tds_hf if use_hf else tds,
-        sampler=sampler,
+        tds,
         batch_size=batch_size,
         num_workers=num_workers,
         pin_memory=True,
     ))
     vdl = iter(DataLoader(
-        vds_hf if use_hf else vds,
-        sampler=sampler,
+        vds,
         batch_size=batch_size,
         num_workers=num_workers,
         pin_memory=True,
     ))
-    
+ 
     # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
     iter_num = 0
     best_val_loss = 1e9
-    
+ 
     # model init
     model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, n_chan=n_chan, block_size=block_size, dropout=dropout, modalities=modalities)
     
@@ -327,9 +289,7 @@ if __name__ == "__main__":
                 B = next(dl) # fetch the very first batch
                 with ctx:
                     logits, loss = model(
-                        B["X"]["images"].to(device), 
-                        B["X"]["spectra"].to(device), 
-                        targets=(B["Y"]["images"].to(device), B["Y"]["spectra"].to(device)),
+                        to_device_dict(B["X"], device), targets=to_device_dict(B["Y"], device),
                     )
                 losses[k] = loss.item()
             out[split]["dummy"] = losses.mean()
@@ -344,9 +304,7 @@ if __name__ == "__main__":
             B = next(vdl)
             with ctx:
                 P, loss = model(
-                    B["X"]["images"].to(device), 
-                    B["X"]["spectra"].to(device), 
-                    targets=(B["Y"]["images"].to(device), B["Y"]["spectra"].to(device)),
+                    to_device_dict(B["X"], device), targets=to_device_dict(B["Y"], device),
                 )
 
                 Yim = B["Y"]["images"].to(device)
@@ -354,9 +312,9 @@ if __name__ == "__main__":
                 zero_block = torch.zeros((b, 1, c)).to(device)
                 Yim = torch.cat((zero_block, Yim), dim=1)
                 if spiral: Yim = torch.stack([vds.antispiralise(yy) for yy in Yim])
-                im_patch = patch_size["images"]
+                im_patch = modality_registry.get_config("images").patch_size
                 Yim = einops.rearrange(Yim, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=im_patch, p2=im_patch, h=image_size//im_patch, w=image_size//im_patch)
-                Pim = torch.cat((zero_block, P[0]), dim=1)
+                Pim = torch.cat((zero_block, P["images"]), dim=1)
                 if spiral: Pim = torch.stack([vds.antispiralise(pp) for pp in Pim])
                 Pim = einops.rearrange(Pim, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=im_patch, p2=im_patch, h=image_size//im_patch, w=image_size//im_patch)
 
@@ -369,12 +327,12 @@ if __name__ == "__main__":
                 if log_via_wandb:
                     wandb.log({"Y": wandb.Image(Y.swapaxes(1, -1)), "P": wandb.Image(P.swapaxes(1, -1))})
 
-                Ysp = B["Y"]["spectra"]
-                Psp = P[1]
-                for ax, p, y in zip(axs, Psp.to(float).cpu().numpy(), Ysp.to(float).cpu().numpy()):
-                    ax[2].plot(np.concatenate(y, axis=0))
-                    ax[2].plot(np.concatenate(p, axis=0)) # overlay too cause yolo
-                    ax[3].plot(np.concatenate(p, axis=0))
+                #Ysp = B["Y"]["spectra"]
+                #Psp = P["spectra"]
+                #for ax, p, y in zip(axs, Psp.to(float).cpu().numpy(), Ysp.to(float).cpu().numpy()):
+                #    ax[2].plot(np.concatenate(y, axis=0))
+                #    ax[2].plot(np.concatenate(p, axis=0)) # overlay too cause yolo
+                #    ax[3].plot(np.concatenate(p, axis=0))
             f.savefig(
                 os.path.join(out_dir, f"{iter_num:06d}_{split}.jpg"),
                 bbox_inches="tight",
@@ -475,16 +433,10 @@ if __name__ == "__main__":
                 # looking at the source of that context manager, it just toggles this variable
                 model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
 
-            pairs = modalities
-            loss = 0
-            for pair in pairs:
-                with ctx:
-                    logits, loss = model(
-                        B["X"]["images"].to(device), 
-                        B["X"]["spectra"].to(device), 
-                        targets=(B["Y"]["images"].to(device), B["Y"]["spectra"].to(device)),
-                    )
-            loss /= (gradient_accumulation_steps*2) # scale the loss to account for gradient accumulation
+            with ctx:
+                logits, loss = model(
+                    to_device_dict(B["X"], device), targets=to_device_dict(B["Y"], device),
+                )
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
             B = next(tdl)
             # backward pass, with gradient scaling if training in fp16
@@ -507,9 +459,9 @@ if __name__ == "__main__":
         if iter_num % log_interval == 0 and master_process:
             # get loss as float. note: this is a CPU-GPU sync point
             # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
-            lossf = loss.item() * gradient_accumulation_steps * len(pairs)
+            lossf = loss.item() * gradient_accumulation_steps
             if local_iter_num >= 5: # let the training loop settle a bit
-                mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps * len(pairs), dt)
+                mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
                 running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
             if log_via_wandb:
                 wandb.log({"loss": lossf, "time": dt})

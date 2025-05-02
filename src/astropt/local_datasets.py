@@ -4,24 +4,31 @@ A place to store our pytorch datasets.
 import einops
 import numpy as np
 import torch
+import torch.nn.functional as F
 import os
 import sys
 from torch.utils.data import Dataset
 from torchvision import io
 from astropy.io import fits
+from astropy.table import Table
 
 class GalaxyImageDataset(Dataset):
 
-    def __init__(self, paths=None, transform=None, stochastic=True, spiral=False, patch_size=16):
+    def __init__(self, paths=None, paths_spect=None, transform=None, stochastic=True, spiral=False, patch_size=16):
         """
         Arguments:
             paths: file with all the galaxy paths. Paths can be None if streaming from HF.
+            paths_spect: file with all the spectra paths in same order as paths.
             transform (callable, optional): Optional transform to be applied on a sample.
             spiral: spiral form instead of raster form
             patch_size: size of ViT patch
         """
         if paths is not None:
             self.paths = np.genfromtxt(paths, delimiter=",", dtype=str)
+        if paths_spect is not None:
+            self.paths_spect = np.genfromtxt(paths_spect, delimiter=",", dtype=str)
+        else:
+            self.paths_spect = None
         self.transform = transform
         self.patch_size = patch_size
         self.stochastic = stochastic
@@ -84,12 +91,31 @@ class GalaxyImageDataset(Dataset):
             p1=self.patch_size, p2=self.patch_size
         )
 
-        if self.transform:
-            patch_galaxy = self.transform(patch_galaxy)
+        if "galaxy" in self.transform:
+            patch_galaxy = self.transform["galaxy"](patch_galaxy)
         if self.spiral:
             patch_galaxy = self.spiralise(patch_galaxy)
 
         return patch_galaxy
+
+    def process_spectra(self, raw_spectra):
+        # Apply padding to the spectrum
+        w = raw_spectra.shape[0]
+        window = self.patch_size["spectra"]
+        pad_w = (window - w % window) % window
+        padded_spectra = F.pad(raw_spectra, (0, pad_w))
+
+        # Now rearrange into patches
+        patch_spectra = einops.rearrange(
+            padded_spectra,
+            '(w p) -> (w) (p)',
+            p=window,
+        )
+
+        if "spectra" in self.transform:
+            patch_spectra = self.transform["spectra"](patch_spectra)
+
+        return patch_spectra
 
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
@@ -113,7 +139,8 @@ class GalaxyImageDataset(Dataset):
                             raw_galaxy = hdul[0].data.astype(np.float32)  # Assuming the image data is in the first HDU
                             # we need to convert to float32 as FITS has bigendian issues (https://stackoverflow.com/questions/59247385/why-does-torch-from-numpy-require-a-different-byte-ordering-while-matplotlib-doe)
                         raw_galaxy = torch.tensor(raw_galaxy[np.newaxis]).to(torch.bfloat16)
-                        break
+                        if self.paths_spect is None:
+                            break
                     else:
                         # case with N FITS files
                         raw_galaxy = []
@@ -122,7 +149,15 @@ class GalaxyImageDataset(Dataset):
                                 raw_galaxy.append(hdul[0].data.astype(np.float32))  # Assuming the image data is in the first HDU
                                 # we need to convert to float32 as FITS has bigendian issues
                         raw_galaxy = torch.tensor(np.stack(raw_galaxy)).to(torch.bfloat16)
-                        break
+                        patch_galaxy = self.process_galaxy(raw_galaxy)
+                        if self.paths_spect is None:
+                            break
+                    # Fetch spectrum if we have one
+                    with fits.open(self.paths_spect[idx]) as hdul:
+                        raw_spectra = hdul[1].data["Flux"].astype(np.float32)
+                    raw_spectra = torch.tensor(raw_spectra).to(torch.bfloat16)
+                    patch_spectra = self.process_spectra(raw_spectra)
+                    break
                 else:
                     raise NotImplementedError(f"File must be FITS or JPEG, it is instead {ext}.")
             except Exception as err:
@@ -132,5 +167,15 @@ class GalaxyImageDataset(Dataset):
                 else:
                     sys.exit(1)
 
-        patch_galaxy = self.process_galaxy(raw_galaxy)
-        return {"X": patch_galaxy[:-1], "Y": patch_galaxy[1:], "idx": idx}
+        if self.paths_spect is None:
+            return {
+                "X": {"images": patch_galaxy[:-1]},
+                "Y": {"images": patch_galaxy[1:]},
+                "idx": idx,
+            }
+        else:
+            return {
+                "X": {"images": patch_galaxy, "spectra": patch_spectra[:-1]},
+                "Y": {"images": patch_galaxy[1:], "spectra": patch_spectra},
+                "idx": idx,
+            }
