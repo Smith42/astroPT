@@ -1,39 +1,56 @@
-[build-system]
-requires = ["hatchling", "hatch-requirements-txt", "hatch-vcs"]
-build-backend = "hatchling.build"
-
 [project]
 name = "astropt"
-dynamic = [
-    "dependencies",
-    "version"
-]
-authors = [
-  { name="Michael J. Smith", email="mike@mjjsmith.com" },
-]
-description = "Transformer for galaxy images (and general astronomy)"
-readme = "README.md"
+description = "Transformer based foundation model for galaxy images (and general astronomy)"
+authors = [{ name = "Michael J. Smith", email = "mike@mjjsmith.com" }]
 requires-python = ">=3.10"
+readme = "README.md"
 keywords = [
     "astropt",
     "astronomy",
     "scientific computing",
     "astrophysics",
-    "pytorch"
+    "pytorch",
 ]
 classifiers = [
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent"
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "astropy",
+    "datasets>=3.1.0",
+    "einops>=0.8.0",
+    "h5py>=3.12.1",
+    "matplotlib>=3.9.2",
+    "multiprocess>=0.70.16",
+    "numpy>=1.26.3",
+    "pandas>=2.2.3",
+    "scikit-learn>=1.5.2",
+    "scipy>=1.14.1",
+    "slack-sdk>=3.33.4",
+    "tiktoken>=0.8.0",
+    "torch",
+    "torchvision",
+    "tqdm>=4.67.1",
+    "traces>=0.6.4",
+    "umap-learn>=0.5.7",
+    "wandb>=0.18.7",
+]
+dynamic = [
+    "version",
 ]
 
 [project.urls]
 Homepage = "https://github.com/smith42/astropt"
 Issues = "https://github.com/smith42/astropt/issues"
 
-[tool.hatch.metadata.hooks.requirements_txt]
-files = ["requirements.txt"]
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling", "hatch-requirements-txt", "hatch-vcs"]
+build-backend = "hatchling.build"
 
 [tool.hatch.version]
 source = "vcs"
