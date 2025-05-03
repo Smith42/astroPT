@@ -28,10 +28,10 @@ You can install via pip from PyPI:
 pip install astropt
 ```
 
-Or if you install locally via a git clone, you can pip install via:
+Or if you install locally via a git clone, you can uv install via:
 
 ```bash
-pip install -e .
+uv sync
 ```
 
 ## how to run
