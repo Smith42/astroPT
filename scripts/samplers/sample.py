@@ -2,11 +2,8 @@
 Sample from a trained astropt model
 """
 import os
-import pickle
 from contextlib import nullcontext
 import torch
-import tiktoken
-from tqdm import tqdm, trange
 import matplotlib.pyplot as plt
 import numpy as np
 from astropt.model import GPTConfig, GPT
@@ -104,4 +101,4 @@ with torch.no_grad():
             pss.append(ps.detach().cpu().numpy())
 
         print("Plotting...")
-        plot_galaxies(np.concatenate(pss), dumpto=os.path.join(out_dir, f"ps.png"))
+        plot_galaxies(np.concatenate(pss), dumpto=os.path.join(out_dir, "ps.png"))

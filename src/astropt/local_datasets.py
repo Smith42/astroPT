@@ -10,7 +10,6 @@ import sys
 from torch.utils.data import Dataset
 from torchvision import io
 from astropy.io import fits
-from astropy.table import Table
 
 class GalaxyImageDataset(Dataset):
 

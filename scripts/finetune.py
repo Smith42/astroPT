@@ -2,7 +2,7 @@ import torch
 import loralib as lora
 from torch.utils.data import DataLoader
 
-from astropt.model import GPTConfig, GPT
+from astropt.model import GPT
 from astropt.local_datasets import GalaxyImageDataset
 
 # Config

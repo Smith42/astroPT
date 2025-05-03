@@ -1,5 +1,4 @@
 import numpy as np
-import math
 from astropy.io import fits
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import seaborn as sns

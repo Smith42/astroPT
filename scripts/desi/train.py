@@ -19,24 +19,17 @@ $ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=1 --master_addr=123.456.123
 import os
 import time
 import math
-from functools import partial
-import pickle
-import itertools
-from pathlib import Path
 from contextlib import nullcontext
 import einops
 
 import numpy as np
 import pandas as pd
 import torch
-import torchvision
 import matplotlib.pyplot as plt
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import Dataset, DataLoader
-from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data import DataLoader
 from torch.distributed import init_process_group, destroy_process_group
-from torchvision import transforms, io
-from tqdm import trange
+from torchvision import transforms
 try:
     import wandb
     log_via_wandb = True
@@ -419,7 +412,7 @@ if __name__ == "__main__":
                     if always_save_checkpoint:
                         torch.save(checkpoint, os.path.join(out_dir, f'{iter_num:06d}_ckpt.pt'))
                     else:
-                        torch.save(checkpoint, os.path.join(out_dir, f'ckpt.pt'))
+                        torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
         if iter_num == 0 and eval_only:
             break
     

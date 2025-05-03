@@ -13,7 +13,6 @@ https://github.com/aspiaspace/earthpt
 """
 import math
 import inspect
-import sys
 import random
 from dataclasses import dataclass
 
@@ -21,7 +20,6 @@ import torch
 import loralib as lora
 import torch.nn as nn
 from torch.nn import functional as F
-from einops.layers.torch import Rearrange
 
 @dataclass
 class ModalityConfig:

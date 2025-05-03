@@ -2,12 +2,10 @@
 Sample from a trained astropt model
 """
 import os
-import pickle
 from contextlib import nullcontext
 import torch
 from torch.utils.data import DataLoader
-from tqdm import tqdm, trange
-import matplotlib.pyplot as plt
+from tqdm import tqdm
 import numpy as np
 from model import GPTConfig, GPT
 from datasets import load_dataset, concatenate_datasets 

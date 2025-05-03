@@ -1,4 +1,3 @@
-import numpy as np
 import matplotlib.pyplot as plt
 import os
 from matplotlib.ticker import LogLocator, FuncFormatter
@@ -154,7 +153,7 @@ def plot_data(ax, methods, metric, ylabel, single_point_data, colors, linestyles
             ax.errorbar(data[method]["Percentage"], data[method][metric], 
                         yerr=data[method][f"{metric} Error"], label=label, 
                         marker='o', markersize=12, color=colors[method], linestyle=linestyles[method])
-        except ValueError as e:
+        except ValueError:
             print(f"Skipping {method} for {metric} due to mismatched data sizes.")
             continue  # Skip to the next plot
 

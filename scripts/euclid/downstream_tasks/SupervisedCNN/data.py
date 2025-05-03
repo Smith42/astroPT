@@ -1,6 +1,5 @@
 import numpy as np
 import tensorflow as tf
-import torch
 from astropy.io import fits
 import os
 from sklearn.model_selection import train_test_split
