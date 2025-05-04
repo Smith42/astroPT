@@ -11,29 +11,34 @@ https://github.com/huggingface/transformers/blob/main/src/transformers/models/gp
 3) Aspia Space's earthPT code:
 https://github.com/aspiaspace/earthpt
 """
-import math
+
 import inspect
+import math
 import random
 from dataclasses import dataclass
 
-import torch
 import loralib as lora
+import torch
 import torch.nn as nn
 from torch.nn import functional as F
+
 
 @dataclass
 class ModalityConfig:
     """Configuration for a single modality"""
+
     name: str
     input_size: int
     patch_size: int
     loss_weight: float = 1.0
 
+
 class ModalityRegistry:
     """Central registry for model modalities"""
+
     def __init__(self, modalities):
         self.modalities = {m.name: m for m in modalities}
-        
+
     def get_config(self, name):
         """Get configuration for a specific modality"""
         return self.modalities[name]
@@ -41,12 +46,15 @@ class ModalityRegistry:
     def names(self):
         """Get names of modalities"""
         return sorted(self.modalities.keys())
-        
-    def generate_sequence(self, available_modalities, num_sequences=1, random_order=True):
+
+    def generate_sequence(
+        self, available_modalities, num_sequences=1, random_order=True
+    ):
         """Generate a modality sequence from available modalities"""
         if random_order:
             return random.sample(available_modalities, len(available_modalities))
         return sorted(available_modalities)
+
 
 # @torch.jit.script # good to enable when not using torch.compile, disable when using (our default)
 def new_gelu(x):
@@ -54,10 +62,18 @@ def new_gelu(x):
     Implementation of the GELU activation function currently in Google BERT repo (identical to OpenAI GPT).
     Reference: Gaussian Error Linear Units (GELU) paper: https://arxiv.org/abs/1606.08415
     """
-    return 0.5 * x * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0))))
+    return (
+        0.5
+        * x
+        * (
+            1.0
+            + torch.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0)))
+        )
+    )
+
 
 class LayerNorm(nn.Module):
-    """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
+    """LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False"""
 
     def __init__(self, ndim, bias):
         super().__init__()
@@ -67,18 +83,15 @@ class LayerNorm(nn.Module):
     def forward(self, input):
         return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
 
-class CausalSelfAttention(nn.Module):
 
+class CausalSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
         # key, query, value projections for all heads, but in a batch
-        if hasattr(config, 'lora_r') and config.lora_r > 0:
+        if hasattr(config, "lora_r") and config.lora_r > 0:
             self.c_attn = lora.Linear(
-                config.n_embd, 
-                3 * config.n_embd, 
-                r=config.lora_r,
-                bias=config.bias
+                config.n_embd, 3 * config.n_embd, r=config.lora_r, bias=config.bias
             )
         else:
             self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
@@ -91,45 +104,68 @@ class CausalSelfAttention(nn.Module):
         self.n_embd = config.n_embd
         self.dropout = config.dropout
         # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+        self.flash = hasattr(torch.nn.functional, "scaled_dot_product_attention")
         if not self.flash:
-            print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
+            print(
+                "WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0"
+            )
             # causal mask to ensure that attention is only applied to the left in the input sequence
-            self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
-                                        .view(1, 1, config.block_size, config.block_size))
+            self.register_buffer(
+                "bias",
+                torch.tril(torch.ones(config.block_size, config.block_size)).view(
+                    1, 1, config.block_size, config.block_size
+                ),
+            )
 
     def forward(self, x):
-        B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
+        B, T, C = (
+            x.size()
+        )  # batch size, sequence length, embedding dimensionality (n_embd)
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
-        q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(
+            1, 2
+        )  # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(
+            1, 2
+        )  # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(
+            1, 2
+        )  # (B, nh, T, hs)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
             # efficient attention using Flash Attention CUDA kernels
-            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
+            y = torch.nn.functional.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=None,
+                dropout_p=self.dropout if self.training else 0,
+                is_causal=True,
+            )
         else:
             # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+            att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float("-inf"))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
-            y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+            y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        y = (
+            y.transpose(1, 2).contiguous().view(B, T, C)
+        )  # re-assemble all head outputs side by side
 
         # output projection
         y = self.resid_dropout(self.c_proj(y))
         return y
 
-class MLP(nn.Module):
 
+class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
+        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
+        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
@@ -139,8 +175,8 @@ class MLP(nn.Module):
         x = self.dropout(x)
         return x
 
-class Block(nn.Module):
 
+class Block(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
@@ -153,6 +189,7 @@ class Block(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return x
 
+
 class TaskHead(nn.Module):
     def __init__(self, config, output_dim):
         super().__init__()
@@ -160,9 +197,9 @@ class TaskHead(nn.Module):
         self.head = nn.Sequential(
             nn.Linear(config.n_embd, config.n_embd // 2),
             nn.ReLU(),
-            nn.Linear(config.n_embd // 2, output_dim)
+            nn.Linear(config.n_embd // 2, output_dim),
         )
-        
+
     def forward(self, x):
         # Global average pooling over sequence length
         x = x.mean(dim=1)  # (batch, n_embd)
@@ -170,13 +207,14 @@ class TaskHead(nn.Module):
         x = self.head(x)
         return x
 
+
 class Encoder(nn.Module):
-    """ base module to move from data space to embedding space """
-     
+    """base module to move from data space to embedding space"""
+
     def __init__(self, config, in_size):
         super().__init__()
-        self.c_fc    = nn.Linear(in_size, 4 * config.n_embd, bias=config.bias)
-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
+        self.c_fc = nn.Linear(in_size, 4 * config.n_embd, bias=config.bias)
+        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
 
     def forward(self, x):
         x = self.c_fc(x)
@@ -184,13 +222,14 @@ class Encoder(nn.Module):
         x = self.c_proj(x)
         return x
 
+
 class Decoder(nn.Module):
-    """ base module to move from embedding space to data space  """
+    """base module to move from embedding space to data space"""
 
     def __init__(self, config, out_size):
         super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
-        self.c_proj  = nn.Linear(4 * config.n_embd, out_size, bias=config.bias)
+        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
+        self.c_proj = nn.Linear(4 * config.n_embd, out_size, bias=config.bias)
 
     def forward(self, x):
         x = self.c_fc(x)
@@ -198,8 +237,9 @@ class Decoder(nn.Module):
         x = self.c_proj(x)
         return x
 
+
 class Embedder(nn.Module):
-    """ base module to move from embedding space to data space  """
+    """base module to move from embedding space to data space"""
 
     def __init__(self, config):
         super().__init__()
@@ -207,6 +247,7 @@ class Embedder(nn.Module):
 
     def forward(self, pos):
         return self.wpe(pos)
+
 
 @dataclass
 class GPTConfig:
@@ -216,17 +257,22 @@ class GPTConfig:
     n_embd: int = 768
     n_chan: int = 1
     dropout: float = 0.0
-    bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-    attn_type: str = "causal" # causal or prefix
+    bias: bool = False  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    attn_type: str = "causal"  # causal or prefix
     # LoRA params
     lora_r: int = 0  # rank, 0 disables LoRA
     lora_alpha: int = 16
     lora_dropout: float = 0.1
     modalities: list[ModalityConfig] = None
 
-class GPT(nn.Module):
 
-    def __init__(self, config: GPTConfig, modality_registry: ModalityRegistry, master_process=True):
+class GPT(nn.Module):
+    def __init__(
+        self,
+        config: GPTConfig,
+        modality_registry: ModalityRegistry,
+        master_process=True,
+    ):
         super().__init__()
         assert config.block_size is not None
         self.config = config
@@ -239,39 +285,46 @@ class GPT(nn.Module):
             encoders[name] = Encoder(config, mod_config.input_size)
             decoders[name] = Decoder(config, mod_config.input_size)
 
-        self.transformer = nn.ModuleDict(dict(
-            wte = nn.ModuleDict(encoders),
-            wpe = nn.ModuleDict({
-                name: Embedder(config)
-                for name in modality_registry.modalities.keys()
-            }),
-            drop = nn.Dropout(config.dropout),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-            ln_f = LayerNorm(config.n_embd, bias=config.bias),
-        ))
+        self.transformer = nn.ModuleDict(
+            dict(
+                wte=nn.ModuleDict(encoders),
+                wpe=nn.ModuleDict(
+                    {
+                        name: Embedder(config)
+                        for name in modality_registry.modalities.keys()
+                    }
+                ),
+                drop=nn.Dropout(config.dropout),
+                h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+                ln_f=LayerNorm(config.n_embd, bias=config.bias),
+            )
+        )
         self.lm_head = nn.ModuleDict(decoders)
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
         # This behavior is deprecated and will be an error in future versions"
         # not 100% sure what this is, so far seems to be harmless. TODO investigate
         # TODO rethink weight tying
-        #self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
+        # self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
 
         # optional task head for finetuning
         self.task_head = None
-        if hasattr(config, 'output_dim'):
+        if hasattr(config, "output_dim"):
             self.task_head = TaskHead(config, config.output_dim)
-         
+
         # init all weights
         self.apply(self._init_weights)
         # apply special scaled init to the residual projections, per GPT-2 paper
         for pn, p in self.named_parameters():
-            if pn.endswith('c_proj.weight'):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
+            if pn.endswith("c_proj.weight"):
+                torch.nn.init.normal_(
+                    p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer)
+                )
 
         # report number of parameters
         self.master_process = master_process
-        if self.master_process: print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
+        if self.master_process:
+            print("number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
 
     def get_num_params(self, non_embedding=True):
         """
@@ -282,9 +335,13 @@ class GPT(nn.Module):
         """
         n_params = sum(p.numel() for p in self.parameters())
         if non_embedding:
-            modality = "images" # dummy modality so we can take embedding count away
-            n_params -= sum(p.numel() for p in self.transformer.wpe[modality].parameters())
-            n_params -= sum(p.numel() for p in self.transformer.wte[modality].parameters())
+            modality = "images"  # dummy modality so we can take embedding count away
+            n_params -= sum(
+                p.numel() for p in self.transformer.wpe[modality].parameters()
+            )
+            n_params -= sum(
+                p.numel() for p in self.transformer.wte[modality].parameters()
+            )
         return n_params
 
     def _init_weights(self, module):
@@ -296,23 +353,31 @@ class GPT(nn.Module):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, inputs, targets=None, target_modality=None):
-        device = next(iter(inputs.values())).device # get device from first modality in our dict
+        device = next(
+            iter(inputs.values())
+        ).device  # get device from first modality in our dict
         tt = sum(x.size(1) for x in inputs.values())
-        assert tt <= self.config.block_size, f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
-            
+        assert tt <= self.config.block_size, (
+            f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
+        )
+
         # forward the GPT model itself
         embeddings = []
         for mod_name, x in inputs.items():
             embeddings.append(self.transformer.wte[mod_name](x))
         tok_emb = torch.cat(embeddings, dim=1)
-        pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0) # shape (1, tt)
-        pos_emb = self.transformer.wpe["images"](pos) # position embeddings of shape (1, tt, n_embd)
+        pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(
+            0
+        )  # shape (1, tt)
+        pos_emb = self.transformer.wpe["images"](
+            pos
+        )  # position embeddings of shape (1, tt, n_embd)
 
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x)
-        x = self.transformer.ln_f(x) # these are the hidden states
- 
+        x = self.transformer.ln_f(x)  # these are the hidden states
+
         outputs = {}
         current_idx = 0
 
@@ -322,7 +387,7 @@ class GPT(nn.Module):
                 for mod_name, input_tensor in inputs.items():
                     if mod_name == target_modality:
                         seq_len = input_tensor.size(1)
-                        hidden_state = x[:, current_idx:current_idx + seq_len]
+                        hidden_state = x[:, current_idx : current_idx + seq_len]
                         outputs[mod_name] = self.lm_head[mod_name](hidden_state)
                     current_idx += input_tensor.size(1)
             # target modality not in inputs so start a new sequence
@@ -332,7 +397,7 @@ class GPT(nn.Module):
 
         for mod_name, input_tensor in inputs.items():
             seq_len = input_tensor.size(1)
-            hidden_state = x[:, current_idx:current_idx + seq_len]
+            hidden_state = x[:, current_idx : current_idx + seq_len]
             outputs[mod_name] = self.lm_head[mod_name](hidden_state)
             current_idx += seq_len
 
@@ -362,9 +427,11 @@ class GPT(nn.Module):
         Returns:
             dictionary of embeddings for each modality
         """
-        device = next(iter(inputs.values())).device # get device from first modality
+        device = next(iter(inputs.values())).device  # get device from first modality
         tt = sum(x.size(1) for x in inputs.values())
-        assert tt <= self.config.block_size, f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
+        assert tt <= self.config.block_size, (
+            f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
+        )
 
         # generate token embeddings per modality
         embeddings = []
@@ -373,14 +440,18 @@ class GPT(nn.Module):
         tok_emb = torch.cat(embeddings, dim=1)
 
         if pos is None:
-            pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0) # shape (1, tt)
+            pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(
+                0
+            )  # shape (1, tt)
 
         first_modality = self.modality_registry.names()[0]
         pos_emb = self.transformer.wpe[first_modality](pos)
 
         x = self.transformer.drop(tok_emb + pos_emb)
 
-        for i, block in enumerate(self.transformer.h): # by default we take the penultimate layer as the embedding layer
+        for i, block in enumerate(
+            self.transformer.h
+        ):  # by default we take the penultimate layer as the embedding layer
             x = block(x)
             if draw_from_centre and i == len(self.transformer.h) // 2:
                 centre_embeddings = x
@@ -395,7 +466,7 @@ class GPT(nn.Module):
         current_idx = 0
         for mod_name, input_tensor in inputs.items():
             seq_len = input_tensor.size(1)
-            result[mod_name] = embeddings_out[:, current_idx:current_idx + seq_len]
+            result[mod_name] = embeddings_out[:, current_idx : current_idx + seq_len]
             current_idx += seq_len
 
         return result
@@ -403,11 +474,15 @@ class GPT(nn.Module):
     def get_task_prediction(self, inputs, targets=None):
         """Forward pass for task prediction during finetuning"""
         if self.task_head is None:
-            raise ValueError("Model not configured for task prediction. Set config.output_dim")
-            
-        device = next(iter(inputs.values())).device # get device from first modality
+            raise ValueError(
+                "Model not configured for task prediction. Set config.output_dim"
+            )
+
+        device = next(iter(inputs.values())).device  # get device from first modality
         tt = sum(x.size(1) for x in inputs.values())
-        assert tt <= self.config.block_size, f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
+        assert tt <= self.config.block_size, (
+            f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
+        )
 
         if self.config.attn_type == "prefix":
             # TODO we need to make sure that the prefix hyperparameters are tuned well:
@@ -416,10 +491,18 @@ class GPT(nn.Module):
                 # TODO do we want this to be an eval mode switch?
                 prefix_len = random.randrange(self.config.block_size - 1)
             prefix_lm_mask = generate_prefix_lm_mask(prefix_len)
-            block_mask = create_block_mask(prefix_lm_mask, None, None, self.config.block_size, self.config.block_size)
+            block_mask = create_block_mask(
+                prefix_lm_mask,
+                None,
+                None,
+                self.config.block_size,
+                self.config.block_size,
+            )
         else:
             block_mask = None
-        pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0) # shape (1, tt)
+        pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(
+            0
+        )  # shape (1, tt)
 
         # forward the GPT model itself
         # generate token embeddings per modality
@@ -428,24 +511,32 @@ class GPT(nn.Module):
             embeddings.append(self.transformer.wte[mod_name](x))
         tok_emb = torch.cat(embeddings, dim=1)
 
-        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
+        pos_emb = self.transformer.wpe(
+            pos
+        )  # position embeddings of shape (1, t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for i, block in enumerate(self.transformer.h):
             x = block(x)
-            if i == len(self.transformer.h)//2:  # Take features from middle layer
+            if i == len(self.transformer.h) // 2:  # Take features from middle layer
                 break
-        
+
         outputs = self.task_head(x)
-        return (outputs, F.huber_loss(outputs, targets)) if targets is not None else outputs
+        return (
+            (outputs, F.huber_loss(outputs, targets))
+            if targets is not None
+            else outputs
+        )
 
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary
         assert block_size <= self.config.block_size
         self.config.block_size = block_size
-        self.transformer.wpe.weight = nn.Parameter(self.transformer.wpe.weight[:block_size])
+        self.transformer.wpe.weight = nn.Parameter(
+            self.transformer.wpe.weight[:block_size]
+        )
         for block in self.transformer.h:
-            if hasattr(block.attn, 'bias'):
-                block.attn.bias = block.attn.bias[:,:,:block_size,:block_size]
+            if hasattr(block.attn, "bias"):
+                block.attn.bias = block.attn.bias[:, :, :block_size, :block_size]
 
     def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
         # start with all of the candidate parameters
@@ -457,36 +548,43 @@ class GPT(nn.Module):
         decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
         nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
         optim_groups = [
-            {'params': decay_params, 'weight_decay': weight_decay},
-            {'params': nodecay_params, 'weight_decay': 0.0}
+            {"params": decay_params, "weight_decay": weight_decay},
+            {"params": nodecay_params, "weight_decay": 0.0},
         ]
         num_decay_params = sum(p.numel() for p in decay_params)
         num_nodecay_params = sum(p.numel() for p in nodecay_params)
         if self.master_process:
-            print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
-            print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
+            print(
+                f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters"
+            )
+            print(
+                f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters"
+            )
         # Create AdamW optimizer and use the fused version if it is available
-        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
-        use_fused = fused_available and device_type == 'cuda'
+        fused_available = "fused" in inspect.signature(torch.optim.AdamW).parameters
+        use_fused = fused_available and device_type == "cuda"
         extra_args = dict(fused=True) if use_fused else dict()
-        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, **extra_args)
-        if self.master_process: print(f"using fused AdamW: {use_fused}")
+        optimizer = torch.optim.AdamW(
+            optim_groups, lr=learning_rate, betas=betas, **extra_args
+        )
+        if self.master_process:
+            print(f"using fused AdamW: {use_fused}")
 
         return optimizer
 
     def estimate_mfu(self, fwdbwd_per_iter, dt):
-        """ estimate model flops utilization (MFU) in units of A100 bfloat16 peak FLOPS """
+        """estimate model flops utilization (MFU) in units of A100 bfloat16 peak FLOPS"""
         # first estimate the number of flops we do per iteration.
         # see PaLM paper Appendix B as ref: https://arxiv.org/abs/2204.02311
         N = self.get_num_params()
         cfg = self.config
-        L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.n_embd//cfg.n_head, cfg.block_size
-        flops_per_token = 6*N + 12*L*H*Q*T
+        L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.n_embd // cfg.n_head, cfg.block_size
+        flops_per_token = 6 * N + 12 * L * H * Q * T
         flops_per_fwdbwd = flops_per_token * T
         flops_per_iter = flops_per_fwdbwd * fwdbwd_per_iter
         # express our flops throughput as ratio of A100 bfloat16 peak flops
-        flops_achieved = flops_per_iter * (1.0/dt) # per second
-        flops_promised = 312e12 # A100 GPU bfloat16 peak flops is 312 TFLOPS
+        flops_achieved = flops_per_iter * (1.0 / dt)  # per second
+        flops_promised = 312e12  # A100 GPU bfloat16 peak flops is 312 TFLOPS
         mfu = flops_achieved / flops_promised
         return mfu
 
@@ -494,7 +592,7 @@ class GPT(nn.Module):
     def generate(self, inputs, new_tokens, target_modality, temperature=0.0):
         """
         Take a conditioning sequence for each modality and generate new tokens for the target modality.
-        
+
         Args:
             inputs: dict of tokens with modality names as keys
             new_tokens: number of new tokens to generate
@@ -507,7 +605,7 @@ class GPT(nn.Module):
             # if the sequence context is growing too long we must crop it at block_size
             for mod_name in inputs:
                 if inputs[mod_name].size(1) > self.config.block_size:
-                    inputs[mod_name] = inputs[mod_name][:, -self.config.block_size:]
+                    inputs[mod_name] = inputs[mod_name][:, -self.config.block_size :]
 
             # forward the model to get the logits for the index in the sequence
             outputs, _ = self(inputs, target_modality=target_modality)
@@ -517,8 +615,10 @@ class GPT(nn.Module):
             if target_modality not in inputs:
                 inputs[target_modality] = next_token
             else:
-                inputs[target_modality] = torch.cat([inputs[target_modality], next_token], dim=1)
-    
+                inputs[target_modality] = torch.cat(
+                    [inputs[target_modality], next_token], dim=1
+                )
+
         return inputs
 
     @torch.no_grad()
@@ -538,13 +638,21 @@ class GPT(nn.Module):
             if reduction == "mean":
                 result[mod_name] = torch.mean(embeddings, dim=1)
             elif reduction == "exp_decay":
-                weights = torch.logspace(0, -1, embeddings.shape[1], device=embeddings.device).unsqueeze(0).unsqueeze(-1)
-                result[mod_name] = torch.sum(weights*embeddings, dim=1)/torch.sum(weights, dim=1)
+                weights = (
+                    torch.logspace(0, -1, embeddings.shape[1], device=embeddings.device)
+                    .unsqueeze(0)
+                    .unsqueeze(-1)
+                )
+                result[mod_name] = torch.sum(weights * embeddings, dim=1) / torch.sum(
+                    weights, dim=1
+                )
             elif reduction == "last":
                 result[mod_name] = embeddings[:, -1, :]
             elif reduction == "none":
                 result[mod_name] = embeddings
             else:
-                raise NotImplementedError(f"Reduction method '{reduction}' not implemented")
+                raise NotImplementedError(
+                    f"Reduction method '{reduction}' not implemented"
+                )
 
         return result
