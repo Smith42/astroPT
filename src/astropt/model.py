@@ -410,9 +410,8 @@ class GPT(nn.Module):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, inputs, targets=None, prefix_len=None, target_modality=None):
-        device = next(
-            iter(inputs.values())
-        ).device  # get device from first modality in our dict
+        # get device from first modality in our dict:
+        device = next(iter(inputs.values())).device
         tt = sum(x.size(1) for x in inputs.values())
         assert tt <= self.config.block_size, (
             f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
@@ -439,13 +438,10 @@ class GPT(nn.Module):
         for mod_name, x in inputs.items():
             embeddings.append(self.transformer.wte[mod_name](x))
         tok_emb = torch.cat(embeddings, dim=1)
-        pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(
-            0
-        )  # shape (1, tt)
-        pos_emb = self.transformer.wpe["images"](
-            pos
-        )  # position embeddings of shape (1, tt, n_embd)
-
+        # pos shape: (1, tt)
+        pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0)
+        # position embeddings of shape (1, tt, n_embd):
+        pos_emb = self.transformer.wpe["images"](pos)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x, block_mask=block_mask)
@@ -476,11 +472,34 @@ class GPT(nn.Module):
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
+            current_idx = 0
             loss = 0
             for mod_name, target in targets.items():
+                seq_len = target.size(1)
                 mod_config = self.modality_registry.get_config(mod_name)
                 pred = outputs[mod_name]
-                loss += F.huber_loss(pred, target) * mod_config.loss_weight
+                if self.config.attn_type == "prefix":
+                    # TODO fix this and debug
+                    raise NotImplementedError(
+                        "Prefix attention not implemented for multimodal model"
+                    )
+                    ## if we have prefix attention on we only want to
+                    ## backprop through tokens where our model cannot
+                    ## look ahead! so we mask the loss to prefix_len
+                    # if current_idx + seq_len <= prefix_len:
+                    #    # entire modality within prefix so skip
+                    #    continue
+                    # elif current_idx >= prefix_len:
+                    #    # entire modality beyond prefix so backprop
+                    #    loss += F.huber_loss(pred, target) * mod_config.loss_weight
+                    # else:
+                    #    # some of modality within prefix so mask and bp
+                    #    prefix_mask = torch.ones_like(target, dtype=torch.bool)
+                    #    prefix_sublen = prefix_len - current_idx
+                    #    prefix_mask[:, :prefix_sublen] = False
+                else:
+                    loss += F.huber_loss(pred, target) * mod_config.loss_weight
+                current_idx += seq_len
             loss /= len(self.modality_registry.names())
         else:
             loss = None
@@ -572,9 +591,9 @@ class GPT(nn.Module):
             pos
         )  # position embeddings of shape (1, t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
-        for i, block in enumerate(self.transformer.h):
+        for ii, block in enumerate(self.transformer.h):
             x = block(x)
-            if i == len(self.transformer.h) // 2:  # Take features from middle layer
+            if ii == len(self.transformer.h) // 2:  # Take features from middle layer
                 break
 
         outputs = self.task_head(x)
@@ -658,7 +677,7 @@ class GPT(nn.Module):
 
         Most likely you'll want to make sure to be in model.eval() mode of operation for this.
         """
-        for i in range(new_tokens):
+        for ii in range(new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
             for mod_name in inputs:
                 if inputs[mod_name].size(1) > self.config.block_size:
