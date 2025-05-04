@@ -25,13 +25,13 @@ Check out the [UniverseTBD](https://universetbd.org/) Discord for updates:
 
 AstroPT is an autoregressive transformer under the hood.
 
-Similar to language models that predict the next word in a sentence, AstroPT processes sequences of astronomical data chunks to predict what comes next.
+Similarly to language models that predict the next word in a sentence, AstroPT processes sequences of astronomical data chunks to predict what comes next.
 The intuition here is that this next-token-prediction task requires the model to internalise some understanding of the physical processes underlying the training data, just like how a text GPT needs to have some knowledge of geography to guess a country's capital given a description of that country, or some knowledge of coding to write compilable Fortran.
 
-Below we can see this principal applied to a galaxy image, where we split the into chunks and pass them into an AstroPT model:
+Below we can see this principle applied to a galaxy image, where we split the into chunks and pass them into an AstroPT model:
 
 <div align="center">
-<img src="https://github.com/Smith42/astroPT/raw/main/assets/galaxy_im.png" alt="galaxy_im" width="25%"/>&nbsp;&nbsp;&nbsp;&nbsp;<img src="https://github.com/Smith42/astroPT/raw/main/assets/apt.png" alt="astroPT_arch" width="70%"/>
+<img src="https://github.com/Smith42/astroPT/raw/main/assets/galaxy_im.png" alt="galaxy_im" width="25%"/>&nbsp;&nbsp;&nbsp;&nbsp;<img src="https://github.com/Smith42/astroPT/raw/main/assets/apt.png" alt="astroPT_arch" width="70%"/>&nbsp;&nbsp;
 </div>
 
 Of course we can apply this next-token-prediction task across many modalities due to its flexibility.
