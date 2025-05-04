@@ -9,19 +9,23 @@
 [![All Contributors](https://img.shields.io/badge/all_contributors-5-orange.svg?style=flat-square)](#contributors-)
 </div>
 
-# astroPT: a Large Observation Model for astronomy 🔭
+# AstroPT: a Large Observation (foundation) Model for astronomy 🔭
 
 Welcome to our simple repository for training astronomical large observation
 models. This repository began its life as Andrej Karpathy's
 [nanoGPT](https://github.com/karpathy/nanoGPT), and has been altered so that it
-is usable for imagery data.  Within `train.py` you will find a ~300-line
-boilerplate training loop and within `model.py` you will find a ~300-line GPT
-model definition with an MLP tokeniser and a regressive loss.
+is usable for astronomical observation data.  Within `train.py` you will find a
+~300-line boilerplate training loop and within `model.py` you will find a
+~300-line GPT model definition with an MLP tokeniser and a regressive loss.
 
 Check out the [UniverseTBD](https://universetbd.org/) Discord for updates:
 [https://discord.gg/MNEVegvfJq](https://discord.gg/MNEVegvfJq)
 
-## install
+# I just want to run it! 🗣️
+
+Okay I hear you! First you need to install the model:
+
+## Install
 
 You can install via pip from PyPI:
 ```bash
@@ -34,7 +38,7 @@ Or if you install locally via a git clone, you can uv install via:
 uv sync
 ```
 
-## how to run
+## Load a pre-trained model
 
 To load and run a pre-trained AstroPT model from HuggingFace you can use the `load_astropt` function:
 
@@ -51,73 +55,24 @@ model = model.to("cuda")
 
 where repo_id is the HuggingFace repository ID, and path is the path within the repository that contains the AstroPT model checkpoint.
 
+## Pre-trained models
 
-## results
+Below are some pre-trained models you can load with the code snippet above.
+Please make sure that you are using the correct version of AstroPT to load these!
 
-AstroPT v1.0.0 has been trained on 8.6M galaxy grz band `*.png` postage stamps 
-downloaded from DESI-LS DR8 to see if neural scaling laws apply to galaxian
-data (in other words, to see if `more galaxy data == more better model`).  
-We tried to make the astroPT model as simple as possible so that other
-modalities can be easily folded in. We also choose to use a causally trained
-autoregressive transformer model as our backbone so that our work can more
-easily integrate the wider deep learning FOSS community.
+| Survey | Modalities | AstroPT version | Model weights | Dataset | Paper |
+| :----- | :--------- | :-------------- | :------------ | :------ | :---- |
+| DESI Legacy Survey | JPG galaxy imagery | v1.0.0   | [AstroPT](https://huggingface.co/Smith42/astroPT) | [Galaxies Dataset](https://huggingface.co/datasets/Smith42/galaxies) | [arXiv:2405.14930](https://arxiv.org/abs/2405.14930) |
+| Euclid | FITS VIS, NISP galaxy imagery and SED data | v1.0.2 | [AstroPT-Euclid](https://huggingface.co/collections/msiudek/astropt-euclid-67d061928ac0a447265ac8b8) | [Euclid Training Dataset](https://huggingface.co/datasets/msiudek/astroPT_euclid_training_dataset) | [arXiv:2503.15312](https://arxiv.org/abs/2503.15312) |
 
-Our pretraining task is feeding in our galaxy images patch-by-patch and
-predicting the next patch in our galaxy patch sequence. We follow ViT
-and define a patch as a 16 by 16 pixel square, and feed the galaxy patches
-in a spiral order:
+## Scripts for pre-training and processing data
 
-<p align="center">
-    <img src="https://github.com/Smith42/astroPT/raw/main/scripts/scaling/galaxy.png" alt="galaxy" width="128"/>
-</p>
+Check out `scripts` for a collection of all the scripts we have used to get the
+results in these papers, and `scripts/train.py` for an example boilerplate
+script for training your own AstroPT. `config` contains example user
+configurations.
 
-The trained model results are promising -- below we show our full training run
-validation losses across a parameter sweep of `{1,5,12,21,89,309,830,2100}M`
-trainable parameters:
-
-<p align="center">
-    <img src="https://github.com/Smith42/astroPT/raw/main/scripts/scaling/scaling_xkcd.png" alt="scaling" width="512"/>
-</p>
-
-We also test our astroPT models on some scientifically-useful downstream tasks by
-taking the models' penultimate layer outputs and finetuning linear probes to
-predict emergent physical properties of the galaxies:
-
-<p align="center">
-    <img src="https://github.com/Smith42/astroPT/raw/main/scripts/scaling/downstream_xkcd.png" alt="downstream" width="512"/>
-</p>
-
-In the above pic, $M_g$ and $M_z$ are the absolute magnitudes (or brightness at
-a fixed distance) of the galaxies, $g - r$ and $r - z$ are the differences
-between the observations of different telescope filter bands, redshift is the
-distance to the galaxies, sSFR is the total mass of new stars born each year in
-the galaxies per total galaxy mass, and $M_{\*}$ is the total mass of stars within
-the galaxies. "smooth?", "disc?", "artefact?", "edge on?" and "tight spiral?" are
-morphological properties of the galaxies as described by citizen scientists.
-
-The cool thing to take away from these plots is that the surrogate task loss
-(predicting the next patch in a sequence of ViT-like galaxy image patches)
-is correlated with astronomically "useful" downstream tasks 🤯🚀.
-
-Finally, check out our UMAP projection of astroPT-87M's penultimate layer
-outputs of our validation set. We colour each point with an emergent physical
-galaxy property described above. The structure suggests that the model has
-learnt some knowledge about physics simply from our next-token prediction
-pretraining task!
-
-<p align="center">
-    <img src="https://github.com/Smith42/astroPT/raw/main/scripts/scaling/hexbin_xkcd.png" alt="hexbin" width="512"/>
-</p>
-
-## pretrained weights, and full galaxy dataset
-
-Check out the paper here: [https://arxiv.org/abs/2405.14930](https://arxiv.org/abs/2405.14930).
-
-We of course release all our model weights checkpointed across our full training runs on [HuggingFace 🤗 here](https://huggingface.co/Smith42/astroPT).
-
-We also release our full dataset and galaxy metadata on [HuggingFace 🔥](https://huggingface.co/datasets/Smith42/galaxies).
-
-## contributors
+# Contributors
 
 <!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
 <!-- prettier-ignore-start -->
