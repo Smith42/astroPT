@@ -7,14 +7,14 @@
 # don't forget to $(mkdir logs) !
 
 # params
-n_layer=26 # the recommended is 32 for EleutherAI's Pythia-2.8B but reduced due to memory limitations
-n_head=32
-n_embd=2560
-block_size=1024
+n_layer = 26  # the recommended is 32 for EleutherAI's Pythia-2.8B but reduced due to memory limitations
+n_head = 32
+n_embd = 2560
+block_size = 1024
 
 # here we follow chinchilla
-learning_rate = 1.6e-4 # max learning rate
-min_lr = learning_rate/10 
+learning_rate = 1.6e-4  # max learning rate
+min_lr = learning_rate / 10
 
 # these make the total batch size be ~0.328M
 # 16 batch size * 1024 block size * 5 gradaccum * 4 GPUs = 327,680
@@ -32,4 +32,4 @@ eval_interval = 1000
 checkpoint_interval = 1000
 eval_iters = 200
 log_interval = 10
-out_dir ='logs/9B_tokens/astropt2100M'
+out_dir = "logs/9B_tokens/astropt2100M"

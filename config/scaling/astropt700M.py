@@ -7,14 +7,14 @@
 # don't forget to $(mkdir logs) !
 
 # params
-n_layer=16
-n_head=8
-n_embd=2048
-block_size=1024
+n_layer = 16
+n_head = 8
+n_embd = 2048
+block_size = 1024
 
 # here we follow chinchilla
-learning_rate = 3e-4 # max learning rate
-min_lr = learning_rate/10 
+learning_rate = 3e-4  # max learning rate
+min_lr = learning_rate / 10
 
 # these make the total batch size be ~0.328M
 # 8 batch size * 1024 block size * 5 gradaccum * 8 GPUs = 327,680
@@ -32,4 +32,4 @@ eval_interval = 1000
 checkpoint_interval = 5000
 eval_iters = 200
 log_interval = 100
-out_dir ='logs/9B_tokens/astropt700M'
+out_dir = "logs/9B_tokens/astropt700M"
