@@ -21,6 +21,22 @@ is usable for astronomical observation data.  Within `train.py` you will find a
 Check out the [UniverseTBD](https://universetbd.org/) Discord for updates:
 [https://discord.gg/MNEVegvfJq](https://discord.gg/MNEVegvfJq)
 
+# How does AstroPT work?
+
+AstroPT is an autoregressive transformer under the hood.
+
+Similar to language models that predict the next word in a sentence, AstroPT processes sequences of astronomical data chunks to predict what comes next.
+The intuition here is that this next-token-prediction task requires the model to internalise some understanding of the physical processes underlying the training data, just like how a text GPT needs to have some knowledge of geography to guess a country's capital given a description of that country, or some knowledge of coding to write compilable Fortran.
+
+Below we can see this principal applied to a galaxy image, where we split the into chunks and pass them into an AstroPT model:
+
+<div align="center">
+<img src="https://github.com/Smith42/astroPT/raw/readme_update/assets/galaxy_im.png" alt="galaxy_im" width="25%"/>&nbsp;&nbsp;&nbsp;&nbsp;<img src="https://github.com/Smith42/astroPT/raw/readme_update/assets/apt.png" alt="astroPT_arch" width="70%"/>
+</div>
+
+Of course we can apply this next-token-prediction task across many modalities due to its flexibility.
+Check out our work on Euclid data for an example, where we chain galaxy image tokens and spectral energy distribution data and pass them into a single, unified AstroPT model.
+
 # I just want to run it! 🗣️
 
 Okay I hear you! First you need to install the model:
