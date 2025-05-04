@@ -31,7 +31,7 @@ The intuition here is that this next-token-prediction task requires the model to
 Below we can see this principal applied to a galaxy image, where we split the into chunks and pass them into an AstroPT model:
 
 <div align="center">
-<img src="https://github.com/Smith42/astroPT/raw/readme_update/assets/galaxy_im.png" alt="galaxy_im" width="25%"/>&nbsp;&nbsp;&nbsp;&nbsp;<img src="https://github.com/Smith42/astroPT/raw/readme_update/assets/apt.png" alt="astroPT_arch" width="70%"/>
+<img src="https://github.com/Smith42/astroPT/raw/main/assets/galaxy_im.png" alt="galaxy_im" width="25%"/>&nbsp;&nbsp;&nbsp;&nbsp;<img src="https://github.com/Smith42/astroPT/raw/main/assets/apt.png" alt="astroPT_arch" width="70%"/>
 </div>
 
 Of course we can apply this next-token-prediction task across many modalities due to its flexibility.
