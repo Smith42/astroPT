@@ -7,14 +7,14 @@
 # don't forget to $(mkdir logs) !
 
 # params
-n_layer=24
-n_head=16
-n_embd=1024
-block_size=4096
+n_layer = 24
+n_head = 16
+n_embd = 1024
+block_size = 4096
 
 # here we follow chinchilla
-learning_rate = 3e-4 # max learning rate
-min_lr = learning_rate/10 
+learning_rate = 3e-4  # max learning rate
+min_lr = learning_rate / 10
 
 # these make the total batch size be ~0.328M
 # 8 batch size * 1024 block size * 5 gradaccum * 8 GPUs = 327,680
@@ -22,8 +22,8 @@ min_lr = learning_rate/10
 init_from = "scratch"
 batch_size = 8
 gradient_accumulation_steps = 5 * 8
-patch_size=8
-num_workers=32
+patch_size = 8
+num_workers = 32
 
 # this makes total number of tokens be 8.5B (one epoch of GZ DESI)
 max_iters = 30000
@@ -34,5 +34,5 @@ eval_interval = 1000
 checkpoint_interval = 5000
 eval_iters = 200
 log_interval = 100
-log_via_wandb=True
-out_dir ='logs/astropt300M'
+log_via_wandb = True
+out_dir = "logs/astropt300M"

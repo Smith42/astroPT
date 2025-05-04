@@ -12,23 +12,29 @@ https://github.com/huggingface/transformers/blob/main/src/transformers/models/gp
 https://github.com/aspiaspace/earthpt
 """
 
-import math
 import inspect
-import sys
+import math
 import random
 from dataclasses import dataclass
-from functools import partial
 
 import torch
 import torch.nn as nn
+
 try:
-    from torch.nn.attention.flex_attention import flex_attention, create_block_mask, or_masks
+    from torch.nn.attention.flex_attention import (
+        create_block_mask,
+        flex_attention,
+        or_masks,
+    )
+
     flex_attention_avail = True
 except:
-    print("WARNING: only causal attention is available. Flex Attention requires PyTorch >= 2.6")
+    print(
+        "WARNING: only causal attention is available. Flex Attention requires PyTorch >= 2.6"
+    )
     flex_attention_avail = False
 from torch.nn import functional as F
-from einops.layers.torch import Rearrange
+
 
 # @torch.jit.script # good to enable when not using torch.compile, disable when using (our default)
 def new_gelu(x):
@@ -36,10 +42,18 @@ def new_gelu(x):
     Implementation of the GELU activation function currently in Google BERT repo (identical to OpenAI GPT).
     Reference: Gaussian Error Linear Units (GELU) paper: https://arxiv.org/abs/1606.08415
     """
-    return 0.5 * x * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0))))
+    return (
+        0.5
+        * x
+        * (
+            1.0
+            + torch.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0)))
+        )
+    )
+
 
 class LayerNorm(nn.Module):
-    """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
+    """LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False"""
 
     def __init__(self, ndim, bias):
         super().__init__()
@@ -49,10 +63,11 @@ class LayerNorm(nn.Module):
     def forward(self, input):
         return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
 
+
 def generate_prefix_lm_mask(prefix_length):
     """
     Generates a prefix LM causal attention mask.
-    From the attention gym 
+    From the attention gym
     https://github.com/pytorch-labs/attention-gym/blob/bbf437e9ea7d802c0ee71d067787f7b57605f9ff/attn_gym/masks/prefix_lm.py
 
     Args:
@@ -73,8 +88,8 @@ def generate_prefix_lm_mask(prefix_length):
     prefix_lm_causal_mask.__name__ = f"prefix_lm_causal_mask_{prefix_length}"
     return prefix_lm_causal_mask
 
-class SelfAttention(nn.Module):
 
+class SelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
@@ -92,56 +107,83 @@ class SelfAttention(nn.Module):
         self.attn_type = config.attn_type
         if self.attn_type == "causal":
             # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
-            self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+            self.flash = hasattr(torch.nn.functional, "scaled_dot_product_attention")
             if not self.flash:
-                print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
+                print(
+                    "WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0"
+                )
                 # causal mask to ensure that attention is only applied to the left in the input sequence
-                self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
-                                            .view(1, 1, config.block_size, config.block_size))
-        elif (self.attn_type == "prefix" and flex_attention_avail):
+                self.register_buffer(
+                    "bias",
+                    torch.tril(torch.ones(config.block_size, config.block_size)).view(
+                        1, 1, config.block_size, config.block_size
+                    ),
+                )
+        elif self.attn_type == "prefix" and flex_attention_avail:
             # flex attention also make GPU brrrr for non-causal masking, only available with DDP for PyTorch >= 2.6
             # need to compile flex attention for performance!
             self.flex_attention = torch.compile(flex_attention)
         else:
-            raise NotImplementedError("Attention type must be one of 'causal' or 'prefix'. Prefix requires PyTorch >= 2.6.")
+            raise NotImplementedError(
+                "Attention type must be one of 'causal' or 'prefix'. Prefix requires PyTorch >= 2.6."
+            )
 
     def forward(self, x, block_mask=None):
-        B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
+        B, T, C = (
+            x.size()
+        )  # batch size, sequence length, embedding dimensionality (n_embd)
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
-        q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(
+            1, 2
+        )  # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(
+            1, 2
+        )  # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(
+            1, 2
+        )  # (B, nh, T, hs)
 
         if self.attn_type == "causal":
             # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
             if self.flash:
                 # efficient attention using Flash Attention CUDA kernels
-                y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
+                y = torch.nn.functional.scaled_dot_product_attention(
+                    q,
+                    k,
+                    v,
+                    attn_mask=None,
+                    dropout_p=self.dropout if self.training else 0,
+                    is_causal=True,
+                )
             else:
                 # manual implementation of attention
                 att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-                att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+                att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float("-inf"))
                 att = F.softmax(att, dim=-1)
                 att = self.attn_dropout(att)
-                y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+                y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         elif self.attn_type == "prefix":
             y = self.flex_attention(q, k, v, block_mask=block_mask)
-        else: 
-            raise NotImplementedError("Attention type must be one of 'causal' or 'prefix'. Prefix requires PyTorch >= 2.6.")
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+        else:
+            raise NotImplementedError(
+                "Attention type must be one of 'causal' or 'prefix'. Prefix requires PyTorch >= 2.6."
+            )
+        y = (
+            y.transpose(1, 2).contiguous().view(B, T, C)
+        )  # re-assemble all head outputs side by side
 
         # output projection
         y = self.resid_dropout(self.c_proj(y))
         return y
 
-class MLP(nn.Module):
 
+class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
+        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
+        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
@@ -151,8 +193,8 @@ class MLP(nn.Module):
         x = self.dropout(x)
         return x
 
-class Block(nn.Module):
 
+class Block(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
@@ -165,6 +207,7 @@ class Block(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return x
 
+
 @dataclass
 class GPTConfig:
     block_size: int = 1024
@@ -174,52 +217,62 @@ class GPTConfig:
     n_chan: int = 1
     dropout: float = 0.0
     patch_size: int = 16
-    bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-    attn_type: str = "causal" # causal or prefix
+    bias: bool = False  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    attn_type: str = "causal"  # causal or prefix
+
 
 class GPT(nn.Module):
-
     def __init__(self, config, master_process=True):
         super().__init__()
         assert config.block_size is not None
         self.config = config
 
-        self.transformer = nn.ModuleDict(dict(
-            wte = nn.Sequential(
-                 nn.Linear(config.patch_size*config.patch_size*config.n_chan, config.n_embd),
-                 nn.ReLU(),
-                 nn.Linear(config.n_embd, config.n_embd),
-                 nn.ReLU(),
-            ),
-            wpe = nn.Embedding(config.block_size, config.n_embd),
-            drop = nn.Dropout(config.dropout),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-            ln_f = LayerNorm(config.n_embd, bias=config.bias),
-        ))
+        self.transformer = nn.ModuleDict(
+            dict(
+                wte=nn.Sequential(
+                    nn.Linear(
+                        config.patch_size * config.patch_size * config.n_chan,
+                        config.n_embd,
+                    ),
+                    nn.ReLU(),
+                    nn.Linear(config.n_embd, config.n_embd),
+                    nn.ReLU(),
+                ),
+                wpe=nn.Embedding(config.block_size, config.n_embd),
+                drop=nn.Dropout(config.dropout),
+                h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+                ln_f=LayerNorm(config.n_embd, bias=config.bias),
+            )
+        )
         self.lm_head = nn.Sequential(
-            nn.Linear(config.n_embd, config.n_embd*2),
+            nn.Linear(config.n_embd, config.n_embd * 2),
             nn.ReLU(),
-            nn.Linear(config.n_embd*2, config.n_embd),
+            nn.Linear(config.n_embd * 2, config.n_embd),
             nn.ReLU(),
-            nn.Linear(config.n_embd, config.patch_size*config.patch_size*config.n_chan),
+            nn.Linear(
+                config.n_embd, config.patch_size * config.patch_size * config.n_chan
+            ),
         )
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
         # This behavior is deprecated and will be an error in future versions"
         # not 100% sure what this is, so far seems to be harmless. TODO investigate
         # TODO rethink weight tying
-        #self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
+        # self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
 
         # init all weights
         self.apply(self._init_weights)
         # apply special scaled init to the residual projections, per GPT-2 paper
         for pn, p in self.named_parameters():
-            if pn.endswith('c_proj.weight'):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
+            if pn.endswith("c_proj.weight"):
+                torch.nn.init.normal_(
+                    p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer)
+                )
 
         # report number of parameters
         self.master_process = master_process
-        if self.master_process: print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
+        if self.master_process:
+            print("number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
 
     def get_num_params(self, non_embedding=True):
         """
@@ -244,7 +297,9 @@ class GPT(nn.Module):
     def forward(self, idx, targets=None, prefix_len=None):
         device = idx.device
         b, t, c = idx.size()
-        assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        assert t <= self.config.block_size, (
+            f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        )
         if self.config.attn_type == "prefix":
             # TODO we need to make sure that the prefix hyperparameters are tuned well:
             if prefix_len is None:
@@ -252,14 +307,24 @@ class GPT(nn.Module):
                 # TODO do we want this to be an eval mode switch?
                 prefix_len = random.randrange(self.config.block_size - 1)
             prefix_lm_mask = generate_prefix_lm_mask(prefix_len)
-            block_mask = create_block_mask(prefix_lm_mask, None, None, self.config.block_size, self.config.block_size)
+            block_mask = create_block_mask(
+                prefix_lm_mask,
+                None,
+                None,
+                self.config.block_size,
+                self.config.block_size,
+            )
         else:
             block_mask = None
-        pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0) # shape (1, t)
+        pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(
+            0
+        )  # shape (1, t)
 
         # forward the GPT model itself
-        tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
-        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
+        tok_emb = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
+        pos_emb = self.transformer.wpe(
+            pos
+        )  # position embeddings of shape (1, t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x, block_mask=block_mask)
@@ -276,7 +341,9 @@ class GPT(nn.Module):
             loss = F.huber_loss(logits[prefix_mask], targets[prefix_mask])
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
-            logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+            logits = self.lm_head(
+                x[:, [-1], :]
+            )  # note: using list [-1] to preserve the time dim
             loss = None
 
         return logits, loss
@@ -284,7 +351,9 @@ class GPT(nn.Module):
     def get_embeddings(self, idx, prefix_len=None):
         device = idx.device
         b, t, ch = idx.size()
-        assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        assert t <= self.config.block_size, (
+            f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        )
         if self.config.attn_type == "prefix":
             # TODO we need to make sure that the prefix hyperparameters are tuned well:
             if prefix_len is None:
@@ -292,14 +361,24 @@ class GPT(nn.Module):
                 # TODO do we want this to be an eval mode switch?
                 prefix_len = random.randrange(self.config.block_size - 1)
             prefix_lm_mask = generate_prefix_lm_mask(prefix_len)
-            block_mask = create_block_mask(prefix_lm_mask, None, None, self.config.block_size, self.config.block_size)
+            block_mask = create_block_mask(
+                prefix_lm_mask,
+                None,
+                None,
+                self.config.block_size,
+                self.config.block_size,
+            )
         else:
             block_mask = None
-        pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0) # shape (1, t)
+        pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(
+            0
+        )  # shape (1, t)
 
         # forward the GPT model itself
-        tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
-        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
+        tok_emb = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
+        pos_emb = self.transformer.wpe(
+            pos
+        )  # position embeddings of shape (1, t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x, block_mask=block_mask)
@@ -311,10 +390,12 @@ class GPT(nn.Module):
         # model surgery to decrease the block size if necessary
         assert block_size <= self.config.block_size
         self.config.block_size = block_size
-        self.transformer.wpe.weight = nn.Parameter(self.transformer.wpe.weight[:block_size])
+        self.transformer.wpe.weight = nn.Parameter(
+            self.transformer.wpe.weight[:block_size]
+        )
         for block in self.transformer.h:
-            if hasattr(block.attn, 'bias'):
-                block.attn.bias = block.attn.bias[:,:,:block_size,:block_size]
+            if hasattr(block.attn, "bias"):
+                block.attn.bias = block.attn.bias[:, :, :block_size, :block_size]
 
     def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
         # start with all of the candidate parameters
@@ -326,36 +407,43 @@ class GPT(nn.Module):
         decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
         nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
         optim_groups = [
-            {'params': decay_params, 'weight_decay': weight_decay},
-            {'params': nodecay_params, 'weight_decay': 0.0}
+            {"params": decay_params, "weight_decay": weight_decay},
+            {"params": nodecay_params, "weight_decay": 0.0},
         ]
         num_decay_params = sum(p.numel() for p in decay_params)
         num_nodecay_params = sum(p.numel() for p in nodecay_params)
         if self.master_process:
-            print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
-            print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
+            print(
+                f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters"
+            )
+            print(
+                f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters"
+            )
         # Create AdamW optimizer and use the fused version if it is available
-        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
-        use_fused = fused_available and device_type == 'cuda'
+        fused_available = "fused" in inspect.signature(torch.optim.AdamW).parameters
+        use_fused = fused_available and device_type == "cuda"
         extra_args = dict(fused=True) if use_fused else dict()
-        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, **extra_args)
-        if self.master_process: print(f"using fused AdamW: {use_fused}")
+        optimizer = torch.optim.AdamW(
+            optim_groups, lr=learning_rate, betas=betas, **extra_args
+        )
+        if self.master_process:
+            print(f"using fused AdamW: {use_fused}")
 
         return optimizer
 
     def estimate_mfu(self, fwdbwd_per_iter, dt):
-        """ estimate model flops utilization (MFU) in units of A100 bfloat16 peak FLOPS """
+        """estimate model flops utilization (MFU) in units of A100 bfloat16 peak FLOPS"""
         # first estimate the number of flops we do per iteration.
         # see PaLM paper Appendix B as ref: https://arxiv.org/abs/2204.02311
         N = self.get_num_params()
         cfg = self.config
-        L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.n_embd//cfg.n_head, cfg.block_size
-        flops_per_token = 6*N + 12*L*H*Q*T
+        L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.n_embd // cfg.n_head, cfg.block_size
+        flops_per_token = 6 * N + 12 * L * H * Q * T
         flops_per_fwdbwd = flops_per_token * T
         flops_per_iter = flops_per_fwdbwd * fwdbwd_per_iter
         # express our flops throughput as ratio of A100 bfloat16 peak flops
-        flops_achieved = flops_per_iter * (1.0/dt) # per second
-        flops_promised = 312e12 # A100 GPU bfloat16 peak flops is 312 TFLOPS
+        flops_achieved = flops_per_iter * (1.0 / dt)  # per second
+        flops_promised = 312e12  # A100 GPU bfloat16 peak flops is 312 TFLOPS
         mfu = flops_achieved / flops_promised
         return mfu
 
@@ -368,10 +456,16 @@ class GPT(nn.Module):
         """
         for i in range(new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
-            idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
+            idx_cond = (
+                idx
+                if idx.size(1) <= self.config.block_size
+                else idx[:, -self.config.block_size :]
+            )
             # forward the model to get the logits for the index in the sequence
             logits, _ = self(idx_cond)
-            idx_next = logits + (torch.randn(logits.size())*temperature).to(logits.device)
+            idx_next = logits + (torch.randn(logits.size()) * temperature).to(
+                logits.device
+            )
             # append sampled index to the running sequence and continue
             idx = torch.cat((idx, idx_next), dim=1)
 
@@ -386,14 +480,22 @@ class GPT(nn.Module):
         Most likely you'll want to make sure to be in model.eval() mode of
         operation for this.
         """
-        idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
+        idx_cond = (
+            idx
+            if idx.size(1) <= self.config.block_size
+            else idx[:, -self.config.block_size :]
+        )
         embeddings = self.get_embeddings(idx_cond, prefix_len=None)
         if average_type == "mean":
             # We only care about the average embedding
             return torch.mean(embeddings, dim=1)
         elif average_type == "exp_decay":
-            weights = torch.logspace(0, -1, embeddings.shape[1], device=embeddings.device).unsqueeze(0).unsqueeze(-1)
-            return torch.sum(weights*embeddings, dim=1)/torch.sum(embeddings, dim=1)
+            weights = (
+                torch.logspace(0, -1, embeddings.shape[1], device=embeddings.device)
+                .unsqueeze(0)
+                .unsqueeze(-1)
+            )
+            return torch.sum(weights * embeddings, dim=1) / torch.sum(embeddings, dim=1)
         elif average_type == "none":
             return embeddings
         else:
