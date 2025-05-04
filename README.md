@@ -21,6 +21,10 @@ is usable for astronomical observation data.  Within `train.py` you will find a
 Check out the [UniverseTBD](https://universetbd.org/) Discord for updates:
 [https://discord.gg/MNEVegvfJq](https://discord.gg/MNEVegvfJq)
 
+# I just want to run it! 🗣️
+
+Okay I hear you! First you need to install the model:
+
 ## Install
 
 You can install via pip from PyPI:
@@ -34,7 +38,7 @@ Or if you install locally via a git clone, you can uv install via:
 uv sync
 ```
 
-# How to run
+## Load a pre-trained model
 
 To load and run a pre-trained AstroPT model from HuggingFace you can use the `load_astropt` function:
 
