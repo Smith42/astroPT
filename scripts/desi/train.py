@@ -44,11 +44,6 @@ except:
 from astropt.model import GPTConfig, GPT, ModalityConfig, ModalityRegistry
 from astropt.local_datasets import GalaxyImageDataset
 
-## helper functions
-def to_device_dict(x, device):
-    """Move all tensor values in dictionary x to the specified device."""
-    return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in x.items()}
-
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a 70M parameter model on DESI FITS imagery
@@ -279,11 +274,9 @@ if __name__ == "__main__":
             out[split] = {}
             losses = torch.zeros(eval_iters)
             for k in range(eval_iters):
-                B = next(dl) # fetch the very first batch
+                B = tds.process_modes(next(dl), modality_registry, device)
                 with ctx:
-                    logits, loss = model(
-                        to_device_dict(B["X"], device), targets=to_device_dict(B["Y"], device),
-                    )
+                    logits, loss = model(B["X"], targets=B["Y"])
                 losses[k] = loss.item()
             out[split]["dummy"] = losses.mean()
         model.train()
@@ -294,12 +287,9 @@ if __name__ == "__main__":
         model.eval()
         for dl, split in zip([tdl, vdl], ["train", "val"]):
             f, axs = plt.subplots(8, 4, figsize=(6, 12), constrained_layout=True)
-            B = next(vdl)
+            B = vds.process_modes(next(vdl), modality_registry, device)
             with ctx:
-                P, loss = model(
-                    to_device_dict(B["X"], device), targets=to_device_dict(B["Y"], device),
-                )
-
+                P, loss = model(B["X"], B["Y"])
                 Yim = B["Y"]["images"].to(device)
                 b, t, c = Yim.size()
                 zero_block = torch.zeros((b, 1, c)).to(device)
@@ -350,7 +340,7 @@ if __name__ == "__main__":
     
     # training loop
     if master_process: print("starting training...")
-    B = next(tdl) # fetch the very first batch
+    B = tds.process_modes(next(tdl), modality_registry, device) # fetch the very first batch
     t0 = time.time()
     dts = []
     local_iter_num = 0 # number of iterations in the lifetime of this process
@@ -427,11 +417,9 @@ if __name__ == "__main__":
                 model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
 
             with ctx:
-                logits, loss = model(
-                    to_device_dict(B["X"], device), targets=to_device_dict(B["Y"], device),
-                )
+                logits, loss = model(B["X"], targets=B["Y"])
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
-            B = next(tdl)
+            B = tds.process_modes(next(tdl), modality_registry, device) # fetch the very first batch
             # backward pass, with gradient scaling if training in fp16
             scaler.scale(loss).backward()
         # clip the gradient

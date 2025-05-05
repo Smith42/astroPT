@@ -139,11 +139,37 @@ class GalaxyImageDataset(Dataset):
 
         return patch_spectra
 
+    @staticmethod
+    def process_modes(x, modality_registry, device, shuf=False):
+        """Move all tensor values in dictionary x to the specified device.
+        And split into X and Y according to the modality registry."""
+        modes = modality_registry.generate_sequence(shuf=shuf)
+
+        # Move all tensors to device first
+        x_on_device = {
+            k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in x.items()
+        }
+
+        return {
+            "X": {
+                mode: x_on_device[mode][:, :-1]
+                if mode == modes[-1]
+                else x_on_device[mode]
+                for mode in modes
+            },
+            "Y": {
+                mode: x_on_device[mode][:, 1:]
+                if mode == modes[0]
+                else x_on_device[mode]
+                for mode in modes
+            },
+        }
+
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        if self.stochastic == True:
+        if self.stochastic:
             idx = np.random.randint(len(self.paths))
 
         while True:
@@ -198,20 +224,19 @@ class GalaxyImageDataset(Dataset):
                     )
             except Exception as err:
                 print(err)
-                if self.stochastic == True:
+                if self.stochastic:
                     idx = np.random.randint(len(self.paths))
                 else:
                     sys.exit(1)
 
         if self.paths_spect is None:
             return {
-                "X": {"images": patch_galaxy[:-1]},
-                "Y": {"images": patch_galaxy[1:]},
+                "images": patch_galaxy,
                 "idx": idx,
             }
         else:
             return {
-                "X": {"images": patch_galaxy, "spectra": patch_spectra[:-1]},
-                "Y": {"images": patch_galaxy[1:], "spectra": patch_spectra},
+                "images": patch_galaxy,
+                "spectra": patch_spectra,
                 "idx": idx,
             }

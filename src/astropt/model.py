@@ -61,13 +61,11 @@ class ModalityRegistry:
         """Get names of modalities"""
         return sorted(self.modalities.keys())
 
-    def generate_sequence(
-        self, available_modalities, num_sequences=1, random_order=True
-    ):
+    def generate_sequence(self, num_sequences=1, shuf=False):
         """Generate a modality sequence from available modalities"""
-        if random_order:
-            return random.sample(available_modalities, len(available_modalities))
-        return sorted(available_modalities)
+        if shuf:
+            return random.sample(self.names(), len(self.names()))
+        return self.names()
 
 
 # @torch.jit.script # good to enable when not using torch.compile, disable when using (our default)

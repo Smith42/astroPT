@@ -37,6 +37,7 @@ dependencies = [
     "umap-learn>=0.5.7",
     "wandb>=0.18.7",
     "loralib",
+    "pre-commit>=4.2.0",
 ]
 dynamic = [
     "version",
