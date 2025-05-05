@@ -361,7 +361,6 @@ class GPT(nn.Module):
         # not 100% sure what this is, so far seems to be harmless. TODO investigate
         # TODO rethink weight tying
         # self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
-
         # optional task head for finetuning
         self.task_head = None
         if hasattr(config, "output_dim"):
@@ -584,7 +583,6 @@ class GPT(nn.Module):
         for mod_name, x in inputs.items():
             embeddings.append(self.transformer.wte[mod_name](x))
         tok_emb = torch.cat(embeddings, dim=1)
-
         pos_emb = self.transformer.wpe(
             pos
         )  # position embeddings of shape (1, t, n_embd)

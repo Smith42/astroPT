@@ -6,7 +6,7 @@ Please take a moment to read this doc **before submitting a pull request**.
 
 # Where do I go from here?
 
-If you have a question, roadmap suggestion, or an idea for the AstroPile please ping us on the [universeTBD Discord](https://discord.gg/MNEVegvfJq). If you've found a bug, please [submit an issue](https://github.com/Smith42/AstroPT/issues).
+If you have a question, roadmap suggestion, or an idea for AstroPT please ping us on the [universeTBD Discord](https://discord.gg/MNEVegvfJq). If you've found a bug, please [submit an issue](https://github.com/Smith42/AstroPT/issues).
 
 ## If you can implement your feature
 
