@@ -336,19 +336,16 @@ class GPT(nn.Module):
         # create encoders and decoders
         encoders = {}
         decoders = {}
+        embedders = {}
         for name, mod_config in modality_registry.modalities.items():
             encoders[name] = Encoder(config, mod_config.input_size)
+            embedders[name] = Encoder(config, mod_config.pos_input_size)
             decoders[name] = Decoder(config, mod_config.input_size)
 
         self.transformer = nn.ModuleDict(
             dict(
                 wte=nn.ModuleDict(encoders),
-                wpe=nn.ModuleDict(
-                    {
-                        name: Embedder(config)
-                        for name in modality_registry.modalities.keys()
-                    }
-                ),
+                wpe=nn.ModuleDict(embedders),
                 drop=nn.Dropout(config.dropout),
                 h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
                 ln_f=LayerNorm(config.n_embd, bias=config.bias),
@@ -381,7 +378,7 @@ class GPT(nn.Module):
             print("number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
 
     def get_num_params(self):
-        """ Return the number of parameters in the model. """
+        """Return the number of parameters in the model."""
         return sum(p.numel() for p in self.parameters())
 
     def _init_weights(self, module):
@@ -424,7 +421,7 @@ class GPT(nn.Module):
         # pos shape: (1, tt)
         pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0)
         # position embeddings of shape (1, tt, n_embd):
-        pos_emb = self.transformer.wpe["images"](pos)
+        pos_emb = self.transformer.wpe(pos)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x, block_mask=block_mask)
@@ -489,13 +486,12 @@ class GPT(nn.Module):
 
         return outputs, loss
 
-    def get_embeddings(self, inputs, pos=None, draw_from_centre=True, prefix_len=None):
+    def get_embeddings(self, inputs, draw_from_centre=True, prefix_len=None):
         """
         Get embeddings from AstroPT.
 
         Args:
             inputs: dict of tensors with modality names as keys
-            pos: position
             draw_from_centre = get embedding from centre from model not from penultimate layer
             prefix_len: optional prefix length to consider
 
@@ -514,13 +510,9 @@ class GPT(nn.Module):
             embeddings.append(self.transformer.wte[mod_name](x))
         tok_emb = torch.cat(embeddings, dim=1)
 
-        if pos is None:
-            pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(
-                0
-            )  # shape (1, tt)
-
-        first_modality = self.modality_registry.names()[0]
-        pos_emb = self.transformer.wpe[first_modality](pos)
+        pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0)
+        # pos shape (1, tt)
+        pos_emb = self.transformer.wpe(pos)
 
         x = self.transformer.drop(tok_emb + pos_emb)
 
@@ -559,19 +551,16 @@ class GPT(nn.Module):
             f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
         )
 
-        pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(
-            0
-        )  # shape (1, tt)
-
         # forward the GPT model itself
         # generate token embeddings per modality
         embeddings = []
         for mod_name, x in inputs.items():
             embeddings.append(self.transformer.wte[mod_name](x))
         tok_emb = torch.cat(embeddings, dim=1)
-        pos_emb = self.transformer.wpe(
-            pos
-        )  # position embeddings of shape (1, t, n_embd)
+        # pos shape (1, tt)
+        pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0)
+        # position embeddings of shape (1, t, n_embd)
+        pos_emb = self.transformer.wpe(pos)
         x = self.transformer.drop(tok_emb + pos_emb)
         for ii, block in enumerate(self.transformer.h):
             x = block(x)

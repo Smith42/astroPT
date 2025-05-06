@@ -48,7 +48,7 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a 70M parameter model on DESI FITS imagery
     # look at `config/astropt*.py` for a prod run example
-    out_dir = 'logs/astropt0070M'
+    out_dir = 'logs/astropt0070M_spectra'
     eval_interval = 1000
     log_interval = 100
     checkpoint_interval = 1000
@@ -72,13 +72,12 @@ if __name__ == "__main__":
     n_embd = 768
     n_chan = 4 # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
     dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
-    patch_size = 16
     # NB dropout is NOT implemented for flex attention
     bias = False # do we use bias inside LayerNorm and Linear layers?
     # Define modalities configuration
     modalities = [
-        ModalityConfig(name="images", input_size=16*16*n_chan, patch_size=16, loss_weight=1.0),
-        #ModalityConfig(name="spectra", input_size=256, patch_size=32, loss_weight=0.5)
+        #ModalityConfig(name="images", input_size=16*16*n_chan, patch_size=16, loss_weight=1.0),
+        ModalityConfig(name="spectra", input_size=256, patch_size=256, loss_weight=0.5)
     ]
     # Create modality registry
     modality_registry = ModalityRegistry(modalities)
@@ -158,11 +157,21 @@ if __name__ == "__main__":
     # training dataset and dataloader
     tpaths = "./decam_imagery.txt"
     tpaths_spectra = None #"./data/train_desi_spectra.txt"
-    tds = GalaxyImageDataset(tpaths, paths_spect=tpaths_spectra, spiral=spiral, transform=transforms, patch_size=patch_size)
+    tds = GalaxyImageDataset(
+        paths={"images": None, "spectra": "./spectra.txt"}, 
+        spiral=spiral, 
+        transform=transforms, 
+        modality_registry=modality_registry,
+    )
     # validation dataset and dataloader
     vpaths = "./decam_imagery.txt"
     vpaths_spectra = None #"./data/test_desi_spectra_spectra.txt"
-    vds = GalaxyImageDataset(vpaths, paths_spect=vpaths_spectra, spiral=spiral, transform=transforms, patch_size=patch_size)
+    vds = GalaxyImageDataset(
+        paths={"images": None, "spectra": "./spectra.txt"}, 
+        spiral=spiral, 
+        transform=transforms, 
+        modality_registry=modality_registry,
+    )
 
     tdl = iter(DataLoader(
         tds,
@@ -290,32 +299,34 @@ if __name__ == "__main__":
             B = vds.process_modes(next(vdl), modality_registry, device)
             with ctx:
                 P, loss = model(B["X"], B["Y"])
-                Yim = B["Y"]["images"].to(device)
-                b, t, c = Yim.size()
-                zero_block = torch.zeros((b, 1, c)).to(device)
-                Yim = torch.cat((zero_block, Yim), dim=1)
-                if spiral: Yim = torch.stack([vds.antispiralise(yy) for yy in Yim])
-                im_patch = modality_registry.get_config("images").patch_size
-                Yim = einops.rearrange(Yim, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=im_patch, p2=im_patch, h=image_size//im_patch, w=image_size//im_patch)
-                Pim = torch.cat((zero_block, P["images"]), dim=1)
-                if spiral: Pim = torch.stack([vds.antispiralise(pp) for pp in Pim])
-                Pim = einops.rearrange(Pim, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=im_patch, p2=im_patch, h=image_size//im_patch, w=image_size//im_patch)
+                if "images" in modality_registry.names():
+                    Yim = B["Y"]["images"].to(device)
+                    b, t, c = Yim.size()
+                    zero_block = torch.zeros((b, 1, c)).to(device)
+                    Yim = torch.cat((zero_block, Yim), dim=1)
+                    if spiral: Yim = torch.stack([vds.antispiralise(yy) for yy in Yim])
+                    im_patch = modality_registry.get_config("images").patch_size
+                    Yim = einops.rearrange(Yim, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=im_patch, p2=im_patch, h=image_size//im_patch, w=image_size//im_patch)
+                    Pim = torch.cat((zero_block, P["images"]), dim=1)
+                    if spiral: Pim = torch.stack([vds.antispiralise(pp) for pp in Pim])
+                    Pim = einops.rearrange(Pim, 'b (h w) (p1 p2 c) -> b (h p1) (w p2) c', p1=im_patch, p2=im_patch, h=image_size//im_patch, w=image_size//im_patch)
 
-                for ax, p, y in zip(axs, Pim.to(float).cpu().numpy(), Yim.to(float).cpu().numpy()):
-                    ax[0].imshow(np.clip(y, 0, 1))
-                    ax[1].imshow(np.clip(p, 0, 1))
-                    ax[0].axis("off")
-                    ax[1].axis("off")
+                    for ax, p, y in zip(axs, Pim.to(float).cpu().numpy(), Yim.to(float).cpu().numpy()):
+                        ax[0].imshow(np.clip(y, 0, 1))
+                        ax[1].imshow(np.clip(p, 0, 1))
+                        ax[0].axis("off")
+                        ax[1].axis("off")
 
-                if log_via_wandb:
-                    wandb.log({"Y": wandb.Image(Y.swapaxes(1, -1)), "P": wandb.Image(P.swapaxes(1, -1))})
+                    if log_via_wandb:
+                        wandb.log({"Y": wandb.Image(Y.swapaxes(1, -1)), "P": wandb.Image(P.swapaxes(1, -1))})
 
-                #Ysp = B["Y"]["spectra"]
-                #Psp = P["spectra"]
-                #for ax, p, y in zip(axs, Psp.to(float).cpu().numpy(), Ysp.to(float).cpu().numpy()):
-                #    ax[2].plot(np.concatenate(y, axis=0))
-                #    ax[2].plot(np.concatenate(p, axis=0)) # overlay too cause yolo
-                #    ax[3].plot(np.concatenate(p, axis=0))
+            if "spectra" in modality_registry.names():
+                Ysp = B["Y"]["spectra"]
+                Psp = P["spectra"]
+                for ax, p, y in zip(axs, Psp.to(float).cpu().numpy(), Ysp.to(float).cpu().numpy()):
+                    ax[2].plot(np.concatenate(y, axis=0))
+                    ax[2].plot(np.concatenate(p, axis=0)) # overlay too cause yolo
+                    ax[3].plot(np.concatenate(p, axis=0))
             f.savefig(
                 os.path.join(out_dir, f"{iter_num:06d}_{split}.jpg"),
                 bbox_inches="tight",
