@@ -380,23 +380,9 @@ class GPT(nn.Module):
         if self.master_process:
             print("number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
 
-    def get_num_params(self, non_embedding=True):
-        """
-        Return the number of parameters in the model.
-        For non-embedding count (default), the position embeddings get subtracted.
-        The token embeddings would too, except due to the parameter sharing these
-        params are actually used as weights in the final layer, so we include them.
-        """
-        n_params = sum(p.numel() for p in self.parameters())
-        if non_embedding:
-            modality = "images"  # dummy modality so we can take embedding count away
-            n_params -= sum(
-                p.numel() for p in self.transformer.wpe[modality].parameters()
-            )
-            n_params -= sum(
-                p.numel() for p in self.transformer.wte[modality].parameters()
-            )
-        return n_params
+    def get_num_params(self):
+        """ Return the number of parameters in the model. """
+        return sum(p.numel() for p in self.parameters())
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
