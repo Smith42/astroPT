@@ -70,14 +70,20 @@ if __name__ == "__main__":
     n_layer = 12
     n_head = 12
     n_embd = 768
-    n_chan = 4 # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
+    n_chan = 1 # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
     dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
     # NB dropout is NOT implemented for flex attention
     bias = False # do we use bias inside LayerNorm and Linear layers?
     # Define modalities configuration
     modalities = [
-        #ModalityConfig(name="images", input_size=16*16*n_chan, patch_size=16, loss_weight=1.0),
-        ModalityConfig(name="spectra", input_size=256, patch_size=256, loss_weight=0.5)
+        ModalityConfig(
+            name="images", input_size=16*16*n_chan, patch_size=16, 
+            pos_input_size=1, loss_weight=1.0
+        ),
+        ModalityConfig(
+            name="spectra", input_size=256, patch_size=256, 
+            pos_input_size=256, loss_weight=0.5
+        ),
     ]
     # Create modality registry
     modality_registry = ModalityRegistry(modalities)
@@ -153,7 +159,7 @@ if __name__ == "__main__":
             transforms.Lambda(normalise),
         ])
         return transform
-    transforms = {"galaxy": data_transforms()}
+    transforms = {"image": data_transforms()}
     # training dataset and dataloader
     tds = GalaxyImageDataset(
         paths={"images": "./hsc_matched.txt", "spectra": "./spectra_matched.txt"}, 

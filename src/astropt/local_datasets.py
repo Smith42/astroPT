@@ -113,7 +113,7 @@ class GalaxyImageDataset(Dataset):
         )
 
     def process_galaxy(self, raw_galaxy):
-        patch_size = self.modality_registry.get_config("galaxies").patch_size
+        patch_size = self.modality_registry.get_config("images").patch_size
         patch_galaxy = einops.rearrange(
             raw_galaxy,
             "c (h p1) (w p2) -> (h w) (p1 p2 c)",
@@ -122,7 +122,7 @@ class GalaxyImageDataset(Dataset):
         )
 
         if "galaxy" in self.transform:
-            patch_galaxy = self.transform["galaxy"](patch_galaxy)
+            patch_galaxy = self.transform["image"](patch_galaxy)
         if self.spiral:
             patch_galaxy = self.spiralise(patch_galaxy)
 
@@ -173,7 +173,12 @@ class GalaxyImageDataset(Dataset):
                 else x_on_device[mode]
                 for mode in modes
             }
-            | {f"{mode}_positions": x_on_device[f"{mode}_positions"] for mode in modes},
+            | {
+                f"{mode}_positions": x_on_device[f"{mode}_positions"][:, :-1]
+                if mode == modes[-1]
+                else x_on_device[f"{mode}_positions"]
+                for mode in modes
+            },
             "Y": {
                 mode: x_on_device[mode][:, 1:]
                 if mode == modes[0]
@@ -195,18 +200,18 @@ class GalaxyImageDataset(Dataset):
                 if self.paths["images"] is not None:
                     # get extension to filename and read via FITS or JPG
                     _, ext = (
-                        os.path.splitext(self.paths[idx])
-                        if len(self.paths.shape) == 1
-                        else os.path.splitext(self.paths[idx][0])
+                        os.path.splitext(self.paths["images"][idx])
+                        if len(self.paths["images"].shape) == 1
+                        else os.path.splitext(self.paths["images"][idx][0])
                     )
                     if ext == ".jpg" or ext == ".jpeg":
-                        raw_galaxy = io.read_image(str(self.paths[idx])).to(
+                        raw_galaxy = io.read_image(str(self.paths["images"][idx])).to(
                             torch.bfloat16
                         )
                     elif ext == ".fits" or ext == ".FITS":
-                        if len(self.paths.shape) == 1:
+                        if len(self.paths["images"].shape) == 1:
                             # case with 1 FITS file
-                            with fits.open(self.paths[idx]) as hdul:
+                            with fits.open(self.paths["images"][idx]) as hdul:
                                 raw_galaxy = hdul[0].data.astype(
                                     np.float32
                                 )  # Assuming the image data is in the first HDU
@@ -217,7 +222,7 @@ class GalaxyImageDataset(Dataset):
                         else:
                             # case with N FITS files
                             raw_galaxy = []
-                            for path in self.paths[idx]:
+                            for path in self.paths["images"][idx]:
                                 with fits.open(path) as hdul:
                                     raw_galaxy.append(
                                         hdul[0].data.astype(np.float32)
@@ -237,9 +242,11 @@ class GalaxyImageDataset(Dataset):
                     # Fetch spectrum if we have one
                     with fits.open(self.paths["spectra"][idx]) as hdul:
                         raw_spectra = hdul[1].data["Flux"].astype(np.float32)
-                        wavelength = 10 * hdul[1].data["Wave"].astype(np.float32)
+                        wavelength = hdul[1].data["Wave"].astype(np.float32)
                     raw_spectra = torch.tensor(raw_spectra).to(torch.bfloat16)
-                    wavelength = torch.tensor(wavelength).to(torch.long)
+                    wavelength = (
+                        torch.tensor(wavelength).to(torch.bfloat16) - 3000
+                    ) / (10000 - 3000)
                     patch_spectra, patch_wl = self.process_spectra(
                         raw_spectra, wavelength
                     )
@@ -256,7 +263,9 @@ class GalaxyImageDataset(Dataset):
 
         return {
             "images": patch_galaxy,
-            "images_positions": torch.arange(0, len(patch_galaxy), dtype=torch.long),
+            "images_positions": torch.linspace(
+                0, 1, len(patch_galaxy), dtype=torch.bfloat16
+            ).unsqueeze(1),
             "spectra": patch_spectra,
             "spectra_positions": patch_wl,
             "idx": idx,

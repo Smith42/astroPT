@@ -43,6 +43,7 @@ class ModalityConfig:
 
     name: str
     input_size: int
+    pos_input_size: int
     patch_size: int
     loss_weight: float = 1.0
 
@@ -390,8 +391,6 @@ class GPT(nn.Module):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, inputs, targets=None, prefix_len=None, target_modality=None):
-        # get device from first modality in our dict:
-        device = next(iter(inputs.values())).device
         tt = sum(x.size(1) for x in inputs.values())
         assert tt <= self.config.block_size, (
             f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
@@ -415,13 +414,15 @@ class GPT(nn.Module):
 
         # forward the GPT model itself
         embeddings = []
-        for mod_name, x in inputs.items():
-            embeddings.append(self.transformer.wte[mod_name](x))
+        pos_embeddings = []
+        for mod_name in self.modality_registry.names():
+            input_tensor = inputs[mod_name]
+            embeddings.append(self.transformer.wte[mod_name](input_tensor))
+            pos = inputs[mod_name + "_positions"]
+            pos_embeddings.append(self.transformer.wpe[mod_name](pos))
         tok_emb = torch.cat(embeddings, dim=1)
-        # pos shape: (1, tt)
-        pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0)
-        # position embeddings of shape (1, tt, n_embd):
-        pos_emb = self.transformer.wpe(pos)
+        pos_emb = torch.cat(pos_embeddings, dim=1)
+
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x, block_mask=block_mask)
@@ -433,7 +434,8 @@ class GPT(nn.Module):
         if target_modality is not None:
             # continue sequence if target modality is in inputs
             if target_modality in inputs:
-                for mod_name, input_tensor in inputs.items():
+                for mod_name in self.modality_registry.names():
+                    input_tensor = inputs[mod_name]
                     if mod_name == target_modality:
                         seq_len = input_tensor.size(1)
                         hidden_state = x[:, current_idx : current_idx + seq_len]
@@ -444,7 +446,8 @@ class GPT(nn.Module):
                 hidden_state = x[:, -1:, :]
                 outputs[target_modality] = self.lm_head[target_modality](hidden_state)
 
-        for mod_name, input_tensor in inputs.items():
+        for mod_name in self.modality_registry.names():
+            input_tensor = inputs[mod_name]
             seq_len = input_tensor.size(1)
             hidden_state = x[:, current_idx : current_idx + seq_len]
             outputs[mod_name] = self.lm_head[mod_name](hidden_state)
@@ -454,7 +457,8 @@ class GPT(nn.Module):
             # if we are given some desired targets also calculate the loss
             current_idx = 0
             loss = 0
-            for mod_name, target in targets.items():
+            for mod_name in self.modality_registry.names():
+                target = targets[mod_name]
                 seq_len = target.size(1)
                 mod_config = self.modality_registry.get_config(mod_name)
                 pred = outputs[mod_name]
@@ -498,7 +502,6 @@ class GPT(nn.Module):
         Returns:
             dictionary of embeddings for each modality
         """
-        device = next(iter(inputs.values())).device  # get device from first modality
         tt = sum(x.size(1) for x in inputs.values())
         assert tt <= self.config.block_size, (
             f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
@@ -506,14 +509,14 @@ class GPT(nn.Module):
 
         # generate token embeddings per modality
         embeddings = []
-        for mod_name, x in inputs.items():
-            embeddings.append(self.transformer.wte[mod_name](x))
+        pos_embeddings = []
+        for mod_name in self.modality_registry.names():
+            input_tensor = inputs[mod_name]
+            embeddings.append(self.transformer.wte[mod_name](input_tensor))
+            pos = inputs[mod_name + "_positions"]
+            pos_embeddings.append(self.transformer.wpe[mod_name](pos))
         tok_emb = torch.cat(embeddings, dim=1)
-
-        pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0)
-        # pos shape (1, tt)
-        pos_emb = self.transformer.wpe(pos)
-
+        pos_emb = torch.cat(pos_embeddings, dim=1)
         x = self.transformer.drop(tok_emb + pos_emb)
 
         for i, block in enumerate(
@@ -531,7 +534,8 @@ class GPT(nn.Module):
         # split embeddings by modality
         result = {}
         current_idx = 0
-        for mod_name, input_tensor in inputs.items():
+        for mod_name in self.modality_registry.names():
+            input_tensor = inputs[mod_name]
             seq_len = input_tensor.size(1)
             result[mod_name] = embeddings_out[:, current_idx : current_idx + seq_len]
             current_idx += seq_len
@@ -545,7 +549,6 @@ class GPT(nn.Module):
                 "Model not configured for task prediction. Set config.output_dim"
             )
 
-        device = next(iter(inputs.values())).device  # get device from first modality
         tt = sum(x.size(1) for x in inputs.values())
         assert tt <= self.config.block_size, (
             f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
@@ -554,13 +557,14 @@ class GPT(nn.Module):
         # forward the GPT model itself
         # generate token embeddings per modality
         embeddings = []
-        for mod_name, x in inputs.items():
-            embeddings.append(self.transformer.wte[mod_name](x))
+        pos_embeddings = []
+        for mod_name in self.modality_registry.names():
+            input_tensor = inputs[mod_name]
+            embeddings.append(self.transformer.wte[mod_name](input_tensor))
+            pos = inputs[mod_name + "_positions"]
+            pos_embeddings.append(self.transformer.wpe[mod_name](pos))
         tok_emb = torch.cat(embeddings, dim=1)
-        # pos shape (1, tt)
-        pos = torch.arange(0, tt, dtype=torch.long, device=device).unsqueeze(0)
-        # position embeddings of shape (1, t, n_embd)
-        pos_emb = self.transformer.wpe(pos)
+        pos_emb = torch.cat(pos_embeddings, dim=1)
         x = self.transformer.drop(tok_emb + pos_emb)
         for ii, block in enumerate(self.transformer.h):
             x = block(x)
@@ -650,7 +654,7 @@ class GPT(nn.Module):
         """
         for ii in range(new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
-            for mod_name in inputs:
+            for mod_name in self.modality_registry.names():
                 if inputs[mod_name].size(1) > self.config.block_size:
                     inputs[mod_name] = inputs[mod_name][:, -self.config.block_size :]
 
