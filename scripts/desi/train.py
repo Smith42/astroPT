@@ -155,19 +155,15 @@ if __name__ == "__main__":
         return transform
     transforms = {"galaxy": data_transforms()}
     # training dataset and dataloader
-    tpaths = "./decam_imagery.txt"
-    tpaths_spectra = None #"./data/train_desi_spectra.txt"
     tds = GalaxyImageDataset(
-        paths={"images": None, "spectra": "./spectra.txt"}, 
+        paths={"images": "./hsc_matched.txt", "spectra": "./spectra_matched.txt"}, 
         spiral=spiral, 
         transform=transforms, 
         modality_registry=modality_registry,
     )
     # validation dataset and dataloader
-    vpaths = "./decam_imagery.txt"
-    vpaths_spectra = None #"./data/test_desi_spectra_spectra.txt"
     vds = GalaxyImageDataset(
-        paths={"images": None, "spectra": "./spectra.txt"}, 
+        paths={"images": "./hsc_matched.txt", "spectra": "./spectra_matched.txt"}, 
         spiral=spiral, 
         transform=transforms, 
         modality_registry=modality_registry,
