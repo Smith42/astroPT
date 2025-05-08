@@ -78,11 +78,11 @@ if __name__ == "__main__":
     modalities = [
         ModalityConfig(
             name="images", input_size=16*16*n_chan, patch_size=16, 
-            pos_input_size=1, loss_weight=1.0
+            pos_input_size=1, loss_weight=1.0, embed_pos=True,
         ),
         ModalityConfig(
             name="spectra", input_size=256, patch_size=256, 
-            pos_input_size=256, loss_weight=0.5
+            pos_input_size=256, loss_weight=0.5, embed_pos=False, 
         ),
     ]
     # Create modality registry

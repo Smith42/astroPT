@@ -45,6 +45,7 @@ class ModalityConfig:
     input_size: int
     pos_input_size: int
     patch_size: int
+    embed_pos: bool
     loss_weight: float = 1.0
 
 
@@ -340,7 +341,10 @@ class GPT(nn.Module):
         embedders = {}
         for name, mod_config in modality_registry.modalities.items():
             encoders[name] = Encoder(config, mod_config.input_size)
-            embedders[name] = Encoder(config, mod_config.pos_input_size)
+            if mod_config.embed_pos:
+                embedders[name] = Embedder(config)
+            else:
+                embedders[name] = Encoder(config, mod_config.pos_input_size)
             decoders[name] = Decoder(config, mod_config.input_size)
 
         self.transformer = nn.ModuleDict(
@@ -446,9 +450,13 @@ class GPT(nn.Module):
                 hidden_state = x[:, -1:, :]
                 outputs[target_modality] = self.lm_head[target_modality](hidden_state)
 
-        for mod_name in self.modality_registry.names():
+        for ii, mod_name in enumerate(self.modality_registry.names()):
             input_tensor = inputs[mod_name]
             seq_len = input_tensor.size(1)
+            # If we have more than one mode, the last value of the past modes
+            # are used to prompt the next mode gen:
+            if ii == 0 and len(self.modality_registry.names() > 1):
+                seq_len = seq_len - 1
             hidden_state = x[:, current_idx : current_idx + seq_len]
             outputs[mod_name] = self.lm_head[mod_name](hidden_state)
             current_idx += seq_len

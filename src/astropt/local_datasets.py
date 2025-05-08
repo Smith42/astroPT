@@ -166,26 +166,19 @@ class GalaxyImageDataset(Dataset):
             k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in x.items()
         }
 
-        return {
-            "X": {
-                mode: x_on_device[mode][:, :-1]
-                if mode == modes[-1]
-                else x_on_device[mode]
-                for mode in modes
-            }
-            | {
-                f"{mode}_positions": x_on_device[f"{mode}_positions"][:, :-1]
-                if mode == modes[-1]
-                else x_on_device[f"{mode}_positions"]
-                for mode in modes
-            },
-            "Y": {
-                mode: x_on_device[mode][:, 1:]
-                if mode == modes[0]
-                else x_on_device[mode]
-                for mode in modes
-            },
-        }
+        X = {}
+        Y = {}
+        for ii, mode in enumerate(modes):
+            X[mode] = x_on_device[mode]
+            X[f"{mode}_positions"] = x_on_device[f"{mode}_positions"]
+            Y[mode] = x_on_device[mode]
+            if ii == 0:
+                Y[mode] = Y[mode][:, 1:]
+            if len(modes) == 1:
+                X[mode] = X[mode][:, :-1]
+                X[f"{mode}_positions"] = X[f"{mode}_positions"][:, :-1]
+
+        return {"X": X, "Y": Y}
 
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
@@ -197,7 +190,7 @@ class GalaxyImageDataset(Dataset):
         while True:
             # be careful in this loop -- it fails quietly if there is an error!!!
             try:
-                if self.paths["images"] is not None:
+                if "images" in self.paths:
                     # get extension to filename and read via FITS or JPG
                     _, ext = (
                         os.path.splitext(self.paths["images"][idx])
@@ -236,9 +229,12 @@ class GalaxyImageDataset(Dataset):
                             f"File must be FITS or JPEG, it is instead {ext}."
                         )
                     patch_galaxy = self.process_galaxy(raw_galaxy)
+                    if torch.isnan(patch_galaxy).any():
+                        print("ERR GAL")
+                        raise ValueError("Found NaNs in galaxy, skipping file")
                 else:
                     patch_galaxy = np.array([np.nan])
-                if self.paths["spectra"] is not None:
+                if "spectra" in self.paths:
                     # Fetch spectrum if we have one
                     with fits.open(self.paths["spectra"][idx]) as hdul:
                         raw_spectra = hdul[1].data["Flux"].astype(np.float32)
@@ -250,6 +246,10 @@ class GalaxyImageDataset(Dataset):
                     patch_spectra, patch_wl = self.process_spectra(
                         raw_spectra, wavelength
                     )
+
+                    if torch.isnan(patch_spectra).any() or torch.isnan(patch_wl).any():
+                        print("ERR")
+                        raise ValueError("Found NaNs in spectra, skipping file")
                 else:
                     patch_spectra = np.array([np.nan])
                     patch_wl = np.array([np.nan])
@@ -263,9 +263,7 @@ class GalaxyImageDataset(Dataset):
 
         return {
             "images": patch_galaxy,
-            "images_positions": torch.linspace(
-                0, 1, len(patch_galaxy), dtype=torch.bfloat16
-            ).unsqueeze(1),
+            "images_positions": torch.arange(0, len(patch_galaxy), dtype=torch.long),
             "spectra": patch_spectra,
             "spectra_positions": patch_wl,
             "idx": idx,
