@@ -1,8 +1,17 @@
 import numpy as np
 import tensorflow as tf
+import torch
+from sklearn.metrics import (
+    mean_squared_error, mean_absolute_error, r2_score,
+    accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+)
+import matplotlib.pyplot as plt
+from astropy.io import fits
+import os
+import seaborn as sns
 from data import GalaxyImageDataset
 from data import GalaxyImageDataset_VIS_NISP
-from eval import evaluate_model
+from eval import ModelEvaluator, evaluate_model
 from models import train_model_on_subset, train_model_on_subset_vis_nisp
 from utils import write_results_to_file
 from utils import save_and_plot_redshifts

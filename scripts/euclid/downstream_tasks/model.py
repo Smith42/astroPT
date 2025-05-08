@@ -1,4 +1,5 @@
 import torch.nn as nn
+import torch
        
 class MLPModel(nn.Module):
     def __init__(self, input_dim, task_type="regression"):

@@ -1,5 +1,8 @@
 import torch
 import torch.nn as nn
+import torch.optim as optim
+from torch.optim.lr_scheduler import StepLR
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 class ModelTrainer:
     def __init__(self, model, lr=0.001, epochs=50, task_type="regression",  pos_weight=None):
