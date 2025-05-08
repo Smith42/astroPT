@@ -2,15 +2,21 @@
 Sample from a trained astropt model for Euclid data
 """
 import os
+import pickle
 from contextlib import nullcontext
 import torch
 from torch.utils.data import DataLoader
-from tqdm import tqdm
+from tqdm import tqdm, trange
+import matplotlib.pyplot as plt
 import numpy as np
 from astropt.model import GPTConfig, GPT
+from datasets import load_dataset, concatenate_datasets 
 from astropt.local_datasets import GalaxyImageDataset
 from torchvision import transforms
+from torchvision.transforms import ToTensor
+import functools
 from einops import rearrange
+import pandas as pd
 
 # -----------------------------------------------------------------------------
 init_from = 'resume'
