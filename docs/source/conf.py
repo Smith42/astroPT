@@ -40,7 +40,7 @@ html_theme = 'sphinx_rtd_theme'
 
 # Theme options
 html_theme_options = {
-    'logo_only': False,
+    'logo_only': True,
     'prev_next_buttons_location': 'bottom',
     'style_external_links': True,
     'style_nav_header_background': '#2b2b2b',
@@ -53,8 +53,8 @@ html_theme_options = {
 }
 
 # Logo
-html_logo = "./assets/shoggoth_telescope_sticker_2.png"
-html_favicon = "./assets/shoggoth_telescope_sticker_2.png"
+html_logo = "/images/shoggoth_telescope_sticker_2.png"
+html_favicon = "/images/shoggoth_telescope_sticker_2.png"
 
 # Cross-project references
 intersphinx_mapping = {

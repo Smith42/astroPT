@@ -1,7 +1,7 @@
 Welcome to AstroPT's documentation!
 ===================================
 
-.. image:: ./assets/shoggoth_telescope_sticker_2.png
+.. image:: /images/shoggoth_telescope_sticker_2.png
    :width: 300
    :alt: AstroPT logo
    :align: center
@@ -45,10 +45,3 @@ Check out the `UniverseTBD <https://universetbd.org/>`_ Discord for updates:
    api
    examples
    papers
-
-Indices and tables
-==================
-
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`
