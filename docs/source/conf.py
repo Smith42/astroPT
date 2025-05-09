@@ -37,6 +37,7 @@ exclude_patterns = []
 
 # The theme to use for HTML and HTML Help pages
 html_theme = 'sphinx_rtd_theme'
+html_static_path = []
 
 # Theme options
 html_theme_options = {
@@ -53,8 +54,9 @@ html_theme_options = {
 }
 
 # Logo
-html_logo = "/images/shoggoth_telescope_sticker_2.png"
-html_favicon = "/images/shoggoth_telescope_sticker_2.png"
+html_static_path = []  # Empty list since we're not using _static
+html_logo = "https://github.com/Smith42/astroPT/raw/main/assets/shoggoth_telescope_sticker_2.png"
+html_favicon = "https://github.com/Smith42/astroPT/raw/main/assets/shoggoth_telescope_sticker_2.png"
 
 # Cross-project references
 intersphinx_mapping = {
