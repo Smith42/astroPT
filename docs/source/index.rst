@@ -45,10 +45,3 @@ Check out the `UniverseTBD <https://universetbd.org/>`_ Discord for updates:
    api
    examples
    papers
-
-Indices and tables
-==================
-
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`
