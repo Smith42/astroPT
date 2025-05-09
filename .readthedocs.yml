@@ -1,0 +1,27 @@
+version: 2
+
+build:
+  os: ubuntu-24.04
+  tools:
+    python: "3.10"
+  jobs:
+    post_checkout:
+      # Download files that might be needed for building docs
+      - mkdir -p assets
+      - curl -o assets/shoggoth_telescope_sticker_2.png https://github.com/Smith42/astroPT/raw/main/assets/shoggoth_telescope_sticker_2.png
+      - curl -o assets/galaxy_im.png https://github.com/Smith42/astroPT/raw/main/assets/galaxy_im.png
+      - curl -o assets/apt.png https://github.com/Smith42/astroPT/raw/main/assets/apt.png
+
+python:
+  install:
+    - method: pip
+      path: .
+    - requirements: docs/requirements.txt
+
+sphinx:
+  configuration: docs/source/conf.py
+  fail_on_warning: false
+
+formats:
+  - pdf
+  - epub
