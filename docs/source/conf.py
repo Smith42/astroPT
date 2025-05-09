@@ -53,8 +53,8 @@ html_theme_options = {
 }
 
 # Logo
-html_logo = "../../assets/shoggoth_telescope_sticker_2.png"
-html_favicon = "../../assets/shoggoth_telescope_sticker_2.png"
+html_logo = "./assets/shoggoth_telescope_sticker_2.png"
+html_favicon = "./assets/shoggoth_telescope_sticker_2.png"
 
 # Cross-project references
 intersphinx_mapping = {

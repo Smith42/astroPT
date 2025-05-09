@@ -1,7 +1,7 @@
 Welcome to AstroPT's documentation!
 ===================================
 
-.. image:: ../../assets/shoggoth_telescope_sticker_2.png
+.. image:: ./assets/shoggoth_telescope_sticker_2.png
    :width: 300
    :alt: AstroPT logo
    :align: center

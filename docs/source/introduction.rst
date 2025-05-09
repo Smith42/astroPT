@@ -19,10 +19,10 @@ This is just like how a text GPT needs to have some knowledge of geography to gu
 
 Below we can see this principle applied to a galaxy image, where we split the image into chunks and pass them into an AstroPT model:
 
-.. image:: ../../assets/galaxy_im.png
+.. image:: ./assets/galaxy_im.png
    :width: 25%
    :alt: Galaxy image
-.. image:: ../../assets/apt.png
+.. image:: ./assets/apt.png
    :width: 74%
    :alt: AstroPT architecture
 
