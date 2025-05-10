@@ -19,7 +19,9 @@ is usable for astronomical observation data.  Within `train.py` you will find a
 ~300-line GPT model definition with an MLP tokeniser and a regressive loss.
 
 Check out the [UniverseTBD](https://universetbd.org/) Discord for updates:
-[https://discord.gg/MNEVegvfJq](https://discord.gg/MNEVegvfJq)
+[discord.gg/MNEVegvfJq](https://discord.gg/MNEVegvfJq)
+
+Read the docs here: [astropt.readthedocs.io](https://astropt.readthedocs.io)
 
 # How does AstroPT work?
 
