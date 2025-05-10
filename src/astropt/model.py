@@ -455,7 +455,7 @@ class GPT(nn.Module):
             seq_len = input_tensor.size(1)
             # If we have more than one mode, the last value of the past modes
             # are used to prompt the next mode gen:
-            if ii == 0 and len(self.modality_registry.names() > 1):
+            if ii == 0 and len(self.modality_registry.names()) > 1:
                 seq_len = seq_len - 1
             hidden_state = x[:, current_idx : current_idx + seq_len]
             outputs[mod_name] = self.lm_head[mod_name](hidden_state)

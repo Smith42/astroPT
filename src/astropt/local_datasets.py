@@ -121,8 +121,8 @@ class GalaxyImageDataset(Dataset):
             p2=patch_size,
         )
 
-        if "galaxy" in self.transform:
-            patch_galaxy = self.transform["image"](patch_galaxy)
+        if "images" in self.transform:
+            patch_galaxy = self.transform["images"](patch_galaxy)
         if self.spiral:
             patch_galaxy = self.spiralise(patch_galaxy)
 

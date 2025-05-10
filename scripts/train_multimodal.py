@@ -49,9 +49,9 @@ from astropt.model import GPT, GPTConfig, ModalityConfig, ModalityRegistry
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
-    # default config values designed to test run a 70M parameter model on DESI FITS imagery
+    # default config values designed to test run a 100M parameter model on galaxy imagery and spectra
     # look at `config/astropt*.py` for a prod run example
-    out_dir = "logs/astropt0070M_spectra"
+    out_dir = "logs/astropt0100M_multimodal"
     eval_interval = 1000
     log_interval = 100
     checkpoint_interval = 1000
@@ -62,10 +62,8 @@ if __name__ == "__main__":
         False  # if True, always save a checkpoint at each checkpoint_interval
     )
     init_from = "scratch"  # 'scratch' or 'resume'
-    use_hf = False  # use the huggingface dataset version of our galz
-    stream_hf_dataset = False  # stream the galaxies from huggingface
     # data
-    gradient_accumulation_steps = 2  # 5 * 8 # used to simulate larger batch sizes
+    gradient_accumulation_steps = 5 * 8  # used to simulate larger batch sizes
     batch_size = 16  # if gradient_accumulation_steps > 1, this is the micro-batch size
     spiral = True  # do we want to process the galaxy patches in spiral order?
     block_size = 1024
@@ -192,8 +190,6 @@ if __name__ == "__main__":
 
     # dataset init
     def normalise(x):
-        if use_hf:
-            x = torch.from_numpy(x).to(torch.float32)
         std, mean = torch.std_mean(x, dim=1, keepdim=True)
         x_norm = (x - mean) / (std + 1e-8)
         return x_norm.to(torch.float16)
