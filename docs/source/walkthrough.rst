@@ -1,7 +1,8 @@
 .. image:: images/astropt_summer.png
+   :width: 200
    :alt: ~~brat~~ astropt summer
 
-Training single and multimodal AstroPT Models
+Training single and multimodal AstroPT models
 =============================================
 
 This guide describes how to train AstroPT-style Large Observation Models (LOMs) using the provided training scripts.
@@ -9,7 +10,7 @@ This guide describes how to train AstroPT-style Large Observation Models (LOMs) 
 Overview
 --------
 
-We provide two example training scripts in ``/scripts/``:
+We provide two example training scripts in ``scripts/``:
 
 1. ``train.py`` - For training on single-modality data (here galaxy imagery)
 2. ``train_multimodal.py`` - For training on multiple modalities (here both galaxy imagery and spectral data)
@@ -26,10 +27,10 @@ Single GPU
 .. code-block:: bash
 
    # For single-modality training
-   python train.py --batch_size=32 --compile=False
+   python train.py
    
    # For multi-modality training
-   python train_multimodal.py --batch_size=32 --compile=False
+   python train_multimodal.py
 
 Distributed Data Parallel (4 GPUs on 1 node)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -64,7 +65,7 @@ Key differences between scripts
 
 While ``train.py`` and ``train_multimodal.py`` share most of their code base, there are several important differences:
 
-1. **Modality Configuration**
+1. **Modality configuration**
 
    ``train.py`` configures a single modality for galaxy imagery:
    
@@ -104,14 +105,14 @@ While ``train.py`` and ``train_multimodal.py`` share most of their code base, th
           ),
       ]
 
-2. **Dataset Handling**
+2. **Dataset handling**
 
-   ``train.py`` can stream Hugging Face datasets (here we use `Smith42/galaxies <https://huggingface.co/datasets/Smith42/galaxies>`_:
+   ``train.py`` can stream Hugging Face datasets (here we use `Smith42/galaxies <https://huggingface.co/datasets/Smith42/galaxies>`_):
    
    .. code-block:: python
       
       # When use_hf=True
-      tds_hf = load_dataset("Smith42/galaxies", split="train", streaming=stream_hf_dataset)
+      tds_hf = load_dataset("Smith42/galaxies", split="train", streaming=True)
    
    ``train_multimodal.py`` uses local file paths for both modalities:
    
@@ -131,7 +132,7 @@ Configuration options
 
 Both scripts support numerous configuration parameters that can be set via command line or configuration files:
 
-Model Architecture
+Model architecture
 ~~~~~~~~~~~~~~~~
 
 - ``n_layer``: Number of transformer layers
@@ -143,7 +144,7 @@ Model Architecture
 - ``bias``: Whether to use bias in LayerNorm and Linear layers
 - ``attn_type``: Attention type ("causal" is standard)
 
-Data Parameters
+Data parameters
 ~~~~~~~~~~~~~
 
 - ``gradient_accumulation_steps``: Number of steps to accumulate gradients
@@ -153,7 +154,7 @@ Data Parameters
 - ``use_hf``: Use Hugging Face dataset version (``train.py`` only)
 - ``stream_hf_dataset``: Stream the galaxies from Hugging Face (``train.py`` only)
 
-Optimizer Settings
+Optimiser settings
 ~~~~~~~~~~~~~~~~
 
 - ``learning_rate``: Maximum learning rate
@@ -166,7 +167,7 @@ Optimizer Settings
 - ``lr_decay_iters``: Total iterations for LR decay
 - ``min_lr``: Minimum learning rate (learning_rate/10)
 
-Training Loop Settings
+Training loop settings
 ~~~~~~~~~~~~~~~~~~~
 
 - ``max_iters``: Total number of training iterations
@@ -178,7 +179,7 @@ Training Loop Settings
 - ``always_save_checkpoint``: Always save checkpoints regardless of loss
 - ``init_from``: Initialize from scratch or resume training
 
-System Settings
+System settings
 ~~~~~~~~~~~~~
 
 - ``device``: Device to use (default: "cuda")
@@ -189,7 +190,7 @@ System Settings
 - ``log_via_wandb``: Use WandB for logging
 - ``log_emissions``: Use CodeCarbon to track emissions
 
-Configuration Files
+Configuration files
 -----------------
 
 Instead of specifying all parameters via command line, you can create a configuration file:
@@ -207,13 +208,13 @@ And then pass it to the script:
 
 .. code-block:: bash
 
-   python train.py config/astropt_dense.py  # or train_multimodal.py
+   python train.py config/astropt.py  # or train_multimodal.py
 
 You can also override specific parameters from the config file:
 
 .. code-block:: bash
 
-   python train.py config/astropt_dense.py --batch_size=64
+   python train.py config/astropt.py --batch_size=64
 
 We have example config files in ``config``.
 
@@ -224,7 +225,7 @@ The AstroPT training pipeline uses the ``GalaxyImageDataset`` class from ``local
 
 Here's a guide to creating a custom dataloader for AstroPT:
 
-1. **Basic Structure**
+1. **Basic structure**
 
    Your dataloader should inherit from ``torch.utils.data.Dataset`` and implement the following methods:
    
@@ -233,7 +234,9 @@ Here's a guide to creating a custom dataloader for AstroPT:
    - ``__getitem__``: Return a dictionary of data for each index
    - ``process_modes``: Process data into X and Y tensors for the model
 
-2. **Example Skeleton**
+|
+
+2. **Example skeleton**
 
    .. code-block:: python
       
@@ -334,7 +337,7 @@ Here's a guide to creating a custom dataloader for AstroPT:
               
               return {"X": X, "Y": Y}
 
-3. **Example: Custom Stellar Spectra Dataset**
+3. **Example: custom spectra dataset**
 
    .. code-block:: python
       
@@ -434,7 +437,7 @@ Here's a guide to creating a custom dataloader for AstroPT:
               
               return {"X": X, "Y": Y}
 
-4. **Integration with Training Script**
+4. **Integration with training script**
 
    To use your custom dataloader in the training script:
    

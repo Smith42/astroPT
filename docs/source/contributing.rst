@@ -15,7 +15,7 @@ Code of Conduct
 
 Be excellent to each other.
 
-How Can I Contribute?
+How can I contribute?
 -------------------
 
 There are many ways to contribute to AstroPT:
@@ -32,7 +32,7 @@ If you can implement your proposed feature then `fork AstroPT <https://docs.gith
 
 Once you have your feature implemented, `open up a pull request <https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request>`_ and one of us will review the code and merge to main or come back with comments. If your pull request is connected to an issue or roadmap item please do not forget to link it.
 
-Development Environment
+Development environment
 ---------------------
 
 To set up a development environment:
