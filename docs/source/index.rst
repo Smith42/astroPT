@@ -39,6 +39,7 @@ Check out the `UniverseTBD <https://universetbd.org/>`_ Discord for updates:
    installation
    quickstart
    contributing
+   walkthrough
 ..
    model
    tutorials
