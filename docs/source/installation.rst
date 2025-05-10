@@ -14,21 +14,10 @@ You can install AstroPT via pip from PyPI:
 
 This is the recommended installation method for most users.
 
-Installation from source
-----------------------
-
-For developers or those who want the latest features, you can install from source:
-
-.. code-block:: bash
-
-   git clone https://github.com/smith42/astropt.git
-   cd astropt
-   pip install -e .
-
-Using uv (recommended for development)
+Installation from source using uv
 ------------------------------------
 
-For a faster installation with dependency resolution, you can use uv:
+For developers or those who want the latest features, you can install from source via uv:
 
 .. code-block:: bash
 
