@@ -20,18 +20,16 @@ import math
 import os
 import time
 from contextlib import nullcontext
-from functools import partial
 
 import einops
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import PIL
 import torch
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
-from torchvision import io, transforms
+from torchvision import transforms
 
 try:
     import wandb
@@ -51,12 +49,12 @@ from astropt.model import GPT, GPTConfig, ModalityConfig, ModalityRegistry
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
-    # default config values designed to test run a 70M parameter model on DESI imagery
+    # default config values designed to test run a 70M parameter model on DESI FITS imagery
     # look at `config/astropt*.py` for a prod run example
-    out_dir = "logs/astropt0070M"
+    out_dir = "logs/astropt0070M_spectra"
     eval_interval = 1000
     log_interval = 100
-    checkpoint_interval = 10000
+    checkpoint_interval = 1000
     assert checkpoint_interval % eval_interval == 0
     eval_iters = 100
     eval_only = False  # if True, script exits right after the first eval
@@ -67,25 +65,37 @@ if __name__ == "__main__":
     use_hf = False  # use the huggingface dataset version of our galz
     stream_hf_dataset = False  # stream the galaxies from huggingface
     # data
-    gradient_accumulation_steps = 5 * 8  # used to simulate larger batch sizes
+    gradient_accumulation_steps = 2  # 5 * 8 # used to simulate larger batch sizes
     batch_size = 16  # if gradient_accumulation_steps > 1, this is the micro-batch size
     spiral = True  # do we want to process the galaxy patches in spiral order?
     block_size = 1024
-    image_size = 512
+    image_size = 224
     num_workers = 32  # 64
     # astroPT model
     n_layer = 12
     n_head = 12
     n_embd = 768
-    n_chan = 4  # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
+    n_chan = 1  # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
     dropout = 0.0  # for pretraining 0 is good, for finetuning try 0.1+
-    patch_size = 16
     # NB dropout is NOT implemented for flex attention
     bias = False  # do we use bias inside LayerNorm and Linear layers?
     # Define modalities configuration
     modalities = [
         ModalityConfig(
-            name="images", input_size=16 * 16 * n_chan, patch_size=16, loss_weight=1.0
+            name="images",
+            input_size=16 * 16 * n_chan,
+            patch_size=16,
+            pos_input_size=1,
+            loss_weight=1.0,
+            embed_pos=True,
+        ),
+        ModalityConfig(
+            name="spectra",
+            input_size=256,
+            patch_size=256,
+            pos_input_size=256,
+            loss_weight=0.5,
+            embed_pos=False,
         ),
     ]
     # Create modality registry
@@ -182,7 +192,6 @@ if __name__ == "__main__":
 
     # dataset init
     def normalise(x):
-        # HF is in numpy format. Need to change that here if so:
         if use_hf:
             x = torch.from_numpy(x).to(torch.float32)
         std, mean = torch.std_mean(x, dim=1, keepdim=True)
@@ -198,81 +207,25 @@ if __name__ == "__main__":
         )
         return transform
 
-    transforms = {"galaxy": data_transforms()}
+    transforms = {"image": data_transforms()}
     # training dataset and dataloader
-    tpaths = None if use_hf else "./data/train_desi_spectra_images.txt"
-    tpaths_spectra = None if use_hf else "./data/train_desi_spectra_spectra.txt"
     tds = GalaxyImageDataset(
-        tpaths,
-        paths_spect=tpaths_spectra,
+        paths={"images": "./hsc_matched.txt", "spectra": "./spectra_matched.txt"},
         spiral=spiral,
         transform=transforms,
-        patch_size=patch_size,
+        modality_registry=modality_registry,
     )
     # validation dataset and dataloader
-    vpaths = None if use_hf else "./data/test_desi_spectra_images.txt"
-    vpaths_spectra = None if use_hf else "./data/test_desi_spectra_spectra.txt"
     vds = GalaxyImageDataset(
-        vpaths,
-        paths_spect=vpaths_spectra,
+        paths={"images": "./hsc_matched.txt", "spectra": "./spectra_matched.txt"},
         spiral=spiral,
         transform=transforms,
-        patch_size=patch_size,
+        modality_registry=modality_registry,
     )
 
-    if use_hf:
-        import io
-
-        from datasets import Image, load_dataset
-
-        def filter_bumf(galdict):
-            """Lazily remove galaxies that are borked"""
-            try:
-                gal = PIL.Image.open(io.BytesIO(galdict["image"]["bytes"]))
-                # Force full image load to catch truncation errors
-                gal.load()
-                return True
-            except Exception as e:
-                print(f"Filtering out corrupted image: {e}")
-                return False
-
-        def process_galaxy_wrapper(galdict, func):
-            gal = PIL.Image.open(io.BytesIO(galdict["image"]["bytes"]))
-            patch_galaxy = func(np.array(gal).swapaxes(0, 2))
-            return {
-                "X": patch_galaxy[:-1],
-                "Y": patch_galaxy[1:],
-            }
-
-        tds_hf = load_dataset(
-            "Smith42/galaxies",
-            split="train",
-            streaming=(True if stream_hf_dataset else False),
-            cache_dir="/raid/data/cache",
-        )
-        tds_hf = tds_hf.cast_column("image", Image(decode=False))
-        tds_hf = tds_hf.filter(filter_bumf).map(
-            partial(process_galaxy_wrapper, func=tds.process_galaxy)
-        )
-        tds_hf = tds_hf.remove_columns(["image", "dr8_id"])
-
-        vds_hf = load_dataset(
-            "Smith42/galaxies",
-            split="test",
-            streaming=(True if stream_hf_dataset else False),
-            cache_dir="/raid/data/cache",
-        )
-        vds_hf = vds_hf.cast_column("image", Image(decode=False))
-        vds_hf = vds_hf.filter(filter_bumf).map(
-            partial(process_galaxy_wrapper, func=vds.process_galaxy)
-        )
-        vds_hf = vds_hf.remove_columns(["image", "dr8_id"])
-
-    sampler = None
     tdl = iter(
         DataLoader(
-            tds_hf if use_hf else tds,
-            sampler=sampler,
+            tds,
             batch_size=batch_size,
             num_workers=num_workers,
             pin_memory=True,
@@ -280,8 +233,7 @@ if __name__ == "__main__":
     )
     vdl = iter(
         DataLoader(
-            vds_hf if use_hf else vds,
-            sampler=sampler,
+            vds,
             batch_size=batch_size,
             num_workers=num_workers,
             pin_memory=True,
@@ -401,14 +353,9 @@ if __name__ == "__main__":
             out[split] = {}
             losses = torch.zeros(eval_iters)
             for k in range(eval_iters):
-                B = next(dl)  # fetch the very first batch
+                B = tds.process_modes(next(dl), modality_registry, device)
                 with ctx:
-                    logits, loss = model(
-                        B["X"]["images"].to(device),
-                        targets=(
-                            B["Y"]["images"].to(device),
-                        ),
-                    )
+                    logits, loss = model(B["X"], targets=B["Y"])
                 losses[k] = loss.item()
             out[split]["dummy"] = losses.mean()
         model.train()
@@ -419,59 +366,56 @@ if __name__ == "__main__":
         model.eval()
         for dl, split in zip([tdl, vdl], ["train", "val"]):
             f, axs = plt.subplots(8, 4, figsize=(6, 12), constrained_layout=True)
-            B = next(vdl)
+            B = vds.process_modes(next(vdl), modality_registry, device)
             with ctx:
-                P, loss = model(
-                    B["X"]["images"].to(device),
-                    B["X"]["spectra"].to(device),
-                    targets=(B["Y"]["images"].to(device), B["Y"]["spectra"].to(device)),
-                )
-
-                Yim = B["Y"]["images"].to(device)
-                b, t, c = Yim.size()
-                zero_block = torch.zeros((b, 1, c)).to(device)
-                Yim = torch.cat((zero_block, Yim), dim=1)
-                if spiral:
-                    Yim = torch.stack([vds.antispiralise(yy) for yy in Yim])
-                im_patch = patch_size["images"]
-                Yim = einops.rearrange(
-                    Yim,
-                    "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
-                    p1=im_patch,
-                    p2=im_patch,
-                    h=image_size // im_patch,
-                    w=image_size // im_patch,
-                )
-                Pim = torch.cat((zero_block, P[0]), dim=1)
-                if spiral:
-                    Pim = torch.stack([vds.antispiralise(pp) for pp in Pim])
-                Pim = einops.rearrange(
-                    Pim,
-                    "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
-                    p1=im_patch,
-                    p2=im_patch,
-                    h=image_size // im_patch,
-                    w=image_size // im_patch,
-                )
-
-                for ax, p, y in zip(
-                    axs, Pim.to(float).cpu().numpy(), Yim.to(float).cpu().numpy()
-                ):
-                    ax[0].imshow(np.clip(y, 0, 1))
-                    ax[1].imshow(np.clip(p, 0, 1))
-                    ax[0].axis("off")
-                    ax[1].axis("off")
-
-                if log_via_wandb:
-                    wandb.log(
-                        {
-                            "Y": wandb.Image(Yim.swapaxes(1, -1)),
-                            "P": wandb.Image(Pim.swapaxes(1, -1)),
-                        }
+                P, loss = model(B["X"], B["Y"])
+                if "images" in modality_registry.names():
+                    Yim = B["Y"]["images"].to(device)
+                    b, t, c = Yim.size()
+                    zero_block = torch.zeros((b, 1, c)).to(device)
+                    Yim = torch.cat((zero_block, Yim), dim=1)
+                    if spiral:
+                        Yim = torch.stack([vds.antispiralise(yy) for yy in Yim])
+                    im_patch = modality_registry.get_config("images").patch_size
+                    Yim = einops.rearrange(
+                        Yim,
+                        "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
+                        p1=im_patch,
+                        p2=im_patch,
+                        h=image_size // im_patch,
+                        w=image_size // im_patch,
+                    )
+                    Pim = torch.cat((zero_block, P["images"]), dim=1)
+                    if spiral:
+                        Pim = torch.stack([vds.antispiralise(pp) for pp in Pim])
+                    Pim = einops.rearrange(
+                        Pim,
+                        "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
+                        p1=im_patch,
+                        p2=im_patch,
+                        h=image_size // im_patch,
+                        w=image_size // im_patch,
                     )
 
+                    for ax, p, y in zip(
+                        axs, Pim.to(float).cpu().numpy(), Yim.to(float).cpu().numpy()
+                    ):
+                        ax[0].imshow(np.clip(y, 0, 1))
+                        ax[1].imshow(np.clip(p, 0, 1))
+                        ax[0].axis("off")
+                        ax[1].axis("off")
+
+                    if log_via_wandb:
+                        wandb.log(
+                            {
+                                "Y": wandb.Image(Yim.swapaxes(1, -1)),
+                                "P": wandb.Image(Pim.swapaxes(1, -1)),
+                            }
+                        )
+
+            if "spectra" in modality_registry.names():
                 Ysp = B["Y"]["spectra"]
-                Psp = P[1]
+                Psp = P["spectra"]
                 for ax, p, y in zip(
                     axs, Psp.to(float).cpu().numpy(), Ysp.to(float).cpu().numpy()
                 ):
@@ -503,7 +447,9 @@ if __name__ == "__main__":
     # training loop
     if master_process:
         print("starting training...")
-    B = next(tdl)  # fetch the very first batch
+    B = tds.process_modes(
+        next(tdl), modality_registry, device
+    )  # fetch the very first batch
     t0 = time.time()
     dts = []
     local_iter_num = 0  # number of iterations in the lifetime of this process
@@ -615,23 +561,12 @@ if __name__ == "__main__":
                     micro_step == gradient_accumulation_steps - 1
                 )
 
-            pairs = modalities
-            loss = 0
-            for pair in pairs:
-                with ctx:
-                    logits, loss = model(
-                        B["X"]["images"].to(device),
-                        B["X"]["spectra"].to(device),
-                        targets=(
-                            B["Y"]["images"].to(device),
-                            B["Y"]["spectra"].to(device),
-                        ),
-                    )
-            loss /= (
-                gradient_accumulation_steps * 2
-            )  # scale the loss to account for gradient accumulation
+            with ctx:
+                logits, loss = model(B["X"], targets=B["Y"])
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
-            B = next(tdl)
+            B = tds.process_modes(
+                next(tdl), modality_registry, device
+            )  # fetch the very first batch
             # backward pass, with gradient scaling if training in fp16
             scaler.scale(loss).backward()
         # clip the gradient
@@ -652,10 +587,10 @@ if __name__ == "__main__":
         if iter_num % log_interval == 0 and master_process:
             # get loss as float. note: this is a CPU-GPU sync point
             # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
-            lossf = loss.item() * gradient_accumulation_steps * len(pairs)
+            lossf = loss.item() * gradient_accumulation_steps
             if local_iter_num >= 5:  # let the training loop settle a bit
                 mfu = raw_model.estimate_mfu(
-                    batch_size * gradient_accumulation_steps * len(pairs), dt
+                    batch_size * gradient_accumulation_steps, dt
                 )
                 running_mfu = (
                     mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
