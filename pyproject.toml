@@ -14,7 +14,7 @@ keywords = [
 classifiers = [
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
     "Operating System :: OS Independent",
 ]
 dependencies = [
@@ -36,6 +36,8 @@ dependencies = [
     "traces>=0.6.4",
     "umap-learn>=0.5.7",
     "wandb>=0.18.7",
+    "loralib",
+    "pre-commit>=4.2.0",
 ]
 dynamic = [
     "version",

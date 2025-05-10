@@ -30,7 +30,7 @@ Of course we can apply this next-token-prediction task across many modalities du
 
 Check out `our work on Euclid data <https://arxiv.org/abs/2503.15312>`_ for an example, where we chain galaxy image tokens and spectral energy distribution data and pass them into a single, unified AstroPT model.
 
-Key Features
+Key features
 -----------
 
 - **Multi-modal data support**: Works with galaxy images, spectral energy distributions, and more

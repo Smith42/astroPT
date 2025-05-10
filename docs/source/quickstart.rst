@@ -3,7 +3,7 @@ Quickstart
 
 This guide will help you get started with AstroPT quickly.
 
-Loading a Pre-trained Model
+Loading a pre-trained model
 --------------------------
 
 To load and run a pre-trained AstroPT model from Hugging Face 🤗, use the ``load_astropt`` function:
@@ -19,7 +19,7 @@ To load and run a pre-trained AstroPT model from Hugging Face 🤗, use the ``lo
    )
    model = model.to("cuda")  # Move to GPU if available
 
-Available Pre-trained Models
+Available pre-trained models
 --------------------------
 
 Below are some pre-trained models you can load with the code snippet above:
@@ -40,7 +40,7 @@ Below are some pre-trained models you can load with the code snippet above:
 - **Dataset:** `Euclid Training Dataset <https://huggingface.co/datasets/msiudek/astroPT_euclid_training_dataset>`_
 - **Paper:** `arXiv:2503.15312 <https://arxiv.org/abs/2503.15312>`_
 
-Basic Model Usage
+Basic model usage
 ---------------
 
 Here's a simple example of how to use the model for inference:

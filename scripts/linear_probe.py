@@ -2,23 +2,18 @@
 Sample from a trained astropt model and finetune embeddings on linear probes 
 """
 import os
-import pickle
 from contextlib import nullcontext
 import torch
 from torch.utils.data import DataLoader
-import tiktoken
-from tqdm import tqdm, trange
-import matplotlib.pyplot as plt
+from tqdm import tqdm
 import numpy as np
 from model import GPTConfig, GPT
-from sklearn.linear_model import LogisticRegression, LinearRegression
-from sklearn.neural_network import MLPRegressor
+from sklearn.linear_model import LinearRegression
 from datasets import load_dataset, concatenate_datasets
 from train import GalaxyImageDataset
 from torchvision import transforms
 from torchvision.transforms import ToTensor
 import functools
-from einops import rearrange
 import pandas as pd
 
 # -----------------------------------------------------------------------------
@@ -175,7 +170,7 @@ else:
 print("probing...")
 labels, loss_zs = run_probes(zss, idss, metadata)
 print(loss_zs)
-file_path = f"probe_losses.txt"
+file_path = "probe_losses.txt"
 if (not os.path.exists(file_path)) or os.path.getsize(file_path) == 0:
     with open(file_path, 'w') as f:
         f.write(','.join(labels) + '\n')

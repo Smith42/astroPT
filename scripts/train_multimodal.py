@@ -20,7 +20,6 @@ import math
 import os
 import time
 from contextlib import nullcontext
-from functools import partial
 
 import einops
 import matplotlib.pyplot as plt
@@ -49,20 +48,15 @@ from astropt.local_datasets import GalaxyImageDataset
 from astropt.model import GPT, GPTConfig, ModalityConfig, ModalityRegistry
 
 
-def normalise(x, use_hf=False):
-    # HF is in numpy format. Need to change that here if so:
-    if use_hf:
-        x = torch.from_numpy(x).to(torch.float32)
+def normalise(x):
     std, mean = torch.std_mean(x, dim=1, keepdim=True)
     x_norm = (x - mean) / (std + 1e-8)
     return x_norm.to(torch.float16)
 
-def data_transforms(use_hf):
-    norm = partial(normalise, use_hf=use_hf)
+def data_transforms():
     transform = transforms.Compose(
         [
-            # transforms.Lambda(lambda x: x/255.),
-            transforms.Lambda(norm),
+            transforms.Lambda(normalise),
         ]
     )
     return transform
@@ -79,12 +73,12 @@ def process_galaxy_wrapper(galdict, func):
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
-    # default config values designed to test run a 100M parameter model on DESI galaxy imagery
+    # default config values designed to test run a 100M parameter model on galaxy imagery and spectra
     # look at `config/astropt*.py` for a prod run example
-    out_dir = "logs/astropt0100M"
+    out_dir = "logs/astropt0100M_multimodal"
     eval_interval = 1000
     log_interval = 100
-    checkpoint_interval = 5000
+    checkpoint_interval = 1000
     assert checkpoint_interval % eval_interval == 0
     eval_iters = 100
     eval_only = False  # if True, script exits right after the first eval
@@ -92,20 +86,18 @@ if __name__ == "__main__":
         False  # if True, always save a checkpoint at each checkpoint_interval
     )
     init_from = "scratch"  # 'scratch' or 'resume'
-    use_hf = True  # use the huggingface dataset version of our galz
-    stream_hf_dataset = True  # stream the galaxies from huggingface
     # data
     gradient_accumulation_steps = 5 * 8  # used to simulate larger batch sizes
     batch_size = 16  # if gradient_accumulation_steps > 1, this is the micro-batch size
     spiral = True  # do we want to process the galaxy patches in spiral order?
     block_size = 1024
-    image_size = 256
+    image_size = 224
     num_workers = 32  # 64
     # astroPT model
     n_layer = 12
     n_head = 12
     n_embd = 768
-    n_chan = 3  # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
+    n_chan = 1  # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
     dropout = 0.0  # for pretraining 0 is good, for finetuning try 0.1+
     # NB dropout is NOT implemented for flex attention
     bias = False  # do we use bias inside LayerNorm and Linear layers?
@@ -118,6 +110,14 @@ if __name__ == "__main__":
             loss_weight=1.0,
             embed_pos=True,
             pos_input_size=1,
+        ),
+        ModalityConfig(
+            name="spectra",
+            input_size=256,
+            patch_size=256,
+            pos_input_size=256,
+            loss_weight=0.5,
+            embed_pos=False,
         ),
     ]
     # Create modality registry
@@ -139,13 +139,13 @@ if __name__ == "__main__":
     min_lr = (
         learning_rate / 10
     )  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
+    attn_type = "causal"
     # DDP settings
     backend = "nccl"  # 'nccl', 'gloo', etc.
     # system
     device = "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
     dtype = "bfloat16"  # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
-    attn_type = "causal"
-    compile = True  # use PyTorch 2.0 to compile the model to be faster
+    compile = False  # use PyTorch 2.0 to compile the model to be faster
     log_via_wandb = False
     # -----------------------------------------------------------------------------
     config_keys = [
@@ -214,50 +214,25 @@ if __name__ == "__main__":
     )
 
     # dataset init
-    transforms = {"images": data_transforms(use_hf)}
+    transforms = {"image": data_transforms()}
     # training dataset and dataloader
-    tpaths = None if use_hf else "./data/train.txt"
     tds = GalaxyImageDataset(
-        paths={"images": tpaths},
+        paths={"images": "./hsc_matched.txt", "spectra": "./spectra_matched.txt"},
         spiral=spiral,
         transform=transforms,
         modality_registry=modality_registry,
     )
     # validation dataset and dataloader
-    vpaths = None if use_hf else "./data/tests.txt"
     vds = GalaxyImageDataset(
-        paths={"images": vpaths},
+        paths={"images": "./hsc_matched.txt", "spectra": "./spectra_matched.txt"},
         spiral=spiral,
         transform=transforms,
         modality_registry=modality_registry,
     )
 
-    if use_hf:
-        from datasets import load_dataset
-
-        tds_hf = load_dataset(
-            "Smith42/galaxies",
-            split="train",
-            streaming=(True if stream_hf_dataset else False),
-        )
-        tds_hf = tds_hf.select_columns("image_crop").map(
-            partial(process_galaxy_wrapper, func=tds.process_galaxy)
-        )
-        tds_hf = tds_hf.remove_columns("image_crop")
-
-        vds_hf = load_dataset(
-            "Smith42/galaxies",
-            split="test",
-            streaming=(True if stream_hf_dataset else False),
-        )
-        vds_hf = vds_hf.select_columns("image_crop").map(
-            partial(process_galaxy_wrapper, func=tds.process_galaxy)
-        )
-        vds_hf = vds_hf.remove_columns("image_crop")
-
     tdl = iter(
         DataLoader(
-            tds_hf if use_hf else tds,
+            tds,
             batch_size=batch_size,
             num_workers=num_workers,
             pin_memory=True,
@@ -265,7 +240,7 @@ if __name__ == "__main__":
     )
     vdl = iter(
         DataLoader(
-            vds_hf if use_hf else vds,
+            vds,
             batch_size=batch_size,
             num_workers=num_workers,
             pin_memory=True,
@@ -398,7 +373,7 @@ if __name__ == "__main__":
     def validate(iter_num, out_dir):
         model.eval()
         for dl, split in zip([tdl, vdl], ["train", "val"]):
-            f, axs = plt.subplots(8, 2, figsize=(3, 12), constrained_layout=True)
+            f, axs = plt.subplots(8, 4, figsize=(6, 12), constrained_layout=True)
             B = vds.process_modes(next(vdl), modality_registry, device)
             with ctx:
                 P, loss = model(B["X"], B["Y"])
@@ -446,6 +421,15 @@ if __name__ == "__main__":
                             }
                         )
 
+            if "spectra" in modality_registry.names():
+                Ysp = B["Y"]["spectra"]
+                Psp = P["spectra"]
+                for ax, p, y in zip(
+                    axs, Psp.to(float).cpu().numpy(), Ysp.to(float).cpu().numpy()
+                ):
+                    ax[2].plot(np.concatenate(y, axis=0))
+                    ax[2].plot(np.concatenate(p, axis=0))  # overlay too cause yolo
+                    ax[3].plot(np.concatenate(p, axis=0))
             f.savefig(
                 os.path.join(out_dir, f"{iter_num:06d}_{split}.jpg"),
                 bbox_inches="tight",

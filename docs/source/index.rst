@@ -17,8 +17,8 @@ Welcome to AstroPT's documentation!
 .. |arXiv2| image:: https://img.shields.io/badge/arXiv-2503.15312---?logo=arXiv&labelColor=b31b1b&color=grey
    :target: https://arxiv.org/abs/2503.15312
 
-.. |License| image:: https://img.shields.io/badge/License-MIT-yellow.svg
-   :target: https://opensource.org/licenses/MIT
+.. |License| image:: https://img.shields.io/badge/License-AGPLv3-green.svg
+   :target: https://www.gnu.org/licenses/agpl-3.0.html
 
 AstroPT 🐙: a Large Observation (foundation) Model for astronomy 🔭
 ---------------------------------------------------------------------
@@ -38,6 +38,7 @@ Check out the `UniverseTBD <https://universetbd.org/>`_ Discord for updates:
    introduction
    installation
    quickstart
+   walkthrough
    contributing
 ..
    model
