@@ -38,8 +38,8 @@ Check out the `UniverseTBD <https://universetbd.org/>`_ Discord for updates:
    introduction
    installation
    quickstart
-   contributing
    walkthrough
+   contributing
 ..
    model
    tutorials

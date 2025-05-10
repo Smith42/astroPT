@@ -1,9 +1,11 @@
-.. image:: images/astropt_summer.png
-   :width: 200
-   :alt: ~~brat~~ astropt summer
-
 Training single and multimodal AstroPT models
 =============================================
+
+.. image:: images/astropt_summer.png
+   :width: 200
+   :align: center
+   :alt: ~~brat~~ astropt summer
+   :target: https://www.bratgenerator.com/
 
 This guide describes how to train AstroPT-style Large Observation Models (LOMs) using the provided training scripts.
 
