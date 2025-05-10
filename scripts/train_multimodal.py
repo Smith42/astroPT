@@ -47,6 +47,30 @@ except ImportError:
 from astropt.local_datasets import GalaxyImageDataset
 from astropt.model import GPT, GPTConfig, ModalityConfig, ModalityRegistry
 
+
+def normalise(x):
+    std, mean = torch.std_mean(x, dim=1, keepdim=True)
+    x_norm = (x - mean) / (std + 1e-8)
+    return x_norm.to(torch.float16)
+
+def data_transforms():
+    transform = transforms.Compose(
+        [
+            transforms.Lambda(normalise),
+        ]
+    )
+    return transform
+
+
+def process_galaxy_wrapper(galdict, func):
+    patch_galaxy = func(np.array(galdict["image_crop"]).swapaxes(0, 2))
+    return {
+        "images": patch_galaxy.to(torch.float),
+        "images_positions": torch.arange(
+            0, len(patch_galaxy), dtype=torch.long
+        ),
+    }
+
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a 100M parameter model on galaxy imagery and spectra
@@ -83,9 +107,9 @@ if __name__ == "__main__":
             name="images",
             input_size=16 * 16 * n_chan,
             patch_size=16,
-            pos_input_size=1,
             loss_weight=1.0,
             embed_pos=True,
+            pos_input_size=1,
         ),
         ModalityConfig(
             name="spectra",
@@ -115,6 +139,7 @@ if __name__ == "__main__":
     min_lr = (
         learning_rate / 10
     )  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
+    attn_type = "causal"
     # DDP settings
     backend = "nccl"  # 'nccl', 'gloo', etc.
     # system
@@ -189,20 +214,6 @@ if __name__ == "__main__":
     )
 
     # dataset init
-    def normalise(x):
-        std, mean = torch.std_mean(x, dim=1, keepdim=True)
-        x_norm = (x - mean) / (std + 1e-8)
-        return x_norm.to(torch.float16)
-
-    def data_transforms():
-        transform = transforms.Compose(
-            [
-                # transforms.Lambda(lambda x: x/255.),
-                transforms.Lambda(normalise),
-            ]
-        )
-        return transform
-
     transforms = {"image": data_transforms()}
     # training dataset and dataloader
     tds = GalaxyImageDataset(
@@ -249,6 +260,7 @@ if __name__ == "__main__":
         block_size=block_size,
         dropout=dropout,
         modalities=modalities,
+        attn_type=attn_type,
     )
 
     if init_from == "scratch":
@@ -491,6 +503,8 @@ if __name__ == "__main__":
                 fi.write(
                     f"{iter_num},{train_loss_str},{valid_loss_str},{lr},{running_mfu * 100}\n"
                 )
+            if log_via_wandb:
+                wandb.log({"valloss": losses["val"]})
             if iter_num != 0:
                 loss_df = pd.read_csv(os.path.join(out_dir, "loss.txt"))
                 f, axs = plt.subplots(

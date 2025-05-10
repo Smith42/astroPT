@@ -48,6 +48,35 @@ except ImportError:
 from astropt.local_datasets import GalaxyImageDataset
 from astropt.model import GPT, GPTConfig, ModalityConfig, ModalityRegistry
 
+
+def normalise(x, use_hf=False):
+    # HF is in numpy format. Need to change that here if so:
+    if use_hf:
+        x = torch.from_numpy(x).to(torch.float32)
+    std, mean = torch.std_mean(x, dim=1, keepdim=True)
+    x_norm = (x - mean) / (std + 1e-8)
+    return x_norm.to(torch.float16)
+
+def data_transforms(use_hf):
+    norm = partial(normalise, use_hf=use_hf)
+    transform = transforms.Compose(
+        [
+            # transforms.Lambda(lambda x: x/255.),
+            transforms.Lambda(norm),
+        ]
+    )
+    return transform
+
+
+def process_galaxy_wrapper(galdict, func):
+    patch_galaxy = func(np.array(galdict["image_crop"]).swapaxes(0, 2))
+    return {
+        "images": patch_galaxy.to(torch.float),
+        "images_positions": torch.arange(
+            0, len(patch_galaxy), dtype=torch.long
+        ),
+    }
+
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a 100M parameter model on DESI galaxy imagery
@@ -185,24 +214,7 @@ if __name__ == "__main__":
     )
 
     # dataset init
-    def normalise(x):
-        # HF is in numpy format. Need to change that here if so:
-        if use_hf:
-            x = torch.from_numpy(x).to(torch.float32)
-        std, mean = torch.std_mean(x, dim=1, keepdim=True)
-        x_norm = (x - mean) / (std + 1e-8)
-        return x_norm.to(torch.float16)
-
-    def data_transforms():
-        transform = transforms.Compose(
-            [
-                # transforms.Lambda(lambda x: x/255.),
-                transforms.Lambda(normalise),
-            ]
-        )
-        return transform
-
-    transforms = {"images": data_transforms()}
+    transforms = {"images": data_transforms(use_hf)}
     # training dataset and dataloader
     tpaths = None if use_hf else "./data/train.txt"
     tds = GalaxyImageDataset(
@@ -222,15 +234,6 @@ if __name__ == "__main__":
 
     if use_hf:
         from datasets import load_dataset
-
-        def process_galaxy_wrapper(galdict, func):
-            patch_galaxy = func(np.array(galdict["image_crop"]).swapaxes(0, 2))
-            return {
-                "images": patch_galaxy.to(torch.float),
-                "images_positions": torch.arange(
-                    0, len(patch_galaxy), dtype=torch.long
-                ),
-            }
 
         tds_hf = load_dataset(
             "Smith42/galaxies",
