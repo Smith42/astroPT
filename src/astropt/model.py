@@ -394,7 +394,7 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, inputs, targets=None, prefix_len=None, target_modality=None):
+    def forward(self, inputs, targets=None, prefix_len=None, target_modality=None, attention_mask=None):
         tt = sum(x.size(1) for x in inputs.values())
         assert tt <= self.config.block_size, (
             f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
@@ -489,6 +489,14 @@ class GPT(nn.Module):
                     #    prefix_mask = torch.ones_like(target, dtype=torch.bool)
                     #    prefix_sublen = prefix_len - current_idx
                     #    prefix_mask[:, :prefix_sublen] = False
+                elif attention_mask is not None:
+                    # Extract attention mask for this modality
+                    mod_mask = attention_mask[:, current_idx:current_idx + seq_len]
+
+                    unmasked_loss = F.huber_loss(pred, target, reduction="none")
+                    mask = mod_mask.unsqueeze(-1)
+                    masked_loss = (unmasked_loss * mask).sum() / mask.sum()
+                    loss += masked_loss * mod_config.loss_weight
                 else:
                     loss += F.huber_loss(pred, target) * mod_config.loss_weight
                 current_idx += seq_len
