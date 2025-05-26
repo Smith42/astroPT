@@ -395,7 +395,7 @@ class GPT(nn.Module):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, inputs, targets=None, prefix_len=None, target_modality=None, attention_mask=None):
-        tt = sum(x.size(1) for x in inputs.values())
+        tt = sum(x.size(1) for k, v in inputs.items() if k.endswith("_positions"))
         assert tt <= self.config.block_size, (
             f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
         )
@@ -518,7 +518,7 @@ class GPT(nn.Module):
         Returns:
             dictionary of embeddings for each modality
         """
-        tt = sum(x.size(1) for x in inputs.values())
+        tt = sum(x.size(1) for k, v in inputs.items() if k.endswith("_positions"))
         assert tt <= self.config.block_size, (
             f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
         )
@@ -564,8 +564,7 @@ class GPT(nn.Module):
             raise ValueError(
                 "Model not configured for task prediction. Set config.output_dim"
             )
-
-        tt = sum(x.size(1) for x in inputs.values())
+        tt = sum(x.size(1) for k, v in inputs.items() if k.endswith("_positions"))
         assert tt <= self.config.block_size, (
             f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
         )
