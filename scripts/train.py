@@ -372,7 +372,11 @@ if __name__ == "__main__":
         # future torch version so check periodically. I tested this on:
         # 2.6.0.dev20241126+cu124
         torch._dynamo.config.optimize_ddp = False
-        model = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=True)
+        # if we have only one modality all params are used in a forward pass:
+        if len(modalities) == 1:
+            model = DDP(model, device_ids=[ddp_local_rank])
+        else:
+            model = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=True)
 
     # helps estimate an arbitrarily accurate loss over either split using many batches
     @torch.no_grad()
