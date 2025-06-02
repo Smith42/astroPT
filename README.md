@@ -85,7 +85,7 @@ Please make sure that you are using the correct version of AstroPT to load these
 | Survey | Modalities | AstroPT version | Model weights | Dataset | Paper |
 | :----- | :--------- | :-------------- | :------------ | :------ | :---- |
 | DESI Legacy Survey | JPG galaxy imagery | v1.0.0   | [AstroPT](https://huggingface.co/Smith42/astroPT) | [Galaxies Dataset](https://huggingface.co/datasets/Smith42/galaxies) | [arXiv:2405.14930](https://arxiv.org/abs/2405.14930) |
-| DESI Legacy Survey | JPG galaxy imagery | v2.0.3   | [AstroPT](https://huggingface.co/Smith42/astroPT) | [Galaxies Dataset](https://huggingface.co/datasets/Smith42/galaxies) clipped galaxies only | [arXiv:2405.14930](https://arxiv.org/abs/2405.14930) |
+| DESI Legacy Survey | JPG galaxy imagery | v2.0.3   | [AstroPT v2.0](https://huggingface.co/Smith42/astroPT_v2.0) | [Galaxies Dataset](https://huggingface.co/datasets/Smith42/galaxies) clipped galaxies only | [arXiv:2405.14930](https://arxiv.org/abs/2405.14930) |
 | Euclid | FITS VIS, NISP galaxy imagery and SED data | v1.0.2 | [AstroPT-Euclid](https://huggingface.co/collections/msiudek/astropt-euclid-67d061928ac0a447265ac8b8) | [Euclid Training Dataset](https://huggingface.co/datasets/msiudek/astroPT_euclid_training_dataset) | [arXiv:2503.15312](https://arxiv.org/abs/2503.15312) |
 
 ## Scripts for pre-training and processing data
