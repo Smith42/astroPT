@@ -68,8 +68,8 @@ To load and run a pre-trained AstroPT model from HuggingFace you can use the `lo
 from astropt.model_utils import load_astropt
 
 model, model_args = load_astropt(
-    repo_id="smith42/astropt_sparse",
-    path="astropt/p16k10",
+    repo_id="smith42/astropt_v2.0",
+    path="astropt/095M",
     weights_filename="ckpt.pt",
 )
 model = model.to("cuda")
