@@ -11,7 +11,7 @@ def load_astropt(
     Load an AstroPT model.
 
     Args:
-        repo_id: The Hugging Face repo ID (e.g., "smith42/astropt_sparse")
+        repo_id: The Hugging Face repo ID (e.g., "smith42/astropt_sparse"). If this is None we assume that we are loading a local model.
         path: Subdirectory containing the model (e.g., "sparse" or "dense")
         weights_filename: Name of the weights file
 
@@ -20,31 +20,36 @@ def load_astropt(
     """
     from astropt.model import GPT, GPTConfig
 
-    # Ping root config.json to count as a download at the repo level
-    try:
-        _ = hf_hub_download(
+    if repo_id is not None:
+        # Ping root config.json to count as a download at the repo level
+        try:
+            _ = hf_hub_download(
+                repo_id=repo_id,
+                filename="config.json",  # Root config.json
+                local_files_only=False,
+            )
+        except Exception as e:
+            print(e)
+            pass
+
+        if path:
+            weights_filepath = f"{path}/{weights_filename}"
+        else:
+            weights_filepath = weights_filename
+
+        weights_path = hf_hub_download(
             repo_id=repo_id,
-            filename="config.json",  # Root config.json
-            local_files_only=False,
+            filename=weights_filepath,
+            force_download=False,
         )
-    except Exception as e:
-        print(e)
-        pass
-
-    if path:
-        weights_filepath = f"{path}/{weights_filename}"
     else:
-        weights_filepath = weights_filename
+        weights_path = path + weights_filename
 
-    weights_path = hf_hub_download(
-        repo_id=repo_id,
-        filename=weights_filepath,
-        force_download=False,
-    )
-    checkpoint = torch.load(weights_path, map_location="cpu")
+    checkpoint = torch.load(weights_path, weights_only=False, map_location="cpu")
     model_args = checkpoint["model_args"]
+    modality_registry = checkpoint["modality_registry"]
     config = GPTConfig(**model_args)
-    model = GPT(config)
+    model = GPT(config, modality_registry)
     state_dict = checkpoint["model"]
     # fix the keys of the state dictionary :(
     # honestly no idea how checkpoints sometimes get this prefix, have to debug more
