@@ -547,6 +547,7 @@ if __name__ == "__main__":
                         "iter_num": iter_num,
                         "best_val_loss": best_val_loss,
                         "config": config,
+                        "modality_registry": modality_registry,
                     }
                     if master_process:
                         print(f"saving checkpoint to {out_dir}")
