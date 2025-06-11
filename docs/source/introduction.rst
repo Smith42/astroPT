@@ -37,4 +37,4 @@ Key features
 - **Flexible architecture**: Based on the transformer architecture for powerful sequence modeling
 - **Pre-trained models**: Available for DESI Legacy Survey and Euclid data
 - **Easy integration**: Simple API for loading and using pre-trained models
-- **Open Source**: MIT licensed for both academic and commercial use
+- **Open Source**: AGPL-v3 licensed for both academic and commercial use
