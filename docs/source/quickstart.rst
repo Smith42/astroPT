@@ -32,6 +32,14 @@ Below are some pre-trained models you can load with the code snippet above:
 - **Dataset:** `Galaxies Dataset <https://huggingface.co/datasets/Smith42/galaxies>`_
 - **Paper:** `arXiv:2405.14930 <https://arxiv.org/abs/2405.14930>`_
 
+**DESI Legacy Survey Model (v2.0)**
+
+- **Modalities:** JPG galaxy imagery (cropped and zoomed)
+- **AstroPT version:** v2.0.4
+- **Model weights:** `AstroPT v2.0 <https://huggingface.co/Smith42/astroPT_v2.0>`_
+- **Dataset:** `Galaxies Dataset <https://huggingface.co/datasets/Smith42/galaxies>`_
+- **Paper:** `arXiv:2405.14930 <https://arxiv.org/abs/2405.14930>`_
+
 **Euclid Model**
 
 - **Modalities:** FITS VIS, NISP galaxy imagery and SED data
