@@ -332,35 +332,17 @@ class GPT(nn.Module):
         config: GPTConfig,
         modality_registry: ModalityRegistry,
         master_process=True,
-        backbone="native",  # native or llm
-        llm_model_name=None,
     ):
         super().__init__()
         assert config.block_size is not None
         self.config = config
         self.modality_registry = modality_registry
-        self.backbone = backbone
+        self.backbone = config.backbone
 
-        # create encoders and decoders
-        encoders = {}
-        decoders = {}
-        embedders = {}
-        for name, mod_config in modality_registry.modalities.items():
-            encoders[name] = Encoder(config, mod_config.input_size)
-            if mod_config.embed_pos:
-                embedders[name] = Embedder(config)
-            else:
-                embedders[name] = Encoder(config, mod_config.pos_input_size)
-            decoders[name] = Decoder(config, mod_config.input_size)
-
-        self.encoders = nn.ModuleDict(encoders)
-        self.decoders = nn.ModuleDict(decoders)
-        self.embedders = nn.ModuleDict(embedders)
-
-        if backbone == "native":
+        if self.backbone == "native":
             self._init_native_backbone(config)
-        elif backbone == "llm":
-            self._init_llm_backbone(config, llm_model_name)
+        elif self.backbone == "llm":
+            self._init_llm_backbone(config)
         else:
             raise ValueError(f"Unknown backbone type: {backbone}")
 
@@ -370,7 +352,7 @@ class GPT(nn.Module):
             self.task_head = TaskHead(config, config.output_dim)
 
         # init weights for native model
-        if backbone == "native":
+        if self.backbone == "native":
             # init all weights
             self.apply(self._init_weights)
             # apply special scaled init to the residual projections, per GPT-2 paper
@@ -390,7 +372,7 @@ class GPT(nn.Module):
             print(f"Model type: {self.backbone}")
             if self.backbone == "llm":
                 print(
-                    f"LLM backbone: {getattr(self, 'llm_config', {}).get('_name_or_path', 'Unknown')}"
+                    f"LLM backbone: {getattr(self, 'llm_config', {}).architectures}"
                 )
             print(f"Total parameters: {total_params / 1e6:.2f}M")
             print(f"Trainable parameters: {trainable_params / 1e6:.2f}M")
@@ -408,35 +390,61 @@ class GPT(nn.Module):
                 ln_f=LayerNorm(config.n_embd, bias=config.bias),
             )
         )
-        self.transformer.wte = self.encoders
-        self.transformer.wpe = self.embedders
-        self.lm_head = self.decoders
+
+        # create encoders and decoders
+        encoders = {}
+        decoders = {}
+        embedders = {}
+        for name, mod_config in modality_registry.modalities.items():
+            encoders[name] = Encoder(config, mod_config.input_size)
+            if mod_config.embed_pos:
+                embedders[name] = Embedder(config)
+            else:
+                embedders[name] = Encoder(config, mod_config.pos_input_size)
+            decoders[name] = Decoder(config, mod_config.input_size)
+
+        self.encoders = nn.ModuleDict(encoders)
+        self.decoders = nn.ModuleDict(decoders)
+        self.embedders = nn.ModuleDict(embedders)
+
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
         # This behavior is deprecated and will be an error in future versions"
         # not 100% sure what this is, so far seems to be harmless. TODO investigate
         # TODO rethink weight tying
-        # self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
+        # self.encoders.weight = self.decoders.weight # https://paperswithcode.com/method/weight-tying
 
-    def _init_llm_backbone(self, config, llm_model_name):
+    def _init_llm_backbone(self, config):
         """Initialise with pretrained LLM backbone"""
         from transformers import AutoConfig, AutoModelForCausalLM
 
-        self.llm_config = AutoConfig.from_pretrained(llm_model_name)
+        self.llm_config = AutoConfig.from_pretrained(config.llm_model_name)
         self.llm = AutoModelForCausalLM.from_pretrained(
-            llm_model_name,
+            config.llm_model_name,
             torch_dtype=torch.float16,
-            device_map="auto",
+            device_map="sequential",
         )
 
         self.config.n_embd = self.llm_config.hidden_size
 
         for param in self.llm.parameters():
-            param.requires_grad(False)
+            param.requires_grad = False
 
-        # TODO check and see if this makes sense (should we force config.n_embd to be == llm hidden size?)
-        self.to_llm_projection = nn.Linear(config.n_embd, self.llm_config.hidden_size)
-        self.from_llm_projection = nn.Linear(self.llm_config.hidden_size, config.n_embd)
+        # create encoders and decoders
+        encoders = {}
+        decoders = {}
+        embedders = {}
+        for name, mod_config in self.modality_registry.modalities.items():
+            encoders[name] = Encoder(config, mod_config.input_size)
+            if mod_config.embed_pos:
+                embedders[name] = Embedder(config)
+            else:
+                embedders[name] = Encoder(config, mod_config.pos_input_size)
+            decoders[name] = Decoder(config, mod_config.input_size)
+
+        self.encoders = nn.ModuleDict(encoders)
+        self.decoders = nn.ModuleDict(decoders)
+        self.embedders = nn.ModuleDict(embedders)
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -499,9 +507,9 @@ class GPT(nn.Module):
         pos_embeddings = []
         for mod_name in self.modality_registry.names():
             input_tensor = inputs[mod_name]
-            embeddings.append(self.transformer.wte[mod_name](input_tensor))
+            embeddings.append(self.encoders[mod_name](input_tensor))
             pos = inputs[mod_name + "_positions"]
-            pos_embeddings.append(self.transformer.wpe[mod_name](pos))
+            pos_embeddings.append(self.embeddings[mod_name](pos))
         tok_emb = torch.cat(embeddings, dim=1)
         pos_emb = torch.cat(pos_embeddings, dim=1)
 
@@ -521,12 +529,12 @@ class GPT(nn.Module):
                     if mod_name == target_modality:
                         seq_len = input_tensor.size(1)
                         hidden_state = x[:, current_idx : current_idx + seq_len]
-                        outputs[mod_name] = self.lm_head[mod_name](hidden_state)
+                        outputs[mod_name] = self.decoders[mod_name](hidden_state)
                     current_idx += input_tensor.size(1)
             # target modality not in inputs so start a new sequence
             else:
                 hidden_state = x[:, -1:, :]
-                outputs[target_modality] = self.lm_head[target_modality](hidden_state)
+                outputs[target_modality] = self.decoders[target_modality](hidden_state)
 
         for ii, mod_name in enumerate(self.modality_registry.names()):
             input_tensor = inputs[mod_name]
@@ -536,7 +544,7 @@ class GPT(nn.Module):
             if ii == 0 and len(self.modality_registry.names()) > 1:
                 seq_len = seq_len - 1
             hidden_state = x[:, current_idx : current_idx + seq_len]
-            outputs[mod_name] = self.lm_head[mod_name](hidden_state)
+            outputs[mod_name] = self.decoders[mod_name](hidden_state)
             current_idx += seq_len
 
         if targets is not None:
@@ -596,27 +604,23 @@ class GPT(nn.Module):
         pos_embeddings = []
         for mod_name in self.modality_registry.names():
             input_tensor = inputs[mod_name]
-            embeddings.append(self.transformer.wte[mod_name](input_tensor))
+            embeddings.append(self.encoders[mod_name](input_tensor))
             pos = inputs[mod_name + "_positions"]
-            pos_embeddings.append(self.transformer.wpe[mod_name](pos))
+            pos_embeddings.append(self.embedders[mod_name](pos))
         tok_emb = torch.cat(embeddings, dim=1)
         pos_emb = torch.cat(pos_embeddings, dim=1)
 
         x = tok_emb + pos_emb
-        if hasattr(self, "to_llm_projection"):
-            x = self.to_llm_projection(x)
 
         # forward thru LLM
         x = self.llm(
-            input_embeds=x,
+            inputs_embeds=x,
             attention_mask=attention_mask,
             output_hidden_states=True,
             return_dict=True,
         )
 
         hidden_states = x.hidden_states[-1]
-        if hasattr(self, "from_llm_projection"):
-            hidden_states = self.from_llm_projection(hidden_states)
 
         outputs = {}
         current_idx = 0
@@ -664,9 +668,9 @@ class GPT(nn.Module):
         pos_embeddings = []
         for mod_name in self.modality_registry.names():
             input_tensor = inputs[mod_name]
-            embeddings.append(self.transformer.wte[mod_name](input_tensor))
+            embeddings.append(self.encoders[mod_name](input_tensor))
             pos = inputs[mod_name + "_positions"]
-            pos_embeddings.append(self.transformer.wpe[mod_name](pos))
+            pos_embeddings.append(self.embedders[mod_name](pos))
         tok_emb = torch.cat(embeddings, dim=1)
         pos_emb = torch.cat(pos_embeddings, dim=1)
         x = self.transformer.drop(tok_emb + pos_emb)
@@ -711,9 +715,9 @@ class GPT(nn.Module):
         pos_embeddings = []
         for mod_name in self.modality_registry.names():
             input_tensor = inputs[mod_name]
-            embeddings.append(self.transformer.wte[mod_name](input_tensor))
+            embeddings.append(self.encoders[mod_name](input_tensor))
             pos = inputs[mod_name + "_positions"]
-            pos_embeddings.append(self.transformer.wpe[mod_name](pos))
+            pos_embeddings.append(self.embedders[mod_name](pos))
         tok_emb = torch.cat(embeddings, dim=1)
         pos_emb = torch.cat(pos_embeddings, dim=1)
         x = self.transformer.drop(tok_emb + pos_emb)
@@ -733,8 +737,8 @@ class GPT(nn.Module):
         # model surgery to decrease the block size if necessary
         assert block_size <= self.config.block_size
         self.config.block_size = block_size
-        self.transformer.wpe.weight = nn.Parameter(
-            self.transformer.wpe.weight[:block_size]
+        self.embedders.weight = nn.Parameter(
+            self.embedders.weight[:block_size]
         )
         for block in self.transformer.h:
             if hasattr(block.attn, "bias"):
