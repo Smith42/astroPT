@@ -6,6 +6,8 @@ def load_astropt(
     repo_id="smith42/astropt_sparse",
     path="astropt/p16k10",
     weights_filename="ckpt.pt",
+    use_llm_backbone=False,
+    llm_model_name=None,
 ):
     """
     Load an AstroPT model.
@@ -48,16 +50,38 @@ def load_astropt(
     checkpoint = torch.load(weights_path, weights_only=False, map_location="cpu")
     model_args = checkpoint["model_args"]
     modality_registry = checkpoint["modality_registry"]
+
+    if use_llm_backbone:
+        model_args["backbone"] = "llm"
+        model_args["llm_model_name"] = llm_model_name
     config = GPTConfig(**model_args)
-    model = GPT(config, modality_registry)
-    state_dict = checkpoint["model"]
-    # fix the keys of the state dictionary :(
-    # honestly no idea how checkpoints sometimes get this prefix, have to debug more
-    unwanted_prefix = "_orig_mod."
-    for k, v in list(state_dict.items()):
-        if k.startswith(unwanted_prefix):
-            state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
-    model.load_state_dict(state_dict)
+    model = GPT(
+        config,
+        modality_registry,
+        backbone=config.backbone,
+        llm_model_name=config.llm_model_name,
+    )
+
+    if not use_llm_backbone:
+        state_dict = checkpoint["model"]
+        # fix the keys of the state dictionary :(
+        # honestly no idea how checkpoints sometimes get this prefix, have to debug more
+        unwanted_prefix = "_orig_mod."
+        for k, v in list(state_dict.items()):
+            if k.startswith(unwanted_prefix):
+                state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
+        model.load_state_dict(state_dict)
+    else:
+        # Only load encoder/decoder weights for LLM backbone
+        state_dict = checkpoint["model"]
+        # Load only the modality-specific parts
+        encoder_decoder_state = {
+            k: v
+            for k, v in state_dict.items()
+            if "encoders" in k or "decoders" in k or "embedders" in k
+        }
+        model.load_state_dict(encoder_decoder_state, strict=False)
+
     dir_info = f"/{path}" if path else ""
     print(f"model loaded successfully from {repo_id}{dir_info}")
     print("args:", model_args)

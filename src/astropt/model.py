@@ -321,6 +321,9 @@ class GPTConfig:
     lora_alpha: int = 16
     lora_dropout: float = 0.1
     modalities: list[ModalityConfig] = None
+    # LLM specific parameters
+    backbone: str = "native"  # native or llm
+    llm_model_name: str = None
 
 
 class GPT(nn.Module):
@@ -329,11 +332,14 @@ class GPT(nn.Module):
         config: GPTConfig,
         modality_registry: ModalityRegistry,
         master_process=True,
+        backbone="native",  # native or llm
+        llm_model_name=None,
     ):
         super().__init__()
         assert config.block_size is not None
         self.config = config
         self.modality_registry = modality_registry
+        self.backbone = backbone
 
         # create encoders and decoders
         encoders = {}
@@ -347,44 +353,90 @@ class GPT(nn.Module):
                 embedders[name] = Encoder(config, mod_config.pos_input_size)
             decoders[name] = Decoder(config, mod_config.input_size)
 
+        self.encoders = nn.ModuleDict(encoders)
+        self.decoders = nn.ModuleDict(decoders)
+        self.embedders = nn.ModuleDict(embedders)
+
+        if backbone == "native":
+            self._init_native_backbone(config)
+        elif backbone == "llm":
+            self._init_llm_backbone(config, llm_model_name)
+        else:
+            raise ValueError(f"Unknown backbone type: {backbone}")
+
+        # optional task head for finetuning
+        self.task_head = None
+        if hasattr(config, "output_dim"):
+            self.task_head = TaskHead(config, config.output_dim)
+
+        # init weights for native model
+        if backbone == "native":
+            # init all weights
+            self.apply(self._init_weights)
+            # apply special scaled init to the residual projections, per GPT-2 paper
+            for pn, p in self.named_parameters():
+                if pn.endswith("c_proj.weight"):
+                    torch.nn.init.normal_(
+                        p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer)
+                    )
+
+        # report number of parameters
+        self.master_process = master_process
+        if self.master_process:
+            total_params = sum(p.numel() for p in self.parameters())
+            trainable_params = sum(
+                p.numel() for p in self.parameters() if p.requires_grad
+            )
+            print(f"Model type: {self.backbone}")
+            if self.backbone == "llm":
+                print(
+                    f"LLM backbone: {getattr(self, 'llm_config', {}).get('_name_or_path', 'Unknown')}"
+                )
+            print(f"Total parameters: {total_params / 1e6:.2f}M")
+            print(f"Trainable parameters: {trainable_params / 1e6:.2f}M")
+
+    def get_num_params(self):
+        """Return the number of parameters in the model."""
+        return sum(p.numel() for p in self.parameters())
+
+    def _init_native_backbone(self, config):
+        """Initialize native AstroPT transformer"""
         self.transformer = nn.ModuleDict(
             dict(
-                wte=nn.ModuleDict(encoders),
-                wpe=nn.ModuleDict(embedders),
                 drop=nn.Dropout(config.dropout),
                 h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
                 ln_f=LayerNorm(config.n_embd, bias=config.bias),
             )
         )
-        self.lm_head = nn.ModuleDict(decoders)
+        self.transformer.wte = self.encoders
+        self.transformer.wpe = self.embedders
+        self.lm_head = self.decoders
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
         # This behavior is deprecated and will be an error in future versions"
         # not 100% sure what this is, so far seems to be harmless. TODO investigate
         # TODO rethink weight tying
         # self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
-        # optional task head for finetuning
-        self.task_head = None
-        if hasattr(config, "output_dim"):
-            self.task_head = TaskHead(config, config.output_dim)
 
-        # init all weights
-        self.apply(self._init_weights)
-        # apply special scaled init to the residual projections, per GPT-2 paper
-        for pn, p in self.named_parameters():
-            if pn.endswith("c_proj.weight"):
-                torch.nn.init.normal_(
-                    p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer)
-                )
+    def _init_llm_backbone(self, config, llm_model_name):
+        """Initialise with pretrained LLM backbone"""
+        from transformers import AutoConfig, AutoModelForCausalLM
 
-        # report number of parameters
-        self.master_process = master_process
-        if self.master_process:
-            print("number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
+        self.llm_config = AutoConfig.from_pretrained(llm_model_name)
+        self.llm = AutoModelForCausalLM.from_pretrained(
+            llm_model_name,
+            torch_dtype=torch.float16,
+            device_map="auto",
+        )
 
-    def get_num_params(self):
-        """Return the number of parameters in the model."""
-        return sum(p.numel() for p in self.parameters())
+        self.config.n_embd = self.llm_config.hidden_size
+
+        for param in self.llm.parameters():
+            param.requires_grad(False)
+
+        # TODO check and see if this makes sense (should we force config.n_embd to be == llm hidden size?)
+        self.to_llm_projection = nn.Linear(config.n_embd, self.llm_config.hidden_size)
+        self.from_llm_projection = nn.Linear(self.llm_config.hidden_size, config.n_embd)
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -394,7 +446,33 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, inputs, targets=None, prefix_len=None, target_modality=None, attention_mask=None):
+    def forward(
+        self,
+        inputs,
+        targets=None,
+        prefix_len=None,
+        target_modality=None,
+        attention_mask=None,
+    ):
+        if self.backbone == "native":
+            return self._forward_native(
+                inputs, targets, prefix_len, target_modality, attention_mask
+            )
+        elif self.backbone == "llm":
+            return self._forward_llm(
+                inputs, targets, prefix_len, target_modality, attention_mask
+            )
+        else:
+            raise ValueError(f"Unknown backbone type: {self.backbone}")
+
+    def _forward_native(
+        self,
+        inputs,
+        targets=None,
+        prefix_len=None,
+        target_modality=None,
+        attention_mask=None,
+    ):
         tt = sum(v.size(1) for k, v in inputs.items() if k.endswith("_positions"))
         assert tt <= self.config.block_size, (
             f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
@@ -491,7 +569,7 @@ class GPT(nn.Module):
                     #    prefix_mask[:, :prefix_sublen] = False
                 elif attention_mask is not None:
                     # Extract attention mask for this modality
-                    mod_mask = attention_mask[:, current_idx:current_idx + seq_len]
+                    mod_mask = attention_mask[:, current_idx : current_idx + seq_len]
 
                     unmasked_loss = F.huber_loss(pred, target, reduction="none")
                     mask = mod_mask.unsqueeze(-1)
@@ -500,6 +578,64 @@ class GPT(nn.Module):
                 else:
                     loss += F.huber_loss(pred, target) * mod_config.loss_weight
                 current_idx += seq_len
+            loss /= len(self.modality_registry.names())
+        else:
+            loss = None
+
+        return outputs, loss
+
+    def _forward_llm(
+        self,
+        inputs,
+        targets=None,
+        prefix_len=None,
+        target_modality=None,
+        attention_mask=None,
+    ):
+        embeddings = []
+        pos_embeddings = []
+        for mod_name in self.modality_registry.names():
+            input_tensor = inputs[mod_name]
+            embeddings.append(self.transformer.wte[mod_name](input_tensor))
+            pos = inputs[mod_name + "_positions"]
+            pos_embeddings.append(self.transformer.wpe[mod_name](pos))
+        tok_emb = torch.cat(embeddings, dim=1)
+        pos_emb = torch.cat(pos_embeddings, dim=1)
+
+        x = tok_emb + pos_emb
+        if hasattr(self, "to_llm_projection"):
+            x = self.to_llm_projection(x)
+
+        # forward thru LLM
+        x = self.llm(
+            input_embeds=x,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+            return_dict=True,
+        )
+
+        hidden_states = x.hidden_states[-1]
+        if hasattr(self, "from_llm_projection"):
+            hidden_states = self.from_llm_projection(hidden_states)
+
+        outputs = {}
+        current_idx = 0
+        for mod_name in self.modality_registry.names():
+            if mod_name in inputs:
+                input_tensor = inputs[mod_name]
+                seq_len = input_tensor.size(1)
+                hidden_state = hidden_states[:, current_idx : current_idx + seq_len]
+                outputs[mod_name] = self.decoders[mod_name](hidden_state)
+                current_idx += seq_len
+
+        if targets is not None:
+            # if we are given some desired targets also calculate the loss
+            loss = 0
+            for mod_name in self.modality_registry.names():
+                target = targets[mod_name]
+                mod_config = self.modality_registry.get_config(mod_name)
+                pred = outputs[mod_name]
+                loss += F.huber_loss(pred, target) * mod_config.loss_weight
             loss /= len(self.modality_registry.names())
         else:
             loss = None
