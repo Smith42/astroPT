@@ -80,7 +80,7 @@ def process_galaxy_wrapper(galdict, func):
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a 4B LLM backbone AstroPT model on DESI galaxy imagery
-    out_dir = "logs/qwen"
+    out_dir = "logs/qwen8B"
     eval_interval = 100
     log_interval = 10
     checkpoint_interval = 5000
@@ -99,7 +99,7 @@ if __name__ == "__main__":
     spiral = True  # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     image_size = 256
-    num_workers = 16  # 64
+    num_workers = 8  # 64
     n_chan = 3  # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
     # Define modalities configuration
     modalities = [
@@ -269,7 +269,8 @@ if __name__ == "__main__":
     # model init
     model_args = dict(
         backbone="llm",
-        llm_model_name="Qwen/Qwen3-8B",
+        llm_model_name="Qwen/Qwen3-4B",
+        lora_r=64,
         n_chan=n_chan,
         modalities=modalities,
     )

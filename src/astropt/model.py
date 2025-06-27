@@ -426,8 +426,19 @@ class GPT(nn.Module):
 
         self.config.n_embd = self.llm_config.hidden_size
 
-        for param in self.llm.parameters():
-            param.requires_grad = False
+        if hasattr(config, "lora_r") and config.lora_r > 0:
+            from peft import LoraConfig, get_peft_model
+
+            lora_config = LoraConfig(
+                r=config.lora_r,
+                lora_alpha=2*config.lora_r, # a suggested "rule-of-thumb" default
+                target_modules=["q_proj", "v_proj"], 
+                task_type="CAUSAL_LM"
+            )
+            self.llm = get_peft_model(self.llm, lora_config)
+        else:
+            for param in self.llm.parameters():
+                param.requires_grad = False
 
         # create encoders and decoders
         encoders = {}
