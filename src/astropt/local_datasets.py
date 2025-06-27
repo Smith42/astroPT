@@ -12,6 +12,7 @@ import torch.nn.functional as F
 from astropy.io import fits
 from torch.utils.data import Dataset
 from torchvision import io
+from torch.nn.utils.rnn import pad_sequence
 
 
 class GalaxyImageDataset(Dataset):
@@ -268,3 +269,136 @@ class GalaxyImageDataset(Dataset):
             "spectra_positions": patch_wl,
             "idx": idx,
         }
+
+
+class PhotometryDataset(Dataset):
+    """
+    Dataset for photometry timeseries packaging for AstroPT.
+
+    Args:
+        split: Dataset split from HF dataset
+    """
+    def __init__(self, split, roll=False, shuffle=False):
+        self.split = split
+        self.shuffle = shuffle # whether to roll time
+        self.roll = roll # whether to roll time
+
+    def __len__(self):
+        return len(self.split)
+
+    @staticmethod
+    def embed_time(time):
+        embedded_time = torch.stack((
+            torch.sin(2 * torch.pi * time), 
+            torch.cos(2 * torch.pi * time)
+        ), dim=-1)
+        return embedded_time
+
+    @staticmethod
+    def collate_fn(batch):
+        """
+        Expects batch items to have structure:
+        {
+            'photometry': tensor/list,
+            'photometry_positions': tensor/list,
+        }
+        """
+        photometry_data = [item["photometry"] for item in batch]
+        photometry_positions = [item["photometry_positions"] for item in batch]
+    
+        padded_photometry = pad_sequence(photometry_data, batch_first=True, padding_value=0.0)
+        padded_positions = pad_sequence(photometry_positions, batch_first=True, padding_value=0.0)
+    
+        lengths = [len(seq) for seq in photometry_data]
+        max_len = padded_photometry.size(1)
+        attention_mask = torch.zeros(len(batch), max_len)
+        for i, length in enumerate(lengths):
+            attention_mask[i, :length] = 1
+    
+        return {
+            "photometry": padded_photometry,
+            "photometry_positions": padded_positions,
+            "attention_mask": attention_mask,
+        }
+
+    def __getitem__(self, idx):
+        item = self.split[idx]["photometry"]
+        if self.shuffle:
+            indices = torch.randperm(len(item))
+            item = item[indices]
+        flux_et_al = item[:-1, 1:2]
+        # As photometry is stochastically sampled we feed the model the current
+        # timestamp and next timestamp in the sequence as the position vector
+        time = self.embed_time(item[:, 0])
+        time = torch.cat((
+            time[1:], time[:-1]
+        ), dim=1)
+        if self.roll:
+            roll_by = np.random.randint(len(flux_et_al))
+            return {
+                "photometry": flux_et_al.roll(roll_by, 0),
+                "photometry_positions": time.roll(roll_by, 0),
+                "idx": idx,
+            }
+        else:
+            return {
+                "photometry": flux_et_al,
+                "photometry_positions": time,
+                "idx": idx,
+            }
+
+
+class SpectraDataset(Dataset):
+    """
+    Dataset for AstroM3 spectra packaging for AstroPT.
+
+    Args:
+        split: Dataset split from HF dataset
+    """
+    def __init__(self, split):
+        self.split = split
+
+    def __len__(self):
+        return len(self.split)
+
+    def __getitem__(self, idx):
+        item = self.split[idx]["spectra"]
+        flux_et_al = item[1:2, ::2].T
+        wavelength = torch.arange(0, len(flux_et_al), dtype=torch.long)
+        #wavelength = item[0:1, ::2].T
+        return {
+            "spectra": flux_et_al,
+            "spectra_positions": wavelength,
+            "idx": idx,
+        }
+
+
+class MetadataDataset(Dataset):
+    """
+    Dataset for AstroM3 metadata packaging for AstroPT.
+
+    Args:
+        split: Dataset split from HF dataset
+    """
+    def __init__(self, split, shuffle_time=False):
+        self.split = split
+        self.shuffle = shuffle_time
+
+    def __len__(self):
+        return len(self.split)
+
+    def __getitem__(self, idx):
+        item = self.split[idx]["metadata"]
+        metadata = item.unsqueeze(-1)
+        metadata_positions = torch.arange(0, len(metadata), dtype=torch.long)
+        if self.shuffle:
+            perm = torch.randperm(metadata.size(0))
+            metadata = metadata[perm]
+            metadata_positions = metadata_positions[perm]
+        return {
+            "metadata": metadata,
+            "metadata_positions": metadata_positions,
+            "idx": idx,
+        }
+
+
