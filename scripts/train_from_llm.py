@@ -269,7 +269,7 @@ if __name__ == "__main__":
     # model init
     model_args = dict(
         backbone="llm",
-        llm_model_name="Qwen/Qwen3-4B",
+        llm_model_name="Qwen/Qwen3-8B",
         n_chan=n_chan,
         modalities=modalities,
     )
@@ -329,6 +329,15 @@ if __name__ == "__main__":
         )
     model.to(device)
 
+    # For DDP with LLM backbone, ensure all components are on the correct device
+    if ddp and hasattr(model, 'llm') and model.llm is not None:
+        if master_process:
+            print(f"DDP: Moving LLM components to device {device}")
+        # The .to(device) call above should handle this, but let's be explicit
+        model.llm.to(device)
+        for module in [model.encoders, model.decoders, model.embedders]:
+            module.to(device)
+
     # initialize a GradScaler. If enabled=False scaler is a no-op
     try:  # initting gradscaler changed in Pytorch 2.5.1
         scaler = torch.amp.GradScaler(enabled=(dtype == "float16"))
@@ -359,8 +368,12 @@ if __name__ == "__main__":
         # future torch version so check periodically. I tested this on:
         # 2.6.0.dev20241126+cu124
         torch._dynamo.config.optimize_ddp = False
+        # For LLM backbone, we need find_unused_parameters=True because
+        # the LLM parameters are frozen and not all may be used
+        if hasattr(model, 'llm') and model.llm is not None:
+            model = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=True)
         # if we have only one modality all params are used in a forward pass:
-        if len(modalities) == 1:
+        elif len(modalities) == 1:
             model = DDP(model, device_ids=[ddp_local_rank])
         else:
             model = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=True)

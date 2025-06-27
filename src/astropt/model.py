@@ -421,8 +421,7 @@ class GPT(nn.Module):
         self.llm_config = AutoConfig.from_pretrained(config.llm_model_name)
         self.llm = AutoModelForCausalLM.from_pretrained(
             config.llm_model_name,
-            torch_dtype=torch.float16,
-            device_map="sequential",
+            torch_dtype=torch.bfloat16,
         )
 
         self.config.n_embd = self.llm_config.hidden_size
@@ -445,6 +444,13 @@ class GPT(nn.Module):
         self.encoders = nn.ModuleDict(encoders)
         self.decoders = nn.ModuleDict(decoders)
         self.embedders = nn.ModuleDict(embedders)
+
+    def to(self, device):
+        """Override to method to ensure LLM backbone moves with the model"""
+        super().to(device)
+        if hasattr(self, 'llm') and self.llm is not None:
+            self.llm.to(device)
+        return self
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
