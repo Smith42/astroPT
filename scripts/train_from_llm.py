@@ -114,6 +114,8 @@ if __name__ == "__main__":
     ]
     # Create modality registry
     modality_registry = ModalityRegistry(modalities)
+    # Choose tokenisers from "affine" and "aim"
+    tokeniser = "affine"
     # adamw optimizer
     # we follow the same schedule here as Chinchilla
     learning_rate = 6e-4  # max learning rate
@@ -273,6 +275,7 @@ if __name__ == "__main__":
         lora_r=64,
         n_chan=n_chan,
         modalities=modalities,
+        tokeniser=tokeniser,
     )
 
     if init_from == "scratch":
