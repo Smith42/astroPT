@@ -99,7 +99,7 @@ if __name__ == "__main__":
     spiral = True  # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     image_size = 256
-    num_workers = 8  # 64
+    num_workers = 16  # 64
     n_chan = 3  # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
     # Define modalities configuration
     modalities = [
@@ -271,8 +271,8 @@ if __name__ == "__main__":
     # model init
     model_args = dict(
         backbone="llm",
-        llm_model_name="Qwen/Qwen3-4B",
-        lora_r=64,
+        llm_model_name="Qwen/Qwen3-8B",
+        lora_r=256,
         n_chan=n_chan,
         modalities=modalities,
         tokeniser=tokeniser,
@@ -375,7 +375,7 @@ if __name__ == "__main__":
         # For LLM backbone, we need find_unused_parameters=True because
         # the LLM parameters are frozen and not all may be used
         if hasattr(model, 'llm') and model.llm is not None:
-            model = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=True)
+            model = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=False)
         # if we have only one modality all params are used in a forward pass:
         elif len(modalities) == 1:
             model = DDP(model, device_ids=[ddp_local_rank])
@@ -449,8 +449,8 @@ if __name__ == "__main__":
                     if log_via_wandb:
                         wandb.log(
                             {
-                                "Y": wandb.Image(Yim.swapaxes(1, -1)),
-                                "P": wandb.Image(Pim.swapaxes(1, -1)),
+                                "Y": [wandb.Image(im.swapaxes(0, -1)) for im in Yim],
+                                "P": [wandb.Image(im.swapaxes(0, -1)) for im in Pim],
                             }
                         )
 
