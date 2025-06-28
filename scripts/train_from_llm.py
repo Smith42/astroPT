@@ -99,7 +99,7 @@ if __name__ == "__main__":
     spiral = True  # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     image_size = 256
-    num_workers = 16  # 64
+    num_workers = 32 # 64
     n_chan = 3  # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
     # Define modalities configuration
     modalities = [
@@ -447,10 +447,11 @@ if __name__ == "__main__":
                         ax[1].axis("off")
 
                     if log_via_wandb:
+                        mmn = lambda x: 255*(x - x.min())/(x.max() - x.min())
                         wandb.log(
                             {
-                                "Y": [wandb.Image(im.swapaxes(0, -1)) for im in Yim],
-                                "P": [wandb.Image(im.swapaxes(0, -1)) for im in Pim],
+                                "Y": [wandb.Image(mmn(im.swapaxes(0, -1))) for im in Yim],
+                                "P": [wandb.Image(mmn(im.swapaxes(0, -1))) for im in Pim],
                             }
                         )
 
@@ -564,8 +565,17 @@ if __name__ == "__main__":
             if val_loss < best_val_loss or always_save_checkpoint:
                 best_val_loss = val_loss
                 if iter_num > 0:
+                    # save only PEFT + encoder/decoder for LLM+LoRA models
+                    if hasattr(raw_model, 'llm') and hasattr(raw_model.llm, 'peft_config'):
+                        peft_state = raw_model.llm.state_dict()
+                        modality_state = {k: v for k, v in raw_model.state_dict().items() 
+                                        if k.startswith(('encoders.', 'decoders.', 'embedders.'))}
+                        model_state = {"peft_state": peft_state, **modality_state}
+                    else:
+                        model_state = raw_model.state_dict()
+                    
                     checkpoint = {
-                        "model": raw_model.state_dict(),
+                        "model": model_state,
                         "optimizer": optimizer.state_dict(),
                         "model_args": model_args,
                         "iter_num": iter_num,

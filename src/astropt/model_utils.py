@@ -54,6 +54,7 @@ def load_astropt(
     if use_llm_backbone:
         model_args["backbone"] = "llm"
         model_args["llm_model_name"] = llm_model_name
+
     config = GPTConfig(**model_args)
     model = GPT(
         config,
@@ -80,6 +81,8 @@ def load_astropt(
             for k, v in state_dict.items()
             if "encoders" in k or "decoders" in k or "embedders" in k
         }
+        if "peft_state" in checkpoint:
+            model.llm.load_state_dict(checkpoint["peft_state"], strict=False)
         model.load_state_dict(encoder_decoder_state, strict=False)
 
     dir_info = f"/{path}" if path else ""
