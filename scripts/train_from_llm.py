@@ -94,8 +94,8 @@ if __name__ == "__main__":
     use_hf = True  # use the huggingface dataset version of our galz
     stream_hf_dataset = True  # stream the galaxies from huggingface
     # data
-    gradient_accumulation_steps = 5 * 4  # used to simulate larger batch sizes
-    batch_size = 16  # if gradient_accumulation_steps > 1, this is the micro-batch size
+    gradient_accumulation_steps = 5 * 8  # used to simulate larger batch sizes
+    batch_size = 8  # if gradient_accumulation_steps > 1, this is the micro-batch size
     spiral = True  # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     image_size = 256
@@ -114,6 +114,9 @@ if __name__ == "__main__":
     ]
     # Create modality registry
     modality_registry = ModalityRegistry(modalities)
+    # Which backbone and LoRA rank do we use?
+    llm_model_name = "Qwen/Qwen3-4B"
+    lora_r = 1024
     # Choose tokenisers from "affine" and "aim"
     tokeniser = "affine"
     # adamw optimizer
@@ -271,8 +274,8 @@ if __name__ == "__main__":
     # model init
     model_args = dict(
         backbone="llm",
-        llm_model_name="Qwen/Qwen3-8B",
-        lora_r=256,
+        llm_model_name=llm_model_name,
+        lora_r=lora_r,
         n_chan=n_chan,
         modalities=modalities,
         tokeniser=tokeniser,
@@ -291,16 +294,17 @@ if __name__ == "__main__":
         ckpt_path = os.path.join(out_dir, "ckpt.pt")
         checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
         checkpoint_model_args = checkpoint["model_args"]
-        # force these config attributes to be equal otherwise we can't even resume training
-        # the rest of the attributes (e.g. dropout) can stay as desired from command line
-        # NOTE had to remove 'bias' key here -- where does it go?!
-        for k in ["n_layer", "n_head", "n_embd", "block_size"]:
-            model_args[k] = checkpoint_model_args[k]
+        # if "native" force these config attributes to be equal otherwise we
+        # can't even resume training the rest of the attributes (e.g. dropout)
+        # can stay as desired from command line NOTE had to remove 'bias' key
+        # here -- where does it go?!
+        if checkpoint_model_args["backbone"] == "native":
+            for k in ["n_layer", "n_head", "n_embd", "block_size"]:
+                model_args[k] = checkpoint_model_args[k]
         # create the model
         gptconf = GPTConfig(**model_args)
         model = GPT(gptconf, modality_registry, master_process=master_process)
         state_dict = checkpoint["model"]
-        exit(0)
         # fix the keys of the state dictionary :(
         # honestly no idea how checkpoints sometimes get this prefix, have to debug more
         unwanted_prefix = "_orig_mod."
@@ -335,8 +339,6 @@ if __name__ == "__main__":
 
     # For DDP with LLM backbone, ensure all components are on the correct device
     if ddp and hasattr(model, 'llm') and model.llm is not None:
-        if master_process:
-            print(f"DDP: Moving LLM components to device {device}")
         # The .to(device) call above should handle this, but let's be explicit
         model.llm.to(device)
         for module in [model.encoders, model.decoders, model.embedders]:
@@ -565,15 +567,7 @@ if __name__ == "__main__":
             if val_loss < best_val_loss or always_save_checkpoint:
                 best_val_loss = val_loss
                 if iter_num > 0:
-                    # save only PEFT + encoder/decoder for LLM+LoRA models
-                    if hasattr(raw_model, 'llm') and hasattr(raw_model.llm, 'peft_config'):
-                        peft_state = raw_model.llm.state_dict()
-                        modality_state = {k: v for k, v in raw_model.state_dict().items() 
-                                        if k.startswith(('encoders.', 'decoders.', 'embedders.'))}
-                        model_state = {"peft_state": peft_state, **modality_state}
-                    else:
-                        model_state = raw_model.state_dict()
-                    
+                    model_state = raw_model.state_dict()
                     checkpoint = {
                         "model": model_state,
                         "optimizer": optimizer.state_dict(),

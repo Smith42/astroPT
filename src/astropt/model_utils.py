@@ -63,27 +63,14 @@ def load_astropt(
         llm_model_name=config.llm_model_name,
     )
 
-    if not use_llm_backbone:
-        state_dict = checkpoint["model"]
-        # fix the keys of the state dictionary :(
-        # honestly no idea how checkpoints sometimes get this prefix, have to debug more
-        unwanted_prefix = "_orig_mod."
-        for k, v in list(state_dict.items()):
-            if k.startswith(unwanted_prefix):
-                state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
-        model.load_state_dict(state_dict)
-    else:
-        # Only load encoder/decoder weights for LLM backbone
-        state_dict = checkpoint["model"]
-        # Load only the modality-specific parts
-        encoder_decoder_state = {
-            k: v
-            for k, v in state_dict.items()
-            if "encoders" in k or "decoders" in k or "embedders" in k
-        }
-        if "peft_state" in checkpoint:
-            model.llm.load_state_dict(checkpoint["peft_state"], strict=False)
-        model.load_state_dict(encoder_decoder_state, strict=False)
+    state_dict = checkpoint["model"]
+    # fix the keys of the state dictionary :(
+    # honestly no idea how checkpoints sometimes get this prefix, have to debug more
+    unwanted_prefix = "_orig_mod."
+    for k, v in list(state_dict.items()):
+        if k.startswith(unwanted_prefix):
+            state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
+    model.load_state_dict(state_dict)
 
     dir_info = f"/{path}" if path else ""
     print(f"model loaded successfully from {repo_id}{dir_info}")
