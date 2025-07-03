@@ -270,14 +270,22 @@ class Encoder(nn.Module):
 
     def __init__(self, config, in_size):
         super().__init__()
-        self.c_fc = nn.Linear(in_size, 4 * config.n_embd, bias=config.bias)
-        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
+        self.tokeniser = config.tokeniser
+        if self.tokeniser == "affine":
+            self.c_fc = nn.Linear(in_size, config.n_embd, bias=config.bias)
+        else:
+            # default to AIM tokeniser for back compatability
+            self.c_fc = nn.Linear(in_size, 4 * config.n_embd, bias=config.bias)
+            self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
 
     def forward(self, x):
-        x = self.c_fc(x)
-        x = new_gelu(x)
-        x = self.c_proj(x)
-        return x
+        if self.tokeniser == "affine":
+            return self.c_fc(x)
+        else: # assume AIM
+            x = self.c_fc(x)
+            x = new_gelu(x)
+            x = self.c_proj(x)
+            return x
 
 
 class Decoder(nn.Module):
@@ -285,14 +293,22 @@ class Decoder(nn.Module):
 
     def __init__(self, config, out_size):
         super().__init__()
-        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
-        self.c_proj = nn.Linear(4 * config.n_embd, out_size, bias=config.bias)
+        self.tokeniser = config.tokeniser
+        if self.tokeniser == "affine":
+            self.c_fc = nn.Linear(config.n_embd, out_size, bias=config.bias)
+        else:
+            # default to AIM tokeniser for back compatability
+            self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
+            self.c_proj = nn.Linear(4 * config.n_embd, out_size, bias=config.bias)
 
     def forward(self, x):
-        x = self.c_fc(x)
-        x = new_gelu(x)
-        x = self.c_proj(x)
-        return x
+        if self.tokeniser == "affine":
+            return self.c_fc(x)
+        else: # assume AIM
+            x = self.c_fc(x)
+            x = new_gelu(x)
+            x = self.c_proj(x)
+            return x
 
 
 class Embedder(nn.Module):
@@ -316,6 +332,7 @@ class GPTConfig:
     dropout: float = 0.0
     bias: bool = False  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     attn_type: str = "causal"  # causal or prefix
+    tokeniser: str = "aim" # one of "aim" or "affine"
     # LoRA params
     lora_r: int = 0  # rank, 0 disables LoRA
     lora_alpha: int = 16
