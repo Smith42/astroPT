@@ -6,7 +6,6 @@
 - `uv run ruff check` - Run linting (E, F, I rules, ignore E501)
 - `uv run ruff format` - Format code
 - `uv run pre-commit run --all-files` - Run all pre-commit hooks
-- `python test.py` - Run single test file (no formal test framework)
 - `python scripts/train.py --batch_size=32 --compile=False` - Single GPU training
 - `torchrun --standalone --nproc_per_node=4 scripts/train.py` - Multi-GPU training
 
