@@ -281,7 +281,7 @@ class Encoder(nn.Module):
     def forward(self, x):
         if self.tokeniser == "affine":
             return self.c_fc(x)
-        else: # assume AIM
+        else:  # assume AIM
             x = self.c_fc(x)
             x = new_gelu(x)
             x = self.c_proj(x)
@@ -304,7 +304,7 @@ class Decoder(nn.Module):
     def forward(self, x):
         if self.tokeniser == "affine":
             return self.c_fc(x)
-        else: # assume AIM
+        else:  # assume AIM
             x = self.c_fc(x)
             x = new_gelu(x)
             x = self.c_proj(x)
@@ -332,7 +332,7 @@ class GPTConfig:
     dropout: float = 0.0
     bias: bool = False  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     attn_type: str = "causal"  # causal or prefix
-    tokeniser: str = "aim" # one of "aim" or "affine"
+    tokeniser: str = "aim"  # one of "aim" or "affine"
     # LoRA params
     lora_r: int = 0  # rank, 0 disables LoRA
     lora_alpha: int = 16
@@ -361,7 +361,7 @@ class GPT(nn.Module):
         elif self.backbone == "llm":
             self._init_llm_backbone(config)
         else:
-            raise ValueError(f"Unknown backbone type: {backbone}")
+            raise ValueError(f"Unknown backbone type: {self.backbone}")
 
         # optional task head for finetuning
         self.task_head = None
@@ -388,9 +388,7 @@ class GPT(nn.Module):
             )
             print(f"Model type: {self.backbone}")
             if self.backbone == "llm":
-                print(
-                    f"LLM backbone: {getattr(self, 'llm_config', {}).architectures}"
-                )
+                print(f"LLM backbone: {getattr(self, 'llm_config', {}).architectures}")
             print(f"Total parameters: {total_params / 1e6:.2f}M")
             print(f"Trainable parameters: {trainable_params / 1e6:.2f}M")
 
@@ -412,7 +410,7 @@ class GPT(nn.Module):
         encoders = {}
         decoders = {}
         embedders = {}
-        for name, mod_config in modality_registry.modalities.items():
+        for name, mod_config in self.modality_registry.modalities.items():
             encoders[name] = Encoder(config, mod_config.input_size)
             if mod_config.embed_pos:
                 embedders[name] = Embedder(config)
@@ -433,7 +431,10 @@ class GPT(nn.Module):
 
     def _init_llm_backbone(self, config):
         """Initialise with pretrained LLM backbone"""
-        from transformers import AutoConfig, AutoModelForCausalLM
+        from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+
+        # Initialize tokenizer for special token handling
+        self.tokenizer = AutoTokenizer.from_pretrained(config.llm_model_name)
 
         self.llm_config = AutoConfig.from_pretrained(config.llm_model_name)
         self.llm = AutoModelForCausalLM.from_pretrained(
@@ -443,14 +444,26 @@ class GPT(nn.Module):
 
         self.config.n_embd = self.llm_config.hidden_size
 
+        # Add special modality tokens
+        special_tokens = []
+        for mod_name in self.modality_registry.names():
+            special_tokens.extend([f"<|begin_{mod_name}|>", f"<|end_{mod_name}|>"])
+
+        self.tokenizer.add_special_tokens({"additional_special_tokens": special_tokens})
+        self.llm.resize_token_embeddings(len(self.tokenizer))
+        self.special_token_ids = {
+            token: self.tokenizer.convert_tokens_to_ids(token)
+            for token in special_tokens
+        }
+
         if hasattr(config, "lora_r") and config.lora_r > 0:
             from peft import LoraConfig, get_peft_model
 
             lora_config = LoraConfig(
                 r=config.lora_r,
-                lora_alpha=2*config.lora_r, # a suggested "rule-of-thumb" default
-                target_modules=["q_proj", "v_proj"], 
-                task_type="CAUSAL_LM"
+                lora_alpha=2 * config.lora_r,  # a suggested "rule-of-thumb" default
+                target_modules=["q_proj", "v_proj"],
+                task_type="CAUSAL_LM",
             )
             self.llm = get_peft_model(self.llm, lora_config)
         else:
@@ -476,7 +489,7 @@ class GPT(nn.Module):
     def to(self, device):
         """Override to method to ensure LLM backbone moves with the model"""
         super().to(device)
-        if hasattr(self, 'llm') and self.llm is not None:
+        if hasattr(self, "llm") and self.llm is not None:
             self.llm.to(device)
         return self
 
@@ -626,6 +639,74 @@ class GPT(nn.Module):
 
         return outputs, loss
 
+    def _create_modality_sequence(self, inputs, text_prompt=None):
+        """Create a mixed sequence with special tokens and modality data"""
+        sequence_parts = []
+        attention_mask_parts = []
+        modality_map = {}  # Track where each modality appears in sequence
+        current_pos = 0
+
+        # Optional text prompt at the beginning
+        if text_prompt is not None:
+            prompt_tokens = self.tokenizer(
+                text_prompt, return_tensors="pt", add_special_tokens=False
+            )
+            sequence_parts.append(prompt_tokens.input_ids)
+            attention_mask_parts.append(prompt_tokens.attention_mask)
+            current_pos += prompt_tokens.input_ids.shape[1]
+
+        # Process each modality
+        for mod_name in self.modality_registry.names():
+            if mod_name in inputs:
+                # Add begin token
+                begin_token_id = self.special_token_ids[f"<|begin_{mod_name}|>"]
+                begin_token = torch.tensor(
+                    [[begin_token_id]], device=inputs[mod_name].device
+                )
+                sequence_parts.append(begin_token)
+                attention_mask_parts.append(torch.ones_like(begin_token))
+                current_pos += 1
+
+                # Encode modality data to embeddings
+                input_tensor = inputs[mod_name]
+                pos = inputs[mod_name + "_positions"]
+
+                mod_embeddings = self.encoders[mod_name](input_tensor)
+                pos_embeddings = self.embedders[mod_name](pos)
+                combined_embeddings = mod_embeddings + pos_embeddings
+
+                # Store modality position for later decoding
+                modality_map[mod_name] = {
+                    "start": current_pos,
+                    "length": combined_embeddings.shape[1],
+                    "embeddings": combined_embeddings,
+                }
+
+                # Create placeholder tokens for modality data
+                placeholder_tokens = torch.zeros(
+                    (1, combined_embeddings.shape[1]),
+                    dtype=torch.long,
+                    device=inputs[mod_name].device,
+                )
+                sequence_parts.append(placeholder_tokens)
+                attention_mask_parts.append(torch.ones_like(placeholder_tokens))
+                current_pos += combined_embeddings.shape[1]
+
+                # Add end token
+                end_token_id = self.special_token_ids[f"<|end_{mod_name}|>"]
+                end_token = torch.tensor(
+                    [[end_token_id]], device=inputs[mod_name].device
+                )
+                sequence_parts.append(end_token)
+                attention_mask_parts.append(torch.ones_like(end_token))
+                current_pos += 1
+
+        # Concatenate all parts
+        input_ids = torch.cat(sequence_parts, dim=1)
+        attention_mask = torch.cat(attention_mask_parts, dim=1)
+
+        return input_ids, attention_mask, modality_map
+
     def _forward_llm(
         self,
         inputs,
@@ -634,6 +715,61 @@ class GPT(nn.Module):
         target_modality=None,
         attention_mask=None,
     ):
+        # Create sequence with special tokens
+        input_ids, attention_mask, modality_map = self._create_modality_sequence(inputs)
+
+        # Get initial embeddings from LLM
+        initial_embeddings = self.llm.get_input_embeddings()(input_ids)
+
+        # Replace placeholder embeddings with actual modality embeddings
+        final_embeddings = initial_embeddings.clone()
+        for mod_name, mod_info in modality_map.items():
+            start_idx = mod_info["start"]
+            end_idx = start_idx + mod_info["length"]
+            final_embeddings[:, start_idx:end_idx, :] = mod_info["embeddings"]
+
+        # Forward through LLM with custom embeddings
+        x = self.llm(
+            inputs_embeds=final_embeddings,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+            return_dict=True,
+        )
+
+        hidden_states = x.hidden_states[-1]
+
+        # Extract outputs for each modality
+        outputs = {}
+        for mod_name, mod_info in modality_map.items():
+            start_idx = mod_info["start"]
+            end_idx = start_idx + mod_info["length"]
+            mod_hidden = hidden_states[:, start_idx:end_idx, :]
+            outputs[mod_name] = self.decoders[mod_name](mod_hidden)
+
+        # Calculate loss if targets provided
+        if targets is not None:
+            loss = 0
+            for mod_name in modality_map.keys():
+                if mod_name in targets:
+                    target = targets[mod_name]
+                    mod_config = self.modality_registry.get_config(mod_name)
+                    pred = outputs[mod_name]
+                    loss += F.huber_loss(pred, target) * mod_config.loss_weight
+            loss /= len(modality_map)
+        else:
+            loss = None
+
+        return outputs, loss
+
+    def _forward_llm_legacy(
+        self,
+        inputs,
+        targets=None,
+        prefix_len=None,
+        target_modality=None,
+        attention_mask=None,
+    ):
+        """Legacy LLM forward method (original implementation)"""
         embeddings = []
         pos_embeddings = []
         for mod_name in self.modality_registry.names():
@@ -646,7 +782,6 @@ class GPT(nn.Module):
 
         x = tok_emb + pos_emb
 
-        # forward thru LLM
         x = self.llm(
             inputs_embeds=x,
             attention_mask=attention_mask,
@@ -679,6 +814,41 @@ class GPT(nn.Module):
             loss = None
 
         return outputs, loss
+
+    @torch.no_grad()
+    def generate_with_modality_prompts(
+        self, text_prompt, modality_requests, max_new_tokens=50, temperature=0.7
+    ):
+        """Generate responses with modality-specific prompts
+
+        Args:
+            text_prompt: Initial text prompt
+            modality_requests: List of modality names to generate
+            max_new_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+        """
+        # Tokenize initial prompt
+        inputs = self.tokenizer(text_prompt, return_tensors="pt")
+
+        # Add modality begin tokens
+        for mod_name in modality_requests:
+            begin_token = f"<|begin_{mod_name}|>"
+            begin_token_ids = self.tokenizer(
+                begin_token, return_tensors="pt", add_special_tokens=False
+            )
+            inputs.input_ids = torch.cat(
+                [inputs.input_ids, begin_token_ids.input_ids], dim=1
+            )
+
+        # Generate with the LLM
+        outputs = self.llm.generate(
+            inputs.input_ids,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            do_sample=True,
+        )
+
+        return self.tokenizer.decode(outputs[0], skip_special_tokens=False)
 
     def get_embeddings(self, inputs, draw_from_centre=True, prefix_len=None):
         """
@@ -771,9 +941,7 @@ class GPT(nn.Module):
         # model surgery to decrease the block size if necessary
         assert block_size <= self.config.block_size
         self.config.block_size = block_size
-        self.embedders.weight = nn.Parameter(
-            self.embedders.weight[:block_size]
-        )
+        self.embedders.weight = nn.Parameter(self.embedders.weight[:block_size])
         for block in self.transformer.h:
             if hasattr(block.attn, "bias"):
                 block.attn.bias = block.attn.bias[:, :, :block_size, :block_size]
