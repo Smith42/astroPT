@@ -57,6 +57,7 @@ def normalise(x, use_hf=False):
     x_norm = (x - mean) / (std + 1e-8)
     return x_norm.to(torch.float16)
 
+
 def data_transforms(use_hf):
     norm = partial(normalise, use_hf=use_hf)
     transform = transforms.Compose(
@@ -72,10 +73,9 @@ def process_galaxy_wrapper(galdict, func):
     patch_galaxy = func(np.array(galdict["image_crop"]).swapaxes(0, 2))
     return {
         "images": patch_galaxy.to(torch.float),
-        "images_positions": torch.arange(
-            0, len(patch_galaxy), dtype=torch.long
-        ),
+        "images_positions": torch.arange(0, len(patch_galaxy), dtype=torch.long),
     }
+
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
@@ -343,10 +343,7 @@ if __name__ == "__main__":
     model.to(device)
 
     # initialize a GradScaler. If enabled=False scaler is a no-op
-    try:  # initting gradscaler changed in Pytorch 2.5.1
-        scaler = torch.amp.GradScaler(enabled=(dtype == "float16"))
-    except Exception:  # fallback to old scaler if we hit an error
-        scaler = torch.cuda.amp.GradScaler(enabled=(dtype == "float16"))
+    scaler = torch.amp.GradScaler(enabled=(dtype == "float16"))
 
     # optimizer
     optimizer = model.configure_optimizers(
