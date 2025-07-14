@@ -231,7 +231,6 @@ class GalaxyImageDataset(Dataset):
                         )
                     patch_galaxy = self.process_galaxy(raw_galaxy)
                     if torch.isnan(patch_galaxy).any():
-                        print("ERR GAL")
                         raise ValueError("Found NaNs in galaxy, skipping file")
                 else:
                     patch_galaxy = np.array([np.nan])
@@ -249,18 +248,16 @@ class GalaxyImageDataset(Dataset):
                     )
 
                     if torch.isnan(patch_spectra).any() or torch.isnan(patch_wl).any():
-                        print("ERR")
                         raise ValueError("Found NaNs in spectra, skipping file")
                 else:
                     patch_spectra = np.array([np.nan])
                     patch_wl = np.array([np.nan])
                 break
             except Exception as err:
-                print(err)
                 if self.stochastic:
                     idx = np.random.randint(len(self.paths))
                 else:
-                    sys.exit(1)
+                    raise err
 
         return {
             "images": patch_galaxy,
@@ -278,20 +275,20 @@ class PhotometryDataset(Dataset):
     Args:
         split: Dataset split from HF dataset
     """
+
     def __init__(self, split, roll=False, shuffle=False):
         self.split = split
-        self.shuffle = shuffle # whether to roll time
-        self.roll = roll # whether to roll time
+        self.shuffle = shuffle  # whether to roll time
+        self.roll = roll  # whether to roll time
 
     def __len__(self):
         return len(self.split)
 
     @staticmethod
     def embed_time(time):
-        embedded_time = torch.stack((
-            torch.sin(2 * torch.pi * time), 
-            torch.cos(2 * torch.pi * time)
-        ), dim=-1)
+        embedded_time = torch.stack(
+            (torch.sin(2 * torch.pi * time), torch.cos(2 * torch.pi * time)), dim=-1
+        )
         return embedded_time
 
     @staticmethod
@@ -305,16 +302,20 @@ class PhotometryDataset(Dataset):
         """
         photometry_data = [item["photometry"] for item in batch]
         photometry_positions = [item["photometry_positions"] for item in batch]
-    
-        padded_photometry = pad_sequence(photometry_data, batch_first=True, padding_value=0.0)
-        padded_positions = pad_sequence(photometry_positions, batch_first=True, padding_value=0.0)
-    
+
+        padded_photometry = pad_sequence(
+            photometry_data, batch_first=True, padding_value=0.0
+        )
+        padded_positions = pad_sequence(
+            photometry_positions, batch_first=True, padding_value=0.0
+        )
+
         lengths = [len(seq) for seq in photometry_data]
         max_len = padded_photometry.size(1)
         attention_mask = torch.zeros(len(batch), max_len)
         for i, length in enumerate(lengths):
             attention_mask[i, :length] = 1
-    
+
         return {
             "photometry": padded_photometry,
             "photometry_positions": padded_positions,
@@ -330,9 +331,7 @@ class PhotometryDataset(Dataset):
         # As photometry is stochastically sampled we feed the model the current
         # timestamp and next timestamp in the sequence as the position vector
         time = self.embed_time(item[:, 0])
-        time = torch.cat((
-            time[1:], time[:-1]
-        ), dim=1)
+        time = torch.cat((time[1:], time[:-1]), dim=1)
         if self.roll:
             roll_by = np.random.randint(len(flux_et_al))
             return {
@@ -355,6 +354,7 @@ class SpectraDataset(Dataset):
     Args:
         split: Dataset split from HF dataset
     """
+
     def __init__(self, split):
         self.split = split
 
@@ -365,7 +365,7 @@ class SpectraDataset(Dataset):
         item = self.split[idx]["spectra"]
         flux_et_al = item[1:2, ::2].T
         wavelength = torch.arange(0, len(flux_et_al), dtype=torch.long)
-        #wavelength = item[0:1, ::2].T
+        # wavelength = item[0:1, ::2].T
         return {
             "spectra": flux_et_al,
             "spectra_positions": wavelength,
@@ -380,6 +380,7 @@ class MetadataDataset(Dataset):
     Args:
         split: Dataset split from HF dataset
     """
+
     def __init__(self, split, shuffle_time=False):
         self.split = split
         self.shuffle = shuffle_time
@@ -400,5 +401,3 @@ class MetadataDataset(Dataset):
             "metadata_positions": metadata_positions,
             "idx": idx,
         }
-
-
