@@ -761,60 +761,6 @@ class GPT(nn.Module):
 
         return outputs, loss
 
-    def _forward_llm_legacy(
-        self,
-        inputs,
-        targets=None,
-        prefix_len=None,
-        target_modality=None,
-        attention_mask=None,
-    ):
-        """Legacy LLM forward method (original implementation)"""
-        embeddings = []
-        pos_embeddings = []
-        for mod_name in self.modality_registry.names():
-            input_tensor = inputs[mod_name]
-            embeddings.append(self.encoders[mod_name](input_tensor))
-            pos = inputs[mod_name + "_positions"]
-            pos_embeddings.append(self.embedders[mod_name](pos))
-        tok_emb = torch.cat(embeddings, dim=1)
-        pos_emb = torch.cat(pos_embeddings, dim=1)
-
-        x = tok_emb + pos_emb
-
-        x = self.llm(
-            inputs_embeds=x,
-            attention_mask=attention_mask,
-            output_hidden_states=True,
-            return_dict=True,
-        )
-
-        hidden_states = x.hidden_states[-1]
-
-        outputs = {}
-        current_idx = 0
-        for mod_name in self.modality_registry.names():
-            if mod_name in inputs:
-                input_tensor = inputs[mod_name]
-                seq_len = input_tensor.size(1)
-                hidden_state = hidden_states[:, current_idx : current_idx + seq_len]
-                outputs[mod_name] = self.decoders[mod_name](hidden_state)
-                current_idx += seq_len
-
-        if targets is not None:
-            # if we are given some desired targets also calculate the loss
-            loss = 0
-            for mod_name in self.modality_registry.names():
-                target = targets[mod_name]
-                mod_config = self.modality_registry.get_config(mod_name)
-                pred = outputs[mod_name]
-                loss += F.huber_loss(pred, target) * mod_config.loss_weight
-            loss /= len(self.modality_registry.names())
-        else:
-            loss = None
-
-        return outputs, loss
-
     @torch.no_grad()
     def generate_with_modality_prompts(
         self, text_prompt, modality_requests, max_new_tokens=50, temperature=0.7
