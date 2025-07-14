@@ -80,7 +80,7 @@ def process_galaxy_wrapper(galdict, func):
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a 4B LLM backbone AstroPT model on DESI galaxy imagery
-    out_dir = "logs/qwen8B"
+    out_dir = "logs/smollm3B"
     eval_interval = 100
     log_interval = 10
     checkpoint_interval = 5000
@@ -115,7 +115,7 @@ if __name__ == "__main__":
     # Create modality registry
     modality_registry = ModalityRegistry(modalities)
     # Which backbone and LoRA rank do we use?
-    llm_model_name = "Qwen/Qwen3-4B"
+    llm_model_name = "HuggingFaceTB/SmolLM3-3B-Base"
     lora_r = 1024
     # Choose tokenisers from "affine" and "aim"
     tokeniser = "affine"
