@@ -393,7 +393,6 @@ if __name__ == "__main__":
                 B = to_device(next(dl), device=device)
                 with ctx:
                     logits, loss = model(B["X"], targets=B["Y"])
-                print(loss)
                 losses[k] = loss.item()
             out[split]["dummy"] = losses.mean()
         model.train()
@@ -410,7 +409,6 @@ if __name__ == "__main__":
                 if "images" in modality_registry.names():
                     Yim = torch.stack([yy[0]["data"].to(device) for yy in B["Y"]["modality_infos"]])
                     b, t, c = Yim.size()
-                    zero_block = torch.zeros((b, 1, c)).to(device)
                     Yim = torch.stack([vds.antispiralise(yy) for yy in Yim])
                     im_patch = modality_registry.get_config("images").patch_size
                     Yim = einops.rearrange(
@@ -421,7 +419,7 @@ if __name__ == "__main__":
                         h=image_size // im_patch,
                         w=image_size // im_patch,
                     )
-                    Pim = torch.cat((zero_block, P["images"]), dim=1)
+                    Pim = P["images"]
                     if spiral:
                         Pim = torch.stack([vds.antispiralise(pp) for pp in Pim])
                     Pim = einops.rearrange(

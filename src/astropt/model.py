@@ -683,7 +683,7 @@ class GPT(nn.Module):
                     output_mod_info[mod_name] = []
                 output_mod_info[mod_name].append({
                     "batch_idx": batch_idx,
-                    "start_pos": start_pos + 1,
+                    "start_pos": start_pos - 1,
                     "length": length,
                 })
 
@@ -717,15 +717,11 @@ class GPT(nn.Module):
             target_modality_infos = targets["modality_infos"]
             loss = 0
             for mod_name in decoded_outputs.keys():
-                mod_targets = torch.stack([t.squeeze()["data"] for t in target_modality_infos], dim=0)
-                print(mod_targets.shape)
+                mod_targets = torch.stack([t[0]["data"] for t in target_modality_infos], dim=0)
                 target = mod_targets
                 mod_config = self.modality_registry.get_config(mod_name)
                 pred = decoded_outputs[mod_name]
-                print(pred.shape)
-                exit(0)
                 loss += F.huber_loss(pred, target) * mod_config.loss_weight
-                print(loss)
             loss /= len(decoded_outputs)
         else:
             loss = None
