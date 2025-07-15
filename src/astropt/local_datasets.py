@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from astropy.io import fits
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, IterableDataset
 from torchvision import io
 from torch.nn.utils.rnn import pad_sequence
 
@@ -401,3 +401,233 @@ class MetadataDataset(Dataset):
             "metadata_positions": metadata_positions,
             "idx": idx,
         }
+
+
+class LLMModalityDataset(IterableDataset):
+    """
+    Dataset that creates LLM-compatible sequences with special tokens for modalities.
+    Raw modality data is preserved for model encoding.
+    """
+    
+    def __init__(
+        self, 
+        hf_dataset, 
+        modality_registry, 
+        tokenizer,
+        special_token_ids,
+        transforms=None,
+        random_order=True,
+        text_prompt=None
+    ):
+        """
+        Args:
+            hf_dataset: Hugging Face dataset
+            modality_registry: ModalityRegistry instance
+            tokenizer: HF tokenizer with special tokens
+            special_token_ids: Dict mapping special token strings to IDs
+            transforms: Optional transforms dict
+            random_order: Whether to randomize modality order per sample
+            text_prompt: Optional text prompt to prepend
+        """
+        self.dataset = hf_dataset
+        self.modality_registry = modality_registry
+        self.tokenizer = tokenizer
+        self.special_token_ids = special_token_ids
+        self.transforms = transforms if transforms is not None else {}
+        self.random_order = random_order
+        self.text_prompt = text_prompt
+
+    def __len__(self):
+        return len(self.dataset)
+
+    @staticmethod
+    def _spiral(n):
+        """
+        generate a spiral index array of side length 'n'
+        there must be a better way to do this: any suggestions?
+        """
+        a = np.arange(n * n)
+        b = a.reshape((n, n))
+        m = None
+        for i in range(n, 0, -2):
+            m = np.r_[m, b[0, :], b[1:, -1], b[-1, :-1][::-1], b[1:-1, 0][::-1]]
+            b = b[1:-1, 1:-1]
+        a[list(m[1:])] = list(a)
+        a = abs(a - n * n + 1)
+        return a.reshape((n, n))
+
+    def spiralise(self, galaxy):
+        """
+        Change ViT patch ordering to a 'spiral order'. See Fig 8 in
+        https://arxiv.org/pdf/2401.08541.pdf for an illustration.
+
+        Alternate function available here:
+        https://www.procook.co.uk/product/procook-spiralizer-black-and-stainless-steel
+        """
+        # Generate a spiralised matrix and then flatten it to the same shape as 'galaxy'
+        indices = einops.rearrange(
+            self._spiral(int(np.sqrt(len(galaxy)))),
+            "h w -> (h w)",
+        )
+        assert len(indices) == len(galaxy), (
+            "tokenised galaxy must have a square rootable length!"
+        )
+        spiraled = [ii for _, ii in sorted(zip(indices, galaxy))]
+        return (
+            torch.stack(spiraled)
+            if isinstance(spiraled[0], torch.Tensor)
+            else np.stack(spiraled)
+        )
+
+    def antispiralise(self, galaxy):
+        """
+        Change ViT patch ordering from spiral to raster order. See 'spiralise'.
+        """
+        # Generate a spiralised matrix and then flatten it to the same shape as 'galaxy'
+        indices = einops.rearrange(
+            self._spiral(int(np.sqrt(len(galaxy)))),
+            "h w -> (h w)",
+        )
+        assert len(indices) == len(galaxy), (
+            "tokenised galaxy must have a square rootable length!"
+        )
+        antispiraled = [galaxy[ii] for ii in indices]
+        return (
+            torch.stack(antispiraled)
+            if isinstance(antispiraled[0], torch.Tensor)
+            else np.stack(antispiraled)
+        )
+
+    def process_galaxy(self, raw_galaxy):
+        """Process galaxy image into patches (from original code)"""
+        patch_size = self.modality_registry.get_config("images").patch_size
+        patch_galaxy = einops.rearrange(
+            raw_galaxy,
+            "c (h p1) (w p2) -> (h w) (p1 p2 c)",
+            p1=patch_size,
+            p2=patch_size,
+        )
+        
+        if "images" in self.transforms:
+            patch_galaxy = self.transforms["images"](patch_galaxy)
+        patch_galaxy = self.spiralise(patch_galaxy)
+            
+        return patch_galaxy
+
+    def create_sequence_structure(self, sample_data):
+        """
+        Create sequence structure with special tokens.
+        Returns token sequence and modality metadata (no encoding).
+        """
+        sequence_parts = []
+        modality_info = []  # Store modality data and positions
+        current_pos = 0
+
+        # Optional text prompt at the beginning
+        if self.text_prompt is not None:
+            prompt_tokens = self.tokenizer(
+                self.text_prompt, return_tensors="pt", add_special_tokens=False
+            )
+            sequence_parts.append(prompt_tokens.input_ids.squeeze(0))
+            current_pos += prompt_tokens.input_ids.shape[1]
+
+        # Get modality order (random or fixed)
+        if self.random_order:
+            modality_order = random.sample(
+                self.modality_registry.names(), 
+                len(self.modality_registry.names())
+            )
+        else:
+            modality_order = self.modality_registry.names()
+
+        for mod_name in modality_order:
+            if mod_name in sample_data:
+                begin_token_id = self.special_token_ids[f"<|begin_{mod_name}|>"]
+                begin_token = torch.tensor([begin_token_id], dtype=torch.long)
+                sequence_parts.append(begin_token)
+                current_pos += 1
+
+                mod_data = sample_data[mod_name]
+                mod_pos = sample_data[mod_name + "_positions"]
+                seq_len = mod_data.shape[0]  # Number of patches/tokens
+                
+                modality_info.append({
+                    "name": mod_name,
+                    "start_pos": current_pos,
+                    "length": seq_len,
+                    "data": mod_data,
+                    "positions": mod_pos,
+                })
+
+                # Add placeholder tokens for modality data
+                placeholder_tokens = self.special_token_ids[f"<|{mod_name}|>"]
+                for _ in range(seq_len):
+                    sequence_parts.append(torch.tensor([placeholder_tokens], dtype=torch.long))
+                current_pos += seq_len
+
+                end_token_id = self.special_token_ids[f"<|end_{mod_name}|>"]
+                end_token = torch.tensor([end_token_id], dtype=torch.long)
+                sequence_parts.append(end_token)
+                current_pos += 1
+
+        token_sequence = torch.cat(sequence_parts, dim=0)
+        attention_mask = torch.ones_like(token_sequence)
+
+        return token_sequence, attention_mask, modality_info
+
+    def __iter__(self):
+        """Get a single sample with sequence structure"""
+        for raw_sample in self.dataset:
+            sample_data = {}
+            
+            if "image_crop" in raw_sample:
+                raw_galaxy = torch.from_numpy(
+                    np.array(raw_sample["image_crop"]).swapaxes(0, 2)
+                ).to(torch.float)
+                patch_galaxy = self.process_galaxy(raw_galaxy)
+                
+                sample_data["images"] = patch_galaxy
+                sample_data["images_positions"] = torch.arange(
+                    0, len(patch_galaxy), dtype=torch.long
+                )
+
+            token_sequence, attention_mask, modality_info = self.create_sequence_structure(sample_data)
+
+            yield {
+                "token_sequence": token_sequence,
+                "attention_mask": attention_mask,
+                "modality_info": modality_info,
+            }
+
+
+def llm_collate_fn(batch):
+    """
+    Collate function that pads sequences and groups modality info.
+    """
+    def _target_modality_info(modality_info):
+        """ Update modality info for target array """
+        return [
+            {**item, 'start_pos': item['start_pos'] - 1} 
+            for item in modality_info
+        ]
+        
+    token_sequences = [item["token_sequence"] for item in batch]
+    attention_masks = [item["attention_mask"] for item in batch]
+    modality_infos = [item["modality_info"] for item in batch]
+
+    # Pad sequences to same length
+    padded_tokens = pad_sequence(token_sequences, batch_first=True, padding_value=0)
+    padded_attention = pad_sequence(attention_masks, batch_first=True, padding_value=0)
+
+    X = {
+        "token_sequences": padded_tokens[:, :-1].clone(),
+        "attention_masks": padded_attention[:, :-1].clone(),
+        "modality_infos": modality_infos,
+    }
+    Y = {
+        "token_sequences": padded_tokens[:, 1:].clone(),
+        "attention_masks": padded_attention[:, 1:].clone(),
+        "modality_infos": [_target_modality_info(info) for info in modality_infos],
+    }
+    
+    return {"X": X, "Y": Y}

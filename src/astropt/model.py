@@ -639,74 +639,6 @@ class GPT(nn.Module):
 
         return outputs, loss
 
-    def _create_modality_sequence(self, inputs, text_prompt=None):
-        """Create a mixed sequence with special tokens and modality data"""
-        sequence_parts = []
-        attention_mask_parts = []
-        modality_map = {}  # Track where each modality appears in sequence
-        current_pos = 0
-
-        # Optional text prompt at the beginning
-        if text_prompt is not None:
-            prompt_tokens = self.tokenizer(
-                text_prompt, return_tensors="pt", add_special_tokens=False
-            )
-            sequence_parts.append(prompt_tokens.input_ids)
-            attention_mask_parts.append(prompt_tokens.attention_mask)
-            current_pos += prompt_tokens.input_ids.shape[1]
-
-        # Process each modality
-        for mod_name in self.modality_registry.names():
-            if mod_name in inputs:
-                # Add begin token
-                begin_token_id = self.special_token_ids[f"<|begin_{mod_name}|>"]
-                begin_token = torch.tensor(
-                    [[begin_token_id]], device=inputs[mod_name].device
-                )
-                sequence_parts.append(begin_token)
-                attention_mask_parts.append(torch.ones_like(begin_token))
-                current_pos += 1
-
-                # Encode modality data to embeddings
-                input_tensor = inputs[mod_name]
-                pos = inputs[mod_name + "_positions"]
-
-                mod_embeddings = self.encoders[mod_name](input_tensor)
-                pos_embeddings = self.embedders[mod_name](pos)
-                combined_embeddings = mod_embeddings + pos_embeddings
-
-                # Store modality position for later decoding
-                modality_map[mod_name] = {
-                    "start": current_pos,
-                    "length": combined_embeddings.shape[1],
-                    "embeddings": combined_embeddings,
-                }
-
-                # Create placeholder tokens for modality data
-                placeholder_tokens = torch.zeros(
-                    (1, combined_embeddings.shape[1]),
-                    dtype=torch.long,
-                    device=inputs[mod_name].device,
-                )
-                sequence_parts.append(placeholder_tokens)
-                attention_mask_parts.append(torch.ones_like(placeholder_tokens))
-                current_pos += combined_embeddings.shape[1]
-
-                # Add end token
-                end_token_id = self.special_token_ids[f"<|end_{mod_name}|>"]
-                end_token = torch.tensor(
-                    [[end_token_id]], device=inputs[mod_name].device
-                )
-                sequence_parts.append(end_token)
-                attention_mask_parts.append(torch.ones_like(end_token))
-                current_pos += 1
-
-        # Concatenate all parts
-        input_ids = torch.cat(sequence_parts, dim=1)
-        attention_mask = torch.cat(attention_mask_parts, dim=1)
-
-        return input_ids, attention_mask, modality_map
-
     def _forward_llm(
         self,
         inputs,
@@ -715,51 +647,90 @@ class GPT(nn.Module):
         target_modality=None,
         attention_mask=None,
     ):
-        # Create sequence with special tokens
-        input_ids, attention_mask, modality_map = self._create_modality_sequence(inputs)
+        token_sequences = inputs["token_sequences"]
+        attention_masks = inputs["attention_masks"]
+        modality_infos = inputs["modality_infos"]
 
-        # Get initial embeddings from LLM
-        initial_embeddings = self.llm.get_input_embeddings()(input_ids)
+        batch_size = token_sequences.shape[0]
+
+        initial_embeddings = self.llm.get_input_embeddings()(token_sequences)
 
         # Replace placeholder embeddings with actual modality embeddings
         final_embeddings = initial_embeddings.clone()
-        for mod_name, mod_info in modality_map.items():
-            start_idx = mod_info["start"]
-            end_idx = start_idx + mod_info["length"]
-            final_embeddings[:, start_idx:end_idx, :] = mod_info["embeddings"]
+        # TODO can we refactor this loop?
+        output_mod_info = {}
+        for batch_idx, mod_info_batch in enumerate(modality_infos):
+            # batch loop
+            for mod_info in mod_info_batch:
+                # mod type loop
+                mod_name = mod_info["name"]
+                start_pos = mod_info["start_pos"]
+                length = mod_info["length"]
+                mod_data = mod_info["data"].unsqueeze(0)  # Add batch dim
+                mod_positions = mod_info["positions"].unsqueeze(0)
+                
+                # Encode modality data
+                mod_embeddings = self.encoders[mod_name](mod_data)
+                pos_embeddings = self.embedders[mod_name](mod_positions)
+                combined_embeddings = mod_embeddings + pos_embeddings
+                
+                # Replace placeholder embeddings
+                end_pos = start_pos + length
+                final_embeddings[batch_idx, start_pos:end_pos, :] = combined_embeddings.squeeze(0)
+                
+                # Store for output decoding
+                if mod_name not in output_mod_info:
+                    output_mod_info[mod_name] = []
+                output_mod_info[mod_name].append({
+                    "batch_idx": batch_idx,
+                    "start_pos": start_pos + 1,
+                    "length": length,
+                })
 
         # Forward through LLM with custom embeddings
         x = self.llm(
             inputs_embeds=final_embeddings,
-            attention_mask=attention_mask,
+            attention_mask=attention_masks,
             output_hidden_states=True,
             return_dict=True,
         )
 
         hidden_states = x.hidden_states[-1]
 
-        # Extract outputs for each modality
-        outputs = {}
-        for mod_name, mod_info in modality_map.items():
-            start_idx = mod_info["start"]
-            end_idx = start_idx + mod_info["length"]
-            mod_hidden = hidden_states[:, start_idx:end_idx, :]
-            outputs[mod_name] = self.decoders[mod_name](mod_hidden)
-
+        # Decode outputs for each modality
+        decoded_outputs = {}
+        for mod_name, mod_outputs in output_mod_info.items():
+            batch_decoded = []
+            for mod_info in mod_outputs:
+                batch_idx = mod_info["batch_idx"]
+                start_pos = mod_info["start_pos"]
+                length = mod_info["length"]
+                
+                mod_hidden = hidden_states[batch_idx:batch_idx+1, start_pos:start_pos+length, :]
+                decoded = self.decoders[mod_name](mod_hidden)
+                batch_decoded.append(decoded)
+            
+            decoded_outputs[mod_name] = torch.cat(batch_decoded, dim=0)
+ 
         # Calculate loss if targets provided
         if targets is not None:
+            target_modality_infos = targets["modality_infos"]
             loss = 0
-            for mod_name in modality_map.keys():
-                if mod_name in targets:
-                    target = targets[mod_name]
-                    mod_config = self.modality_registry.get_config(mod_name)
-                    pred = outputs[mod_name]
-                    loss += F.huber_loss(pred, target) * mod_config.loss_weight
-            loss /= len(modality_map)
+            for mod_name in decoded_outputs.keys():
+                mod_targets = torch.stack([t.squeeze()["data"] for t in target_modality_infos], dim=0)
+                print(mod_targets.shape)
+                target = mod_targets
+                mod_config = self.modality_registry.get_config(mod_name)
+                pred = decoded_outputs[mod_name]
+                print(pred.shape)
+                exit(0)
+                loss += F.huber_loss(pred, target) * mod_config.loss_weight
+                print(loss)
+            loss /= len(decoded_outputs)
         else:
             loss = None
 
-        return outputs, loss
+        return decoded_outputs, loss
 
     @torch.no_grad()
     def generate_with_modality_prompts(
