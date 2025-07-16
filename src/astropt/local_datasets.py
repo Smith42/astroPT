@@ -521,7 +521,13 @@ class LLMModalityDataset(IterableDataset):
         Returns token sequence and modality metadata (no encoding).
         """
         sequence_parts = []
-        modality_info = []  # Store modality data and positions
+        modality_info = {
+            "names": [],
+            "starts": [],
+            "lengths": [],
+            "data": [],
+            "positions": []
+        }
         current_pos = 0
 
         # Optional text prompt at the beginning
@@ -552,13 +558,11 @@ class LLMModalityDataset(IterableDataset):
                 mod_pos = sample_data[mod_name + "_positions"]
                 seq_len = mod_data.shape[0]  # Number of patches/tokens
                 
-                modality_info.append({
-                    "name": mod_name,
-                    "start_pos": current_pos,
-                    "length": seq_len,
-                    "data": mod_data,
-                    "positions": mod_pos,
-                })
+                modality_info["names"].append(mod_name)
+                modality_info["starts"].append(current_pos)
+                modality_info["lengths"].append(seq_len)
+                modality_info["data"].append(mod_data)
+                modality_info["positions"].append(mod_pos)
 
                 # Add placeholder tokens for modality data
                 placeholder_tokens = self.special_token_ids[f"<|{mod_name}|>"]
@@ -581,7 +585,7 @@ class LLMModalityDataset(IterableDataset):
         for raw_sample in self.dataset:
             sample_data = {}
             for key in raw_sample.keys():
-                if (key not in ["dr8_id", "image_crop"]) and (raw_sample[key] is not None):
+                if (key not in ["dr8_id", "image"]) and (raw_sample[key] is not None):
                     # assume all other inputs that aren't image crop or dr8_id
                     # are parameters
                     sample_data[key] = torch.tensor([raw_sample[key]])
@@ -589,7 +593,7 @@ class LLMModalityDataset(IterableDataset):
             
             if "image_crop" in raw_sample:
                 raw_galaxy = torch.from_numpy(
-                    np.array(raw_sample["image_crop"]).swapaxes(0, 2)
+                    np.array(raw_sample["image"]).swapaxes(0, 2)
                 ).to(torch.float)
                 patch_galaxy = self.process_galaxy(raw_galaxy)
                 
@@ -613,10 +617,9 @@ def llm_collate_fn(batch):
     """
     def _target_modality_info(modality_info):
         """ Update modality info for target array """
-        return [
-            {**item, 'start_pos': item['start_pos'] - 1} 
-            for item in modality_info
-        ]
+        result = modality_info.copy()
+        result["starts"] = modality_info["starts"] - 1
+        return results
         
     token_sequences = [item["token_sequence"] for item in batch]
     attention_masks = [item["attention_mask"] for item in batch]
