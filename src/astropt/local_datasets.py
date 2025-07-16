@@ -4,6 +4,7 @@ A place to store our pytorch datasets.
 
 import os
 import sys
+import random
 
 import einops
 import numpy as np
@@ -579,6 +580,12 @@ class LLMModalityDataset(IterableDataset):
         """Get a single sample with sequence structure"""
         for raw_sample in self.dataset:
             sample_data = {}
+            for key in raw_sample.keys():
+                if (key not in ["dr8_id", "image_crop"]) and (raw_sample[key] is not None):
+                    # assume all other inputs that aren't image crop or dr8_id
+                    # are parameters
+                    sample_data[key] = torch.tensor([raw_sample[key]])
+                    sample_data[f"{key}_positions"] = torch.tensor([0], dtype=torch.long)
             
             if "image_crop" in raw_sample:
                 raw_galaxy = torch.from_numpy(

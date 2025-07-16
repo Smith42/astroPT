@@ -717,11 +717,16 @@ class GPT(nn.Module):
             target_modality_infos = targets["modality_infos"]
             loss = 0
             for mod_name in decoded_outputs.keys():
-                mod_targets = torch.stack([t[0]["data"] for t in target_modality_infos], dim=0)
-                target = mod_targets
+                mod_targets = []
+                # TODO can we simplify this loop?
+                for batch_t in target_modality_infos:
+                    for t in batch_t:
+                        if t["name"] == mod_name:
+                            mod_targets.append(t["data"])
+                target = torch.stack(mod_targets, dim=0)
                 mod_config = self.modality_registry.get_config(mod_name)
                 pred = decoded_outputs[mod_name]
-                loss += F.huber_loss(pred, target) * mod_config.loss_weight
+                loss += F.huber_loss(pred.squeeze(), target.squeeze()) * mod_config.loss_weight
             loss /= len(decoded_outputs)
         else:
             loss = None

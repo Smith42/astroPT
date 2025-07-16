@@ -101,9 +101,21 @@ if __name__ == "__main__":
     spiral = True  # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     image_size = 256
-    num_workers = 32 # 64
+    num_workers = 64
     n_chan = 3  # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
     # Define modalities configuration
+    galaxy_params = [
+        'redshift',                                   # Distance/cosmological context
+        'elpetro_mass_log',                           # Stellar mass - fundamental property
+        'u_minus_r',                                  # Color - stellar population age
+        'petro_th50',                                 # Size - half-light radius
+        'sersic_n',                                   # Profile shape - concentration
+        'elpetro_ba',                                 # Axis ratio - inclination/shape
+        'smooth-or-featured_smooth_fraction',         # Morphology - elliptical vs spiral
+        'has-spiral-arms_yes_fraction',               # Spiral structure presence
+        'bar_strong_fraction',                        # Bar strength - dynamical state
+        'total_ssfr_avg'                              # Specific star formation rate
+    ]
     modalities = [
         ModalityConfig(
             name="images",
@@ -270,23 +282,28 @@ if __name__ == "__main__":
         for token in special_tokens
     }
 
+    galaxies = load_dataset("Smith42/galaxies", streaming=stream_hf_dataset).select_columns(["dr8_id", "image_crop"])
+    metadata = load_dataset("Smith42/galaxies_metadata", streaming=stream_hf_dataset).select_columns(galaxy_params)
+    combined_train = concatenate_datasets([galaxies['train'], metadata['train']], axis=1)
+    combined_test = concatenate_datasets([galaxies['test'], metadata['test']], axis=1)
+
     transforms = {"images": data_transforms()}
     tds = LLMModalityDataset(
-        hf_dataset=load_dataset("Smith42/galaxies", split="train", streaming=stream_hf_dataset),
+        hf_dataset=combined_train,
         modality_registry=modality_registry,
         tokenizer=model.tokenizer,
         special_token_ids=model.special_token_ids,
         transforms=transforms,
-        random_order=False,
+        random_order=True,
         text_prompt=None,
     )
     vds = LLMModalityDataset(
-        hf_dataset=load_dataset("Smith42/galaxies", split="test", streaming=stream_hf_dataset),
+        hf_dataset=combined_test,
         modality_registry=modality_registry,
         tokenizer=model.tokenizer,
         special_token_ids=model.special_token_ids,
         transforms=transforms,
-        random_order=False,
+        random_order=True,
         text_prompt=None,
     )
     
@@ -387,14 +404,29 @@ if __name__ == "__main__":
             [tdl, vdl],
             ["train", "val"],
         ):
+            # TODO clean this up
             out[split] = {}
             losses = torch.zeros(eval_iters)
+            mode_losses = {name: [] for name in modality_registry.names()}
             for k in range(eval_iters):
                 B = to_device(next(dl), device=device)
                 with ctx:
                     logits, loss = model(B["X"], targets=B["Y"])
+                # extract procced modalities from Y
+                for mode in modality_registry.names():
+                    Y_mode_list = []
+                    if mode in logits:
+                        for batch_yy in B["Y"]["modality_infos"]:
+                            for yy in batch_yy:
+                                if yy["name"] == mode:
+                                    Y_mode_list.append(yy["data"].detach().squeeze().cpu())
+                        mode_losses[mode].append(np.mean(np.abs(np.array(
+                            logits[mode].to(torch.float).detach().squeeze().cpu().numpy() - np.array(Y_mode_list)
+                        ))))
                 losses[k] = loss.item()
-            out[split]["dummy"] = losses.mean()
+            out[split]["all"] = losses.mean()
+            for name in modality_registry.names():
+                out[split][name] = np.array(mode_losses[name]).mean()
         model.train()
         return out
 
@@ -407,7 +439,12 @@ if __name__ == "__main__":
             with ctx:
                 P, loss = model(B["X"], B["Y"])
                 if "images" in modality_registry.names():
-                    Yim = torch.stack([yy[0]["data"].to(device) for yy in B["Y"]["modality_infos"]])
+                    Yim = []
+                    for batch_yy in B["Y"]["modality_infos"]:
+                        for yy in batch_yy:
+                            if yy["name"] == "images":
+                                Yim.append(yy["data"].to(device))
+                    Yim = torch.stack(Yim)
                     b, t, c = Yim.size()
                     Yim = torch.stack([vds.antispiralise(yy) for yy in Yim])
                     im_patch = modality_registry.get_config("images").patch_size
@@ -443,8 +480,8 @@ if __name__ == "__main__":
                         mmn = lambda x: 255*(x - x.min())/(x.max() - x.min())
                         wandb.log(
                             {
-                                "Y": [wandb.Image(mmn(im.swapaxes(0, -1))) for im in Yim],
-                                "P": [wandb.Image(mmn(im.swapaxes(0, -1))) for im in Pim],
+                                "Y": [wandb.Image(mmn(im.swapaxes(0, -1))) for im in Yim[:32]],
+                                "P": [wandb.Image(mmn(im.swapaxes(0, -1))) for im in Pim[:32]],
                             }
                         )
 
