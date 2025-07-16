@@ -660,14 +660,11 @@ class GPT(nn.Module):
         # TODO can we refactor this loop?
         output_mod_info = {}
         for batch_idx, mod_info_batch in enumerate(modality_infos):
-            # batch loop
-            for mod_info in mod_info_batch:
-                # mod type loop
-                mod_name = mod_info["name"]
-                start_pos = mod_info["start_pos"]
-                length = mod_info["length"]
-                mod_data = mod_info["data"].unsqueeze(0)  # Add batch dim
-                mod_positions = mod_info["positions"].unsqueeze(0)
+            for ii, mod_name in enumerate(mod_info_batch["names"]):
+                start_pos = mod_info_batch["starts"][ii].item()
+                length = mod_info_batch["lengths"][ii].item()
+                mod_data = mod_info_batch["data"][ii].unsqueeze(0)  # Add batch dim
+                mod_positions = mod_info_batch["positions"][ii].unsqueeze(0)
                 
                 # Encode modality data
                 mod_embeddings = self.encoders[mod_name](mod_data)
@@ -720,9 +717,9 @@ class GPT(nn.Module):
                 mod_targets = []
                 # TODO can we simplify this loop?
                 for batch_t in target_modality_infos:
-                    for t in batch_t:
-                        if t["name"] == mod_name:
-                            mod_targets.append(t["data"])
+                    for ii, name in enumerate(batch_t["names"]):
+                        if name == mod_name:
+                            mod_targets.append(batch_t["data"][ii])
                 target = torch.stack(mod_targets, dim=0)
                 mod_config = self.modality_registry.get_config(mod_name)
                 pred = decoded_outputs[mod_name]
