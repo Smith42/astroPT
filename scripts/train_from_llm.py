@@ -79,6 +79,18 @@ def to_device(x, device):
     if isinstance(x, list): return [to_device(i, device) for i in x]
     return x
 
+
+def stringify(input_text, modality_infos):
+    final_text = input_text.copy()
+    for batch_idx, mod_info_batch in enumerate(modality_infos):
+        for ii, mod_name in enumerate(mod_info_batch["names"]):
+            start_pos = mod_info_batch["starts"][ii]
+            length = mod_info_batch["lengths"][ii]
+            if mod_name != "images":
+                mod_data = mod_info_batch["data"][ii].unsqueeze(0)  # Add batch dim
+                end_pos = start_pos + length
+                final_text[batch_idx, start_pos:end_pos, :] = mod_name.squeeze(0)
+
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a 4B LLM backbone AstroPT model on DESI galaxy imagery
@@ -94,10 +106,10 @@ if __name__ == "__main__":
     )
     init_from = "scratch"  # 'scratch' or 'resume'
     use_hf = True  # use the huggingface dataset version of our galz
-    stream_hf_dataset = True  # stream the galaxies from huggingface
+    stream_hf_dataset = False  # stream the galaxies from huggingface
     # data
-    gradient_accumulation_steps = 5 * 8  # used to simulate larger batch sizes
-    batch_size = 8  # if gradient_accumulation_steps > 1, this is the micro-batch size
+    gradient_accumulation_steps = 5 #* 8  # used to simulate larger batch sizes
+    batch_size = 64 # if gradient_accumulation_steps > 1, this is the micro-batch size
     spiral = True  # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     image_size = 256
@@ -293,7 +305,7 @@ if __name__ == "__main__":
         for token in special_tokens
     }
 
-    galaxies = load_dataset("Smith42/galaxies", streaming=stream_hf_dataset).select_columns(["dr8_id", "image_crop"])
+    galaxies = load_dataset("Smith42/galaxies", streaming=stream_hf_dataset).select_columns(["dr8_id", "image_crop"]).rename_column("image_crop", "image")
     metadata = load_dataset("Smith42/galaxies_metadata", streaming=stream_hf_dataset).select_columns(galaxy_params)
     combined_train = concatenate_datasets([galaxies['train'], metadata['train']], axis=1)
     combined_test = concatenate_datasets([galaxies['test'], metadata['test']], axis=1)
@@ -427,10 +439,10 @@ if __name__ == "__main__":
                 for mode in modality_registry.names():
                     Y_mode_list = []
                     if mode in logits:
-                        for batch_yy in B["Y"]["modality_infos"]:
-                            for yy in batch_yy:
-                                if yy["name"] == mode:
-                                    Y_mode_list.append(yy["data"].detach().squeeze().cpu())
+                        for mod_info in B["Y"]["modality_infos"]:
+                            for ii, name in enumerate(mod_info["names"]):
+                                if name == mode:
+                                    Y_mode_list.append(mod_info["data"][ii].detach().squeeze().cpu())
                         mode_losses[mode].append(np.mean(np.abs(np.array(
                             logits[mode].to(torch.float).detach().squeeze().cpu().numpy() - np.array(Y_mode_list)
                         ))))
@@ -448,13 +460,13 @@ if __name__ == "__main__":
             f, axs = plt.subplots(8, 2, figsize=(3, 12), constrained_layout=True)
             B = to_device(next(vdl), device=device)
             with ctx:
-                P, loss = model(B["X"], B["Y"])
+                logits, loss = model(B["X"], B["Y"])
                 if "images" in modality_registry.names():
                     Yim = []
-                    for batch_yy in B["Y"]["modality_infos"]:
-                        for yy in batch_yy:
-                            if yy["name"] == "images":
-                                Yim.append(yy["data"].to(device))
+                    for mod_info in B["Y"]["modality_infos"]:
+                        for ii, name in enumerate(mod_info["names"]):
+                            if name == "images":
+                                Yim.append(mod_info["data"][ii].to(device))
                     Yim = torch.stack(Yim)
                     b, t, c = Yim.size()
                     Yim = torch.stack([vds.antispiralise(yy) for yy in Yim])
@@ -638,7 +650,7 @@ if __name__ == "__main__":
                 )
 
             with ctx:
-                logits, loss = model(B["X"], targets=B["Y"])
+                _, loss = model(B["X"], targets=B["Y"])
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
             B = to_device(next(tdl), device=device)
             # backward pass, with gradient scaling if training in fp16
