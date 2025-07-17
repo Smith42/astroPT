@@ -125,6 +125,17 @@ if __name__ == "__main__":
             embed_pos=True,
             pos_input_size=1,
         ),
+        *[
+            ModalityConfig(
+                name=param,
+                input_size=1,
+                patch_size=1,
+                loss_weight=1,
+                embed_pos=True,
+                pos_input_size=1,
+            )
+            for param in galaxy_params
+        ]
     ]
     # Create modality registry
     modality_registry = ModalityRegistry(modalities)

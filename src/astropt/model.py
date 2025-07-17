@@ -661,8 +661,8 @@ class GPT(nn.Module):
         output_mod_info = {}
         for batch_idx, mod_info_batch in enumerate(modality_infos):
             for ii, mod_name in enumerate(mod_info_batch["names"]):
-                start_pos = mod_info_batch["starts"][ii].item()
-                length = mod_info_batch["lengths"][ii].item()
+                start_pos = mod_info_batch["starts"][ii]
+                length = mod_info_batch["lengths"][ii]
                 mod_data = mod_info_batch["data"][ii].unsqueeze(0)  # Add batch dim
                 mod_positions = mod_info_batch["positions"][ii].unsqueeze(0)
                 

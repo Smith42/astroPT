@@ -591,7 +591,7 @@ class LLMModalityDataset(IterableDataset):
                     sample_data[key] = torch.tensor([raw_sample[key]])
                     sample_data[f"{key}_positions"] = torch.tensor([0], dtype=torch.long)
             
-            if "image_crop" in raw_sample:
+            if "image" in raw_sample:
                 raw_galaxy = torch.from_numpy(
                     np.array(raw_sample["image"]).swapaxes(0, 2)
                 ).to(torch.float)
@@ -618,8 +618,8 @@ def llm_collate_fn(batch):
     def _target_modality_info(modality_info):
         """ Update modality info for target array """
         result = modality_info.copy()
-        result["starts"] = modality_info["starts"] - 1
-        return results
+        result["starts"] = [start - 1 for start in modality_info["starts"]]
+        return result
         
     token_sequences = [item["token_sequence"] for item in batch]
     attention_masks = [item["attention_mask"] for item in batch]
