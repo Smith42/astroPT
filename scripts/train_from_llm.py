@@ -65,7 +65,7 @@ def data_transforms():
     return transform
 
 def process_galaxy_wrapper(galdict, func):
-    patch_galaxy = func(np.array(galdict["image_crop"]).swapaxes(0, 2))
+    patch_galaxy = func(np.array(galdict["image"]).swapaxes(0, 2))
     return {
         "images": patch_galaxy.to(torch.float),
         "images_positions": torch.arange(
@@ -106,10 +106,10 @@ if __name__ == "__main__":
     )
     init_from = "scratch"  # 'scratch' or 'resume'
     use_hf = True  # use the huggingface dataset version of our galz
-    stream_hf_dataset = False  # stream the galaxies from huggingface
+    stream_hf_dataset = True  # stream the galaxies from huggingface
     # data
     gradient_accumulation_steps = 5 #* 8  # used to simulate larger batch sizes
-    batch_size = 64 # if gradient_accumulation_steps > 1, this is the micro-batch size
+    batch_size = 48 # if gradient_accumulation_steps > 1, this is the micro-batch size
     spiral = True  # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     image_size = 256
@@ -305,14 +305,13 @@ if __name__ == "__main__":
         for token in special_tokens
     }
 
-    galaxies = load_dataset("Smith42/galaxies", streaming=stream_hf_dataset).select_columns(["dr8_id", "image_crop"]).rename_column("image_crop", "image")
-    metadata = load_dataset("Smith42/galaxies_metadata", streaming=stream_hf_dataset).select_columns(galaxy_params)
-    combined_train = concatenate_datasets([galaxies['train'], metadata['train']], axis=1)
-    combined_test = concatenate_datasets([galaxies['test'], metadata['test']], axis=1)
+    galaxies = load_dataset(
+        "Smith42/galaxies", revision="v2.0", streaming=stream_hf_dataset
+    ).select_columns(["image"] + galaxy_params)
 
     transforms = {"images": data_transforms()}
     tds = LLMModalityDataset(
-        hf_dataset=combined_train,
+        hf_dataset=galaxies["train"],
         modality_registry=modality_registry,
         tokenizer=model.tokenizer,
         special_token_ids=model.special_token_ids,
@@ -321,7 +320,7 @@ if __name__ == "__main__":
         text_prompt=None,
     )
     vds = LLMModalityDataset(
-        hf_dataset=combined_test,
+        hf_dataset=galaxies["test"],
         modality_registry=modality_registry,
         tokenizer=model.tokenizer,
         special_token_ids=model.special_token_ids,
@@ -479,7 +478,7 @@ if __name__ == "__main__":
                         h=image_size // im_patch,
                         w=image_size // im_patch,
                     )
-                    Pim = P["images"]
+                    Pim = logits["images"]
                     if spiral:
                         Pim = torch.stack([vds.antispiralise(pp) for pp in Pim])
                     Pim = einops.rearrange(
@@ -557,7 +556,7 @@ if __name__ == "__main__":
         if iter_num % eval_interval == 0 and master_process:
             validate(iter_num, out_dir)
             losses = estimate_loss()
-            val_loss = np.mean(list(losses["val"].values()))
+            val_loss = losses["val"]["all"]
             print(
                 f"iter {iter_num}:\ntrain loss:\n{losses['train']}\nval loss:\n{losses['val']}"
             )
