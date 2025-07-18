@@ -21,6 +21,7 @@ import os
 import time
 from contextlib import nullcontext
 from functools import partial
+import itertools
 
 import einops
 import matplotlib.pyplot as plt
@@ -79,17 +80,24 @@ def to_device(x, device):
     if isinstance(x, list): return [to_device(i, device) for i in x]
     return x
 
-
 def stringify(input_text, modality_infos):
-    final_text = input_text.copy()
-    for batch_idx, mod_info_batch in enumerate(modality_infos):
-        for ii, mod_name in enumerate(mod_info_batch["names"]):
-            start_pos = mod_info_batch["starts"][ii]
-            length = mod_info_batch["lengths"][ii]
-            if mod_name != "images":
-                mod_data = mod_info_batch["data"][ii].unsqueeze(0)  # Add batch dim
-                end_pos = start_pos + length
-                final_text[batch_idx, start_pos:end_pos, :] = mod_name.squeeze(0)
+    final_text = model.tokenizer.convert_ids_to_tokens(input_text)
+    for ii, mod_name in enumerate(modality_infos["names"]):
+        start_pos = modality_infos["starts"][ii]
+        length = modality_infos["lengths"][ii]
+        if mod_name != "images":
+            mod_data = modality_infos["data"][ii]
+            end_pos = start_pos + length
+            final_text[start_pos] = f"{mod_data.squeeze().item():04f}"
+
+    for ii, mod_name in enumerate(modality_infos["names"]):
+        start_pos = modality_infos["starts"][ii]
+        length = modality_infos["lengths"][ii]
+        if mod_name == "images":
+            end_pos = start_pos + length
+            final_text = final_text[:start_pos + 1] + final_text[end_pos:]
+
+    return " ".join(final_text)
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
@@ -99,7 +107,7 @@ if __name__ == "__main__":
     log_interval = 10
     checkpoint_interval = 5000
     assert checkpoint_interval % eval_interval == 0
-    eval_iters = 10
+    eval_iters = 50
     eval_only = False  # if True, script exits right after the first eval
     always_save_checkpoint = (
         False  # if True, always save a checkpoint at each checkpoint_interval
@@ -142,7 +150,7 @@ if __name__ == "__main__":
                 name=param,
                 input_size=1,
                 patch_size=1,
-                loss_weight=1,
+                loss_weight=0.1, # less than the stable image training
                 embed_pos=True,
                 pos_input_size=1,
             )
@@ -168,7 +176,7 @@ if __name__ == "__main__":
     grad_clip = 1.0  # clip gradients at this value, or disable if == 0.0
     # learning rate decay settings
     decay_lr = True  # whether to decay the learning rate
-    warmup_iters = 2000  # how many steps to warm up for
+    warmup_iters = 1000  # how many steps to warm up for
     lr_decay_iters = 27000 * 1.1  # should be ~= max_iters per Chinchilla
     min_lr = (
         learning_rate / 10
@@ -305,13 +313,18 @@ if __name__ == "__main__":
         for token in special_tokens
     }
 
-    galaxies = load_dataset(
-        "Smith42/galaxies", revision="v2.0", streaming=stream_hf_dataset
+    galaxies_train = load_dataset(
+        "Smith42/galaxies", revision="v2.0", streaming=stream_hf_dataset, split="train",
     ).select_columns(["image"] + galaxy_params)
+    galaxies_train = itertools.cycle(galaxies_train)
+    galaxies_test = load_dataset(
+        "Smith42/galaxies", revision="v2.0", streaming=stream_hf_dataset, split="test",
+    ).select_columns(["image"] + galaxy_params)
+    galaxies_test = itertools.cycle(galaxies_test)
 
     transforms = {"images": data_transforms()}
     tds = LLMModalityDataset(
-        hf_dataset=galaxies["train"],
+        hf_dataset=galaxies_train,
         modality_registry=modality_registry,
         tokenizer=model.tokenizer,
         special_token_ids=model.special_token_ids,
@@ -320,7 +333,7 @@ if __name__ == "__main__":
         text_prompt=None,
     )
     vds = LLMModalityDataset(
-        hf_dataset=galaxies["test"],
+        hf_dataset=galaxies_test,
         modality_registry=modality_registry,
         tokenizer=model.tokenizer,
         special_token_ids=model.special_token_ids,
@@ -422,33 +435,39 @@ if __name__ == "__main__":
     def estimate_loss():
         out = {}
         model.eval()
+
+        P_data = {name: [] for name in modality_registry.names()}
+        Y_data = {name: [] for name in modality_registry.names()}
+
         for dl, split in zip(
             [tdl, vdl],
             ["train", "val"],
         ):
-            # TODO clean this up
             out[split] = {}
             losses = torch.zeros(eval_iters)
             mode_losses = {name: [] for name in modality_registry.names()}
             for k in range(eval_iters):
                 B = to_device(next(dl), device=device)
+                target_infos = B["Y"]["modality_infos"]
                 with ctx:
-                    logits, loss = model(B["X"], targets=B["Y"])
-                # extract procced modalities from Y
-                for mode in modality_registry.names():
-                    Y_mode_list = []
-                    if mode in logits:
-                        for mod_info in B["Y"]["modality_infos"]:
-                            for ii, name in enumerate(mod_info["names"]):
-                                if name == mode:
-                                    Y_mode_list.append(mod_info["data"][ii].detach().squeeze().cpu())
-                        mode_losses[mode].append(np.mean(np.abs(np.array(
-                            logits[mode].to(torch.float).detach().squeeze().cpu().numpy() - np.array(Y_mode_list)
-                        ))))
+                    pred_infos, loss = model(B["X"], targets=B["Y"])
+                for batch_idx in range(len(pred_infos)):
+                    P_info = pred_infos[batch_idx]
+                    Y_info = target_infos[batch_idx]
+                    for ii, pred_name in enumerate(P_info["names"]):
+                        mode_losses[pred_name].append(P_info["losses"][ii])
+                        if pred_name != "images":
+                            P_data[pred_name].append(P_info["data"][ii].squeeze().item())
+                            Y_data[pred_name].append(Y_info["data"][ii].squeeze().item())
                 losses[k] = loss.item()
             out[split]["all"] = losses.mean()
             for name in modality_registry.names():
                 out[split][name] = np.array(mode_losses[name]).mean()
+
+        if log_via_wandb:
+            for name in modality_registry.names():
+                wandb.log({name: wandb.Table(columns=["Y", "P"], data=list(zip(Y_data[name], P_data[name])))})
+
         model.train()
         return out
 
@@ -459,7 +478,11 @@ if __name__ == "__main__":
             f, axs = plt.subplots(8, 2, figsize=(3, 12), constrained_layout=True)
             B = to_device(next(vdl), device=device)
             with ctx:
-                logits, loss = model(B["X"], B["Y"])
+                pred_modality_infos, loss = model(B["X"], B["Y"])
+
+                print(stringify(B["Y"]["token_sequences"][0], B["Y"]["modality_infos"][0]))
+                print(stringify(B["Y"]["token_sequences"][0], pred_modality_infos[0]))
+
                 if "images" in modality_registry.names():
                     Yim = []
                     for mod_info in B["Y"]["modality_infos"]:
@@ -478,9 +501,12 @@ if __name__ == "__main__":
                         h=image_size // im_patch,
                         w=image_size // im_patch,
                     )
-                    Pim = logits["images"]
-                    if spiral:
-                        Pim = torch.stack([vds.antispiralise(pp) for pp in Pim])
+                    Pim = []
+                    for mod_info in pred_modality_infos:
+                        for ii, name in enumerate(mod_info["names"]):
+                            if name == "images":
+                                Pim.append(mod_info["data"][ii].to(device))
+                    Pim = torch.stack([vds.antispiralise(pp) for pp in Pim])
                     Pim = einops.rearrange(
                         Pim,
                         "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
@@ -585,7 +611,7 @@ if __name__ == "__main__":
                 f, axs = plt.subplots(
                     1,
                     len(losses["train"]) + 1,
-                    figsize=(12, 4),
+                    figsize=((len(losses["train"]) + 1) * 2, 2.5),
                     constrained_layout=True,
                 )
                 axs.ravel()[0].set_title("mean")

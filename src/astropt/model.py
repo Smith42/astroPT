@@ -657,7 +657,6 @@ class GPT(nn.Module):
 
         # Replace placeholder embeddings with actual modality embeddings
         final_embeddings = initial_embeddings.clone()
-        # TODO can we refactor this loop?
         output_mod_info = {}
         for batch_idx, mod_info_batch in enumerate(modality_infos):
             for ii, mod_name in enumerate(mod_info_batch["names"]):
@@ -675,15 +674,6 @@ class GPT(nn.Module):
                 end_pos = start_pos + length
                 final_embeddings[batch_idx, start_pos:end_pos, :] = combined_embeddings.squeeze(0)
                 
-                # Store for output decoding
-                if mod_name not in output_mod_info:
-                    output_mod_info[mod_name] = []
-                output_mod_info[mod_name].append({
-                    "batch_idx": batch_idx,
-                    "start_pos": start_pos - 1,
-                    "length": length,
-                })
-
         # Forward through LLM with custom embeddings
         x = self.llm(
             inputs_embeds=final_embeddings,
@@ -695,40 +685,50 @@ class GPT(nn.Module):
         hidden_states = x.hidden_states[-1]
 
         # Decode outputs for each modality
-        decoded_outputs = {}
-        for mod_name, mod_outputs in output_mod_info.items():
-            batch_decoded = []
-            for mod_info in mod_outputs:
-                batch_idx = mod_info["batch_idx"]
-                start_pos = mod_info["start_pos"]
-                length = mod_info["length"]
-                
+        pred_modality_infos = [
+           {"names": [], "starts": [], "lengths": [], "data": [], "positions": [], "losses": []}
+           for _ in range(batch_size)
+        ]
+        for batch_idx, mod_info_batch in enumerate(modality_infos):
+            for ii, mod_name in enumerate(mod_info_batch["names"]):
+                start_pos = mod_info_batch["starts"][ii] - 1
+                length = mod_info_batch["lengths"][ii]
+
                 mod_hidden = hidden_states[batch_idx:batch_idx+1, start_pos:start_pos+length, :]
                 decoded = self.decoders[mod_name](mod_hidden)
-                batch_decoded.append(decoded)
-            
-            decoded_outputs[mod_name] = torch.cat(batch_decoded, dim=0)
+
+                pred_modality_infos[batch_idx]["names"].append(mod_name)
+                pred_modality_infos[batch_idx]["starts"].append(start_pos)
+                pred_modality_infos[batch_idx]["lengths"].append(length)
+                pred_modality_infos[batch_idx]["data"].append(decoded.squeeze(0))
+                pred_modality_infos[batch_idx]["positions"].append(torch.arange(length, dtype=torch.long))
  
         # Calculate loss if targets provided
         if targets is not None:
             target_modality_infos = targets["modality_infos"]
             loss = 0
-            for mod_name in decoded_outputs.keys():
-                mod_targets = []
-                # TODO can we simplify this loop?
-                for batch_t in target_modality_infos:
-                    for ii, name in enumerate(batch_t["names"]):
-                        if name == mod_name:
-                            mod_targets.append(batch_t["data"][ii])
-                target = torch.stack(mod_targets, dim=0)
-                mod_config = self.modality_registry.get_config(mod_name)
-                pred = decoded_outputs[mod_name]
-                loss += F.huber_loss(pred.squeeze(), target.squeeze()) * mod_config.loss_weight
-            loss /= len(decoded_outputs)
+            loss_count = 0
+            loss_dict = {}
+            for batch_idx in range(len(pred_modality_infos)):
+                pred_info = pred_modality_infos[batch_idx]
+                target_info = target_modality_infos[batch_idx]
+
+                for ii, pred_name in enumerate(pred_info["names"]):
+                    target_data = target_info["data"][ii].squeeze()
+                    pred_data = pred_info["data"][ii].squeeze()
+                    assert pred_name == target_info["names"][ii]
+                    assert pred_data.shape == target_data.shape, f"Assertion error: {pred_info['data']}, {target_info['data']}"
+                    mod_config = self.modality_registry.get_config(pred_name)
+                    unweighted_loss = F.huber_loss(pred_data.squeeze(), target_data.squeeze())
+                    pred_modality_infos[batch_idx]["losses"].append(unweighted_loss.item())
+                    loss += unweighted_loss * mod_config.loss_weight
+                    loss_count += 1
+
+            loss = loss / loss_count if loss_count > 0 else None
         else:
             loss = None
 
-        return decoded_outputs, loss
+        return pred_modality_infos, loss
 
     @torch.no_grad()
     def generate_with_modality_prompts(

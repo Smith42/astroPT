@@ -515,7 +515,7 @@ class LLMModalityDataset(IterableDataset):
             
         return patch_galaxy
 
-    def create_sequence_structure(self, sample_data):
+    def create_sequence_structure(self, sample_data, image_first=True):
         """
         Create sequence structure with special tokens.
         Returns token sequence and modality metadata (no encoding).
@@ -546,6 +546,10 @@ class LLMModalityDataset(IterableDataset):
             )
         else:
             modality_order = self.modality_registry.names()
+
+        if image_first:
+            modality_order.remove("images")
+            modality_order.insert(0, "images")
 
         for mod_name in modality_order:
             if mod_name in sample_data:
