@@ -330,7 +330,6 @@ if __name__ == "__main__":
         special_token_ids=model.special_token_ids,
         transforms=transforms,
         random_order=True,
-        text_prompt=None,
     )
     vds = LLMModalityDataset(
         hf_dataset=galaxies_test,
@@ -339,7 +338,6 @@ if __name__ == "__main__":
         special_token_ids=model.special_token_ids,
         transforms=transforms,
         random_order=True,
-        text_prompt=None,
     )
     
     tdl = iter(
