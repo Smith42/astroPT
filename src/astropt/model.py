@@ -720,7 +720,7 @@ class GPT(nn.Module):
                     assert pred_data.shape == target_data.shape, f"Assertion error: {pred_info['data']}, {target_info['data']}"
                     mod_config = self.modality_registry.get_config(pred_name)
                     unweighted_loss = F.huber_loss(pred_data.squeeze(), target_data.squeeze())
-                    pred_modality_infos[batch_idx]["losses"].append(unweighted_loss.item())
+                    pred_modality_infos[batch_idx]["losses"].append(unweighted_loss.detach().item())
                     loss += unweighted_loss * mod_config.loss_weight
                     loss_count += 1
 
