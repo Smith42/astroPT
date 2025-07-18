@@ -418,7 +418,7 @@ class LLMModalityDataset(IterableDataset):
         special_token_ids,
         transforms=None,
         random_order=True,
-        text_prompt=None
+        apply_chat_template=True,
     ):
         """
         Args:
@@ -428,6 +428,7 @@ class LLMModalityDataset(IterableDataset):
             special_token_ids: Dict mapping special token strings to IDs
             transforms: Optional transforms dict
             random_order: Whether to randomize modality order per sample
+            apply_chat_template: Apply chat template 
             text_prompt: Optional text prompt to prepend
         """
         self.dataset = hf_dataset
@@ -436,7 +437,7 @@ class LLMModalityDataset(IterableDataset):
         self.special_token_ids = special_token_ids
         self.transforms = transforms if transforms is not None else {}
         self.random_order = random_order
-        self.text_prompt = text_prompt
+        self.apply_chat_template = apply_chat_template
 
     def __len__(self):
         return len(self.dataset)
@@ -530,14 +531,6 @@ class LLMModalityDataset(IterableDataset):
         }
         current_pos = 0
 
-        # Optional text prompt at the beginning
-        if self.text_prompt is not None:
-            prompt_tokens = self.tokenizer(
-                self.text_prompt, return_tensors="pt", add_special_tokens=False
-            )
-            sequence_parts.append(prompt_tokens.input_ids.squeeze(0))
-            current_pos += prompt_tokens.input_ids.shape[1]
-
         # Get modality order (random or fixed)
         if self.random_order:
             modality_order = random.sample(
@@ -551,11 +544,29 @@ class LLMModalityDataset(IterableDataset):
             modality_order.remove("images")
             modality_order.insert(0, "images")
 
+        ii = 0
+
+        if self.apply_chat_template:
+            sys_prompt = self.tokenizer.encode(
+                "<|im_start|>system\nYou are a helpful AI assistant named AstroPT, finetuned from SmolLM for astronomical applications.\n\n<|im_end|>\n"
+            )
+            sequence_parts.extend(sys_prompt)
+            current_pos += len(sys_prompt)
+
         for mod_name in modality_order:
             if mod_name in sample_data:
-                begin_token_id = self.special_token_ids[f"<|begin_{mod_name}|>"]
-                begin_token = torch.tensor([begin_token_id], dtype=torch.long)
-                sequence_parts.append(begin_token)
+                if self.apply_chat_template: 
+                    if ii == 0:
+                        use_prompt = self.tokenizer.encode("<|im_start|>user\n")
+                        sequence_parts.extend(use_prompt)
+                        current_pos += len(use_prompt)
+                    if ii == 1:
+                        ass_prompt = self.tokenizer.encode("<|im_start|>assistant\n")
+                        sequence_parts.extend(ass_prompt)
+                        current_pos += len(ass_prompt)
+
+                begin_token = self.tokenizer.encode(f"<|begin_{mod_name}|>")
+                sequence_parts.extend(begin_token)
                 current_pos += 1
 
                 mod_data = sample_data[mod_name]
@@ -569,17 +580,28 @@ class LLMModalityDataset(IterableDataset):
                 modality_info["positions"].append(mod_pos)
 
                 # Add placeholder tokens for modality data
-                placeholder_tokens = self.special_token_ids[f"<|{mod_name}|>"]
+                placeholder_tokens = self.tokenizer.encode(f"<|{mod_name}|>")
                 for _ in range(seq_len):
-                    sequence_parts.append(torch.tensor([placeholder_tokens], dtype=torch.long))
+                    sequence_parts.extend(placeholder_tokens)
                 current_pos += seq_len
 
-                end_token_id = self.special_token_ids[f"<|end_{mod_name}|>"]
-                end_token = torch.tensor([end_token_id], dtype=torch.long)
-                sequence_parts.append(end_token)
+                end_token = self.tokenizer.encode(f"<|end_{mod_name}|>")
+                sequence_parts.extend(end_token)
                 current_pos += 1
 
-        token_sequence = torch.cat(sequence_parts, dim=0)
+                if self.apply_chat_template and ii == 0:
+                    prompt = self.tokenizer.encode("<|im_end|>\n")
+                    sequence_parts.extend(prompt)
+                    current_pos += len(prompt)
+
+                ii += 1
+
+        if self.apply_chat_template:
+            prompt = self.tokenizer.encode("<|im_end|>\n")
+            sequence_parts.extend(prompt)
+            current_pos += len(prompt)
+
+        token_sequence = torch.tensor(sequence_parts, dtype=torch.long)
         attention_mask = torch.ones_like(token_sequence)
 
         return token_sequence, attention_mask, modality_info
