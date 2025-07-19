@@ -548,7 +548,7 @@ class LLMModalityDataset(IterableDataset):
 
         if self.apply_chat_template:
             sys_prompt = self.tokenizer.encode(
-                "<|im_start|>system\nYou are a helpful AI assistant named AstroPT, finetuned from SmolLM for astronomical applications.\n\n<|im_end|>\n"
+                "<|im_start|>system\nYou are a helpful AI assistant named AstroPetey, finetuned from SmolLM for astronomical applications.\n\n<|im_end|>\n"
             )
             sequence_parts.extend(sys_prompt)
             current_pos += len(sys_prompt)
@@ -611,7 +611,10 @@ class LLMModalityDataset(IterableDataset):
         for raw_sample in self.dataset:
             sample_data = {}
             for key in raw_sample.keys():
-                if (key not in ["dr8_id", "image"]) and (raw_sample[key] is not None):
+                if ((key not in ["dr8_id", "image"]) and 
+                    (raw_sample[key] is not None) and 
+                    (raw_sample[key] > -90)
+                   ):
                     # assume all other inputs that aren't image crop or dr8_id
                     # are parameters
                     sample_data[key] = torch.tensor([raw_sample[key]])

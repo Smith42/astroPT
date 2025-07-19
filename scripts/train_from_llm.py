@@ -117,7 +117,7 @@ if __name__ == "__main__":
     stream_hf_dataset = True  # stream the galaxies from huggingface
     # data
     gradient_accumulation_steps = 5 #* 8  # used to simulate larger batch sizes
-    batch_size = 48 # if gradient_accumulation_steps > 1, this is the micro-batch size
+    batch_size = 32 # if gradient_accumulation_steps > 1, this is the micro-batch size
     spiral = True  # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     image_size = 256
@@ -125,17 +125,30 @@ if __name__ == "__main__":
     n_chan = 3  # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
     # Define modalities configuration
     galaxy_params = [
-        'redshift',                                   # Distance/cosmological context
-        'elpetro_mass_log',                           # Stellar mass - fundamental property
-        'u_minus_r',                                  # Color - stellar population age
-        'petro_th50',                                 # Size - half-light radius
-        'sersic_n',                                   # Profile shape - concentration
-        'elpetro_ba',                                 # Axis ratio - inclination/shape
-        'smooth-or-featured_smooth_fraction',         # Morphology - elliptical vs spiral
-        'has-spiral-arms_yes_fraction',               # Spiral structure presence
-        'bar_strong_fraction',                        # Bar strength - dynamical state
-        'total_ssfr_avg'                              # Specific star formation rate
+        "redshift", "elpetro_mass_log", "u_minus_r", "petro_th50", "sersic_n",
+        "elpetro_ba", "smooth-or-featured_smooth_fraction", "total_ssfr_avg",
+        "mag_r", "mag_g", "mag_z", "elpetro_absmag_r", "elpetro_absmag_g",
+        "elpetro_absmag_z", "sersic_phi", "total_sfr_avg", "fibre_ssfr_avg",
+        "fibre_sfr_avg", "photo_z", "spec_z", "mass_med_photoz",
+        "sfr_sup_photoz", "ssfr_med_photoz", "mag_abs_g_photoz",
+        "mag_abs_r_photoz", "mag_abs_z_photoz", "log_l_ha", "log_m_bh",
+        "equiv_width", "logMH", "HIflux", "W50", "SNR", "bar_weak_fraction",
+        "bar_no_fraction", "smooth-or-featured_featured-or-disk_fraction",
+        "edge-on-bulge_boxy_fraction", "edge-on-bulge_rounded_fraction",
+        "merging_merger_fraction",
     ]
+    #galaxy_params = [
+    #    'redshift',                                   # Distance/cosmological context
+    #    'elpetro_mass_log',                           # Stellar mass - fundamental property
+    #    'u_minus_r',                                  # Color - stellar population age
+    #    'petro_th50',                                 # Size - half-light radius
+    #    'sersic_n',                                   # Profile shape - concentration
+    #    'elpetro_ba',                                 # Axis ratio - inclination/shape
+    #    'smooth-or-featured_smooth_fraction',         # Morphology - elliptical vs spiral
+    #    'has-spiral-arms_yes_fraction',               # Spiral structure presence
+    #    'bar_strong_fraction',                        # Bar strength - dynamical state
+    #    'total_ssfr_avg'                              # Specific star formation rate
+    #]
     modalities = [
         ModalityConfig(
             name="images",
@@ -150,7 +163,7 @@ if __name__ == "__main__":
                 name=param,
                 input_size=1,
                 patch_size=1,
-                loss_weight=0.1, # less than the stable image training
+                loss_weight=0.005, # less than the stable image training
                 embed_pos=True,
                 pos_input_size=1,
             )
@@ -161,7 +174,7 @@ if __name__ == "__main__":
     modality_registry = ModalityRegistry(modalities)
     # Which backbone and LoRA rank do we use?
     llm_model_name = "HuggingFaceTB/SmolLM3-3B" # or "HuggingFaceTB/SmolLM3-3B-Base"
-    lora_r = 1024
+    lora_r = 256
     # Choose tokenisers from "affine" and "aim"
     tokeniser = "affine"
     # adamw optimizer
@@ -339,7 +352,6 @@ if __name__ == "__main__":
         transforms=transforms,
         random_order=True,
     )
-    
     tdl = iter(
         DataLoader(
             tds,
@@ -406,8 +418,10 @@ if __name__ == "__main__":
     if compile:
         if master_process:
             print("compiling the model... (takes a ~minute)")
-        unoptimized_model = model
-        model = torch.compile(model)  # requires PyTorch 2.0
+        # here we only compile the llm, the most expensive part
+        # TODO rewrite encoders and decoders to allow performant compilation of
+        # those (atm they have too many dynamic ops to be worth it!)
+        model.llm = torch.compile(model.llm)  # requires PyTorch 2.0
 
     # wrap model into DDP container
     if ddp:
@@ -464,7 +478,7 @@ if __name__ == "__main__":
 
         if log_via_wandb:
             for name in modality_registry.names():
-                wandb.log({name: wandb.Table(columns=["Y", "P"], data=list(zip(Y_data[name], P_data[name])))})
+                wandb.log({name: wandb.Table(columns=["Y", "P"], data=list(zip(Y_data[name], P_data[name])))}, step=iter_num)
 
         model.train()
         return out
@@ -528,7 +542,8 @@ if __name__ == "__main__":
                             {
                                 "Y": [wandb.Image(mmn(im.swapaxes(0, -1))) for im in Yim[:32]],
                                 "P": [wandb.Image(mmn(im.swapaxes(0, -1))) for im in Pim[:32]],
-                            }
+                            },
+                            step=iter_num,
                         )
 
             f.savefig(
@@ -603,7 +618,7 @@ if __name__ == "__main__":
                     f"{iter_num},{train_loss_str},{valid_loss_str},{lr},{running_mfu * 100}\n"
                 )
             if log_via_wandb:
-                wandb.log({"valloss": losses["val"]})
+                wandb.log({"valloss": losses["val"]}, step=iter_num)
             if iter_num != 0:
                 loss_df = pd.read_csv(os.path.join(out_dir, "loss.txt"))
                 f, axs = plt.subplots(
@@ -705,7 +720,7 @@ if __name__ == "__main__":
                     mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
                 )
             if log_via_wandb:
-                wandb.log({"loss": lossf, "time": dt})
+                wandb.log({"loss": lossf, "time": dt}, step=iter_num)
             if log_emissions:
                 emissions: float = tracker.flush()
                 print(
