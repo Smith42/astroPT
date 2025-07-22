@@ -3,7 +3,6 @@ A place to store our pytorch datasets.
 """
 
 import os
-import sys
 import random
 
 import einops
@@ -11,10 +10,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from astropy.io import fits
-from transformers import AutoTokenizer
+from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset, IterableDataset
 from torchvision import io
-from torch.nn.utils.rnn import pad_sequence
 
 
 class GalaxyImageDataset(Dataset):

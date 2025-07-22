@@ -16,25 +16,23 @@ $ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=1 --master_addr=123.456.123
 (If your cluster does not have Infiniband interconnect prepend NCCL_IB_DISABLE=1)
 """
 
+import itertools
 import math
 import os
 import time
 from contextlib import nullcontext
-from functools import partial
-import itertools
 
 import einops
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import psutil
 import torch
+from datasets import load_dataset
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from datasets import load_dataset
-
-import psutil
 
 try:
     import wandb
@@ -49,7 +47,7 @@ try:
 except ImportError:
     log_emissions = False
 
-from astropt.local_datasets import GalaxyImageDataset, LLMModalityDataset, llm_collate_fn
+from astropt.local_datasets import LLMModalityDataset, llm_collate_fn
 from astropt.model import GPT, GPTConfig, ModalityConfig, ModalityRegistry
 
 
@@ -739,7 +737,7 @@ if __name__ == "__main__":
         if leak_check and psutil.virtual_memory().percent > 80 and iter_num > 0:
             # We reset the dataloaders as Hugging Face has an annoying data leak for its streaming dataloaders!
             if master_process:
-                print(f"Resetting DataLoader workers as RAM is >80% used")
+                print("Resetting DataLoader workers as RAM is >80% used")
             tds, vds, tdl, vdl = create_dataloaders()
 
         iter_num += 1

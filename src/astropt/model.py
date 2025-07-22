@@ -657,7 +657,6 @@ class GPT(nn.Module):
 
         # Replace placeholder embeddings with actual modality embeddings
         final_embeddings = initial_embeddings.clone()
-        output_mod_info = {}
         for batch_idx, mod_info_batch in enumerate(modality_infos):
             for ii, mod_name in enumerate(mod_info_batch["names"]):
                 start_pos = mod_info_batch["starts"][ii]
@@ -708,7 +707,6 @@ class GPT(nn.Module):
             target_modality_infos = targets["modality_infos"]
             loss = 0
             loss_count = 0
-            loss_dict = {}
             for batch_idx in range(len(pred_modality_infos)):
                 pred_info = pred_modality_infos[batch_idx]
                 target_info = target_modality_infos[batch_idx]
