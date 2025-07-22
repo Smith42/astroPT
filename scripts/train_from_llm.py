@@ -111,7 +111,7 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a 4B LLM backbone AstroPT model on DESI galaxy imagery
     out_dir = "logs/smollm3B"
-    eval_interval = 100
+    eval_interval = 500
     log_interval = 10
     checkpoint_interval = 1000
     assert checkpoint_interval % eval_interval == 0
@@ -146,18 +146,6 @@ if __name__ == "__main__":
         'sersic_phi', 'elpetro_mass_log', 'redshift', 'fibre_sfr_median',
         'fibre_ssfr_median', 'total_sfr_median', 'total_ssfr_median'
     ]
-    #galaxy_params = [
-    #    'redshift',                                   # Distance/cosmological context
-    #    'elpetro_mass_log',                           # Stellar mass - fundamental property
-    #    'u_minus_r',                                  # Color - stellar population age
-    #    'petro_th50',                                 # Size - half-light radius
-    #    'sersic_n',                                   # Profile shape - concentration
-    #    'elpetro_ba',                                 # Axis ratio - inclination/shape
-    #    'smooth-or-featured_smooth_fraction',         # Morphology - elliptical vs spiral
-    #    'has-spiral-arms_yes_fraction',               # Spiral structure presence
-    #    'bar_strong_fraction',                        # Bar strength - dynamical state
-    #    'total_ssfr_avg'                              # Specific star formation rate
-    #]
     modalities = [
         ModalityConfig(
             name="images",
@@ -289,39 +277,9 @@ if __name__ == "__main__":
         tokeniser=tokeniser,
     )
 
-    if init_from == "scratch":
-        # init a new model from scratch
-        if master_process:
-            print("initializing a new model from scratch")
-        gptconf = GPTConfig(**model_args)
-        model = GPT(gptconf, modality_registry, master_process=master_process)
-    if init_from == "resume":
-        if master_process:
-            print(f"resuming training from {out_dir}")
-        # resume training from a checkpoint.
-        ckpt_path = os.path.join(out_dir, "ckpt.pt")
-        checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
-        checkpoint_model_args = checkpoint["model_args"]
-        # if "native" force these config attributes to be equal otherwise we
-        # can't even resume training the rest of the attributes (e.g. dropout)
-        # can stay as desired from command line NOTE had to remove 'bias' key
-        # here -- where does it go?!
-        if checkpoint_model_args["backbone"] == "native":
-            for k in ["n_layer", "n_head", "n_embd", "block_size"]:
-                model_args[k] = checkpoint_model_args[k]
-        # create the model
-        gptconf = GPTConfig(**model_args)
-        model = GPT(gptconf, modality_registry, master_process=master_process)
-        state_dict = checkpoint["model"]
-        # fix the keys of the state dictionary :(
-        # honestly no idea how checkpoints sometimes get this prefix, have to debug more
-        unwanted_prefix = "_orig_mod."
-        for k, v in list(state_dict.items()):
-            if k.startswith(unwanted_prefix):
-                state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
-        model.load_state_dict(state_dict)
-        iter_num = checkpoint["iter_num"]
-        best_val_loss = checkpoint["best_val_loss"]
+    # create the model
+    gptconf = GPTConfig(**model_args)
+    model = GPT(gptconf, modality_registry, master_process=master_process)
 
     # Setup special tokens for the model
     special_tokens = []
@@ -335,6 +293,31 @@ if __name__ == "__main__":
     model.special_token_ids = {
         token: model.tokenizer.convert_tokens_to_ids(token) for token in special_tokens
     }
+
+    if init_from == "scratch":
+        # init a new model from scratch
+        if master_process:
+            print("initializing a new model from scratch")
+    if init_from == "resume":
+        if master_process:
+            print(f"resuming training from {out_dir}")
+        # resume training from a checkpoint.
+        ckpt_path = os.path.join(out_dir, "ckpt.pt")
+        checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
+        state_dict = checkpoint["model"]
+        # fix the keys of the state dictionary :(
+        # torch.compile adds _orig_mod. prefix to parameter names so we fix below
+        unwanted_prefix = "_orig_mod."
+        keys_to_update = []
+        for k in state_dict.keys():
+            if unwanted_prefix in k:
+                new_key = k.replace(unwanted_prefix, "")
+                keys_to_update.append((k, new_key))
+        for old_key, new_key in keys_to_update:
+            state_dict[new_key] = state_dict.pop(old_key)
+        model.load_state_dict(state_dict)
+        iter_num = checkpoint["iter_num"]
+        best_val_loss = checkpoint["best_val_loss"]
 
     galaxies_train = (
         load_dataset(
