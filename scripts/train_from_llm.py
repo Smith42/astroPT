@@ -56,6 +56,7 @@ def normalise(x):
     x_norm = (x - mean) / (std + 1e-8)
     return x_norm.to(torch.float16)
 
+
 def data_transforms():
     transform = transforms.Compose(
         [
@@ -65,23 +66,29 @@ def data_transforms():
     )
     return transform
 
+
 def process_galaxy_wrapper(galdict, func):
     patch_galaxy = func(np.array(galdict["image"]).swapaxes(0, 2))
     return {
         "images": patch_galaxy.to(torch.float),
-        "images_positions": torch.arange(
-            0, len(patch_galaxy), dtype=torch.long
-        ),
+        "images_positions": torch.arange(0, len(patch_galaxy), dtype=torch.long),
     }
 
+
 def to_device(x, device):
-    if hasattr(x, 'to'): return x.to(device)
-    if isinstance(x, dict): return {k: to_device(v, device) for k, v in x.items()}
-    if isinstance(x, list): return [to_device(i, device) for i in x]
+    if hasattr(x, "to"):
+        return x.to(device)
+    if isinstance(x, dict):
+        return {k: to_device(v, device) for k, v in x.items()}
+    if isinstance(x, list):
+        return [to_device(i, device) for i in x]
     return x
 
+
 def stringify(input_text, modality_infos):
-    unwrapped_tokenizer = (model.module if hasattr(model, 'module') else model).tokenizer
+    unwrapped_tokenizer = (
+        model.module if hasattr(model, "module") else model
+    ).tokenizer
     final_text = unwrapped_tokenizer.convert_ids_to_tokens(input_text)
     for ii, mod_name in enumerate(modality_infos["names"]):
         start_pos = modality_infos["starts"][ii]
@@ -113,13 +120,15 @@ if __name__ == "__main__":
     always_save_checkpoint = (
         False  # if True, always save a checkpoint at each checkpoint_interval
     )
-    init_from = "scratch" # 'scratch' or 'resume'
+    init_from = "scratch"  # 'scratch' or 'resume'
     use_hf = True  # use the huggingface dataset version of our galz
     stream_hf_dataset = True  # stream the galaxies from huggingface
-    leak_check = True # check for RAM leaks and reset dataloader if we reach > 80% RAM used
+    leak_check = (
+        True  # check for RAM leaks and reset dataloader if we reach > 80% RAM used
+    )
     # data
-    gradient_accumulation_steps = 5 #* 8  # used to simulate larger batch sizes
-    batch_size = 32 # if gradient_accumulation_steps > 1, this is the micro-batch size
+    gradient_accumulation_steps = 5  # * 8  # used to simulate larger batch sizes
+    batch_size = 32  # if gradient_accumulation_steps > 1, this is the micro-batch size
     spiral = True  # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     image_size = 256
@@ -163,17 +172,17 @@ if __name__ == "__main__":
                 name=param,
                 input_size=1,
                 patch_size=1,
-                loss_weight=0.005, # less than the stable image training
+                loss_weight=0.005,  # less than the stable image training
                 embed_pos=True,
                 pos_input_size=1,
             )
             for param in galaxy_params
-        ]
+        ],
     ]
     # Create modality registry
     modality_registry = ModalityRegistry(modalities)
     # Which backbone and LoRA rank do we use?
-    llm_model_name = "HuggingFaceTB/SmolLM3-3B" # or "HuggingFaceTB/SmolLM3-3B-Base"
+    llm_model_name = "HuggingFaceTB/SmolLM3-3B"  # or "HuggingFaceTB/SmolLM3-3B-Base"
     lora_r = 256
     # Choose tokenisers from "affine" and "aim"
     tokeniser = "affine"
@@ -317,27 +326,43 @@ if __name__ == "__main__":
     # Setup special tokens for the model
     special_tokens = []
     for mod_name in modality_registry.names():
-        special_tokens.extend([f"<|begin_{mod_name}|>", f"<|{mod_name}|>", f"<|end_{mod_name}|>"])
-    
+        special_tokens.extend(
+            [f"<|begin_{mod_name}|>", f"<|{mod_name}|>", f"<|end_{mod_name}|>"]
+        )
+
     model.tokenizer.add_special_tokens({"additional_special_tokens": special_tokens})
     model.llm.resize_token_embeddings(len(model.tokenizer))
     model.special_token_ids = {
-        token: model.tokenizer.convert_tokens_to_ids(token)
-        for token in special_tokens
+        token: model.tokenizer.convert_tokens_to_ids(token) for token in special_tokens
     }
 
-    galaxies_train = load_dataset(
-        "Smith42/galaxies", revision="v2.0", streaming=stream_hf_dataset, split="train",
-    ).select_columns(["image"] + galaxy_params).shuffle(seed=None, buffer_size=1000)
+    galaxies_train = (
+        load_dataset(
+            "Smith42/galaxies",
+            revision="v2.0",
+            streaming=stream_hf_dataset,
+            split="train",
+        )
+        .select_columns(["image"] + galaxy_params)
+        .shuffle(seed=None, buffer_size=1000)
+    )
     galaxies_train = itertools.cycle(galaxies_train)
-    galaxies_test = load_dataset(
-        "Smith42/galaxies", revision="v2.0", streaming=stream_hf_dataset, split="test",
-    ).select_columns(["image"] + galaxy_params).shuffle(seed=None, buffer_size=1000)
+    galaxies_test = (
+        load_dataset(
+            "Smith42/galaxies",
+            revision="v2.0",
+            streaming=stream_hf_dataset,
+            split="test",
+        )
+        .select_columns(["image"] + galaxy_params)
+        .shuffle(seed=None, buffer_size=1000)
+    )
     galaxies_test = itertools.cycle(galaxies_test)
 
     transforms = {"images": data_transforms()}
+
     def create_dataloaders():
-        unwrapped_model = (model.module if hasattr(model, 'module') else model)
+        unwrapped_model = model.module if hasattr(model, "module") else model
         tds = LLMModalityDataset(
             hf_dataset=galaxies_train,
             modality_registry=modality_registry,
@@ -399,7 +424,7 @@ if __name__ == "__main__":
     model.to(device)
 
     # For DDP with LLM backbone, ensure all components are on the correct device
-    if ddp and hasattr(model, 'llm') and model.llm is not None:
+    if ddp and hasattr(model, "llm") and model.llm is not None:
         # The .to(device) call above should handle this, but let's be explicit
         model.llm.to(device)
         for module in [model.encoders, model.decoders, model.embedders]:
@@ -470,8 +495,12 @@ if __name__ == "__main__":
                     for ii, pred_name in enumerate(P_info["names"]):
                         mode_losses[pred_name].append(P_info["losses"][ii])
                         if pred_name != "images":
-                            P_data[pred_name].append(P_info["data"][ii].squeeze().detach().cpu().item())
-                            Y_data[pred_name].append(Y_info["data"][ii].squeeze().detach().cpu().item())
+                            P_data[pred_name].append(
+                                P_info["data"][ii].squeeze().detach().cpu().item()
+                            )
+                            Y_data[pred_name].append(
+                                Y_info["data"][ii].squeeze().detach().cpu().item()
+                            )
                 losses[k] = loss.item()
             out[split]["all"] = losses.mean()
             for name in modality_registry.names():
@@ -479,7 +508,15 @@ if __name__ == "__main__":
 
         if log_via_wandb:
             for name in modality_registry.names():
-                wandb.log({name: wandb.Table(columns=["Y", "P"], data=list(zip(Y_data[name], P_data[name])))}, step=iter_num)
+                wandb.log(
+                    {
+                        name: wandb.Table(
+                            columns=["Y", "P"],
+                            data=list(zip(Y_data[name], P_data[name])),
+                        )
+                    },
+                    step=iter_num,
+                )
 
         model.train()
         return out
@@ -493,7 +530,9 @@ if __name__ == "__main__":
             with ctx:
                 pred_modality_infos, loss = model(B["X"], B["Y"])
 
-                print(stringify(B["Y"]["token_sequences"][0], B["Y"]["modality_infos"][0]))
+                print(
+                    stringify(B["Y"]["token_sequences"][0], B["Y"]["modality_infos"][0])
+                )
                 print(stringify(B["Y"]["token_sequences"][0], pred_modality_infos[0]))
 
                 if "images" in modality_registry.names():
@@ -538,11 +577,17 @@ if __name__ == "__main__":
                         ax[1].axis("off")
 
                     if log_via_wandb:
-                        mmn = lambda x: 255*(x - x.min())/(x.max() - x.min())
+                        mmn = lambda x: 255 * (x - x.min()) / (x.max() - x.min())
                         wandb.log(
                             {
-                                "Y": [wandb.Image(mmn(im.swapaxes(0, -1))) for im in Yim[:32]],
-                                "P": [wandb.Image(mmn(im.swapaxes(0, -1))) for im in Pim[:32]],
+                                "Y": [
+                                    wandb.Image(mmn(im.swapaxes(0, -1)))
+                                    for im in Yim[:32]
+                                ],
+                                "P": [
+                                    wandb.Image(mmn(im.swapaxes(0, -1)))
+                                    for im in Pim[:32]
+                                ],
                             },
                             step=iter_num,
                         )
@@ -715,9 +760,7 @@ if __name__ == "__main__":
             # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
             lossf = loss.item()
             if local_iter_num >= 5:  # let the training loop settle a bit
-                mfu = raw_model.estimate_mfu(
-                    batch_size, dt
-                )
+                mfu = raw_model.estimate_mfu(batch_size, dt)
                 running_mfu = (
                     mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
                 )
