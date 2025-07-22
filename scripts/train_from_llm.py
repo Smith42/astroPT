@@ -103,9 +103,10 @@ def stringify(input_text, modality_infos):
         length = modality_infos["lengths"][ii]
         if mod_name == "images":
             end_pos = start_pos + length
-            final_text = final_text[:start_pos + 1] + final_text[end_pos:]
+            final_text = final_text[: start_pos + 1] + final_text[end_pos:]
 
     return " ".join(final_text)
+
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
@@ -135,17 +136,11 @@ if __name__ == "__main__":
     num_workers = 64
     n_chan = 3  # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
     # Define modalities configuration
+    # fmt: off
     galaxy_params = [
-		'smooth-or-featured_smooth_fraction', 'disk-edge-on_yes_fraction',
-        'has-spiral-arms_yes_fraction', 'bar_strong_fraction',
-        'bulge-size_dominant_fraction', 'how-rounded_cigar-shaped_fraction',
-        'edge-on-bulge_boxy_fraction', 'spiral-winding_tight_fraction',
-        'merging_merger_fraction', 'mag_u', 'mag_g', 'mag_r', 'mag_i', 'mag_z',
-        'u_minus_r', 'elpetro_absmag_r', 'est_petro_th50_kpc', 'petro_ba50',
-        'petro_ba90', 'elpetro_ba', 'elpetro_phi', 'sersic_n', 'sersic_ba',
-        'sersic_phi', 'elpetro_mass_log', 'redshift', 'fibre_sfr_median',
-        'fibre_ssfr_median', 'total_sfr_median', 'total_ssfr_median'
+        "smooth-or-featured_smooth_fraction", "disk-edge-on_yes_fraction", "has-spiral-arms_yes_fraction", "bar_strong_fraction", "bulge-size_dominant_fraction", "how-rounded_cigar-shaped_fraction", "edge-on-bulge_boxy_fraction", "spiral-winding_tight_fraction", "merging_merger_fraction", "mag_u", "mag_g", "mag_r", "mag_i", "mag_z", "u_minus_r", "elpetro_absmag_r", "est_petro_th50_kpc", "petro_ba50", "petro_ba90", "elpetro_ba", "elpetro_phi", "sersic_n", "sersic_ba", "sersic_phi", "elpetro_mass_log", "redshift", "fibre_sfr_median", "fibre_ssfr_median", "total_sfr_median", "total_ssfr_median",
     ]
+    # fmt: on
     modalities = [
         ModalityConfig(
             name="images",
