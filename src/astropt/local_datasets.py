@@ -408,11 +408,11 @@ class LLMModalityDataset(IterableDataset):
     Dataset that creates LLM-compatible sequences with special tokens for modalities.
     Raw modality data is preserved for model encoding.
     """
-    
+
     def __init__(
-        self, 
-        hf_dataset, 
-        modality_registry, 
+        self,
+        hf_dataset,
+        modality_registry,
         tokenizer,
         special_token_ids,
         transforms=None,
@@ -427,7 +427,7 @@ class LLMModalityDataset(IterableDataset):
             special_token_ids: Dict mapping special token strings to IDs
             transforms: Optional transforms dict
             random_order: Whether to randomize modality order per sample
-            apply_chat_template: Apply chat template 
+            apply_chat_template: Apply chat template
             text_prompt: Optional text prompt to prepend
         """
         self.dataset = hf_dataset
@@ -508,11 +508,11 @@ class LLMModalityDataset(IterableDataset):
             p1=patch_size,
             p2=patch_size,
         )
-        
+
         if "images" in self.transforms:
             galaxy = self.transforms["images"](galaxy)
         galaxy = self.spiralise(galaxy)
-            
+
         return galaxy
 
     def create_sequence_structure(self, sample_data, image_first=True):
@@ -526,15 +526,14 @@ class LLMModalityDataset(IterableDataset):
             "starts": [],
             "lengths": [],
             "data": [],
-            "positions": []
+            "positions": [],
         }
         current_pos = 0
 
         # Get modality order (random or fixed)
         if self.random_order:
             modality_order = random.sample(
-                self.modality_registry.names(), 
-                len(self.modality_registry.names())
+                self.modality_registry.names(), len(self.modality_registry.names())
             )
         else:
             modality_order = self.modality_registry.names()
@@ -554,7 +553,7 @@ class LLMModalityDataset(IterableDataset):
 
         for mod_name in modality_order:
             if mod_name in sample_data:
-                if self.apply_chat_template: 
+                if self.apply_chat_template:
                     if ii == 0:
                         use_prompt = self.tokenizer.encode("<|im_start|>user\n")
                         sequence_parts.extend(use_prompt)
@@ -571,7 +570,7 @@ class LLMModalityDataset(IterableDataset):
                 mod_data = sample_data[mod_name]
                 mod_pos = sample_data[mod_name + "_positions"]
                 seq_len = mod_data.shape[0]  # Number of patches/tokens
-                
+
                 modality_info["names"].append(mod_name)
                 modality_info["starts"].append(current_pos)
                 modality_info["lengths"].append(seq_len)
@@ -610,27 +609,32 @@ class LLMModalityDataset(IterableDataset):
         for raw_sample in self.dataset:
             sample_data = {}
             for key in raw_sample.keys():
-                if ((key not in ["dr8_id", "image"]) and 
-                    (raw_sample[key] is not None) and 
-                    (raw_sample[key] > -90)
-                   ):
+                if (
+                    (key not in ["dr8_id", "image"])
+                    and (raw_sample[key] is not None)
+                    and (raw_sample[key] > -90)
+                ):
                     # assume all other inputs that aren't image crop or dr8_id
                     # are parameters
                     sample_data[key] = torch.tensor([raw_sample[key]])
-                    sample_data[f"{key}_positions"] = torch.tensor([0], dtype=torch.long)
-            
+                    sample_data[f"{key}_positions"] = torch.tensor(
+                        [0], dtype=torch.long
+                    )
+
             if "image" in raw_sample:
                 galaxy = torch.from_numpy(
                     np.array(raw_sample["image"]).swapaxes(0, 2)
                 ).to(torch.float)
                 galaxy = self.process_galaxy(galaxy)
-                
+
                 sample_data["images"] = galaxy
                 sample_data["images_positions"] = torch.arange(
                     0, len(galaxy), dtype=torch.long
                 )
 
-            token_sequence, attention_mask, modality_info = self.create_sequence_structure(sample_data)
+            token_sequence, attention_mask, modality_info = (
+                self.create_sequence_structure(sample_data)
+            )
 
             yield {
                 "token_sequence": token_sequence,
@@ -643,12 +647,13 @@ def llm_collate_fn(batch):
     """
     Collate function that pads sequences and groups modality info.
     """
+
     def _target_modality_info(modality_info):
-        """ Update modality info for target array """
+        """Update modality info for target array"""
         result = modality_info.copy()
         result["starts"] = [start - 1 for start in modality_info["starts"]]
         return result
-        
+
     token_sequences = [item["token_sequence"] for item in batch]
     attention_masks = [item["attention_mask"] for item in batch]
     modality_infos = [item["modality_info"] for item in batch]
@@ -667,5 +672,5 @@ def llm_collate_fn(batch):
         "attention_masks": padded_attention[:, 1:],
         "modality_infos": [_target_modality_info(info) for info in modality_infos],
     }
-    
+
     return {"X": X, "Y": Y}
