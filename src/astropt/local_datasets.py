@@ -11,6 +11,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from astropy.io import fits
+from transformers import AutoTokenizer
 from torch.utils.data import Dataset, IterableDataset
 from torchvision import io
 from torch.nn.utils.rnn import pad_sequence
@@ -500,21 +501,21 @@ class LLMModalityDataset(IterableDataset):
             else np.stack(antispiraled)
         )
 
-    def process_galaxy(self, raw_galaxy):
-        """Process galaxy image into patches (from original code)"""
+    def process_galaxy(self, galaxy):
+        """Process galaxy image into patches"""
         patch_size = self.modality_registry.get_config("images").patch_size
-        patch_galaxy = einops.rearrange(
-            raw_galaxy,
+        galaxy = einops.rearrange(
+            galaxy,
             "c (h p1) (w p2) -> (h w) (p1 p2 c)",
             p1=patch_size,
             p2=patch_size,
         )
         
         if "images" in self.transforms:
-            patch_galaxy = self.transforms["images"](patch_galaxy)
-        patch_galaxy = self.spiralise(patch_galaxy)
+            galaxy = self.transforms["images"](galaxy)
+        galaxy = self.spiralise(galaxy)
             
-        return patch_galaxy
+        return galaxy
 
     def create_sequence_structure(self, sample_data, image_first=True):
         """
@@ -621,14 +622,14 @@ class LLMModalityDataset(IterableDataset):
                     sample_data[f"{key}_positions"] = torch.tensor([0], dtype=torch.long)
             
             if "image" in raw_sample:
-                raw_galaxy = torch.from_numpy(
+                galaxy = torch.from_numpy(
                     np.array(raw_sample["image"]).swapaxes(0, 2)
                 ).to(torch.float)
-                patch_galaxy = self.process_galaxy(raw_galaxy)
+                galaxy = self.process_galaxy(galaxy)
                 
-                sample_data["images"] = patch_galaxy
+                sample_data["images"] = galaxy
                 sample_data["images_positions"] = torch.arange(
-                    0, len(patch_galaxy), dtype=torch.long
+                    0, len(galaxy), dtype=torch.long
                 )
 
             token_sequence, attention_mask, modality_info = self.create_sequence_structure(sample_data)
@@ -659,13 +660,13 @@ def llm_collate_fn(batch):
     padded_attention = pad_sequence(attention_masks, batch_first=True, padding_value=0)
 
     X = {
-        "token_sequences": padded_tokens[:, :-1].clone(),
-        "attention_masks": padded_attention[:, :-1].clone(),
+        "token_sequences": padded_tokens[:, :-1],
+        "attention_masks": padded_attention[:, :-1],
         "modality_infos": modality_infos,
     }
     Y = {
-        "token_sequences": padded_tokens[:, 1:].clone(),
-        "attention_masks": padded_attention[:, 1:].clone(),
+        "token_sequences": padded_tokens[:, 1:],
+        "attention_masks": padded_attention[:, 1:],
         "modality_infos": [_target_modality_info(info) for info in modality_infos],
     }
     

@@ -34,6 +34,8 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from datasets import load_dataset
 
+import psutil
+
 try:
     import wandb
 
@@ -81,7 +83,8 @@ def to_device(x, device):
     return x
 
 def stringify(input_text, modality_infos):
-    final_text = model.tokenizer.convert_ids_to_tokens(input_text)
+    unwrapped_tokenizer = (model.module if hasattr(model, 'module') else model).tokenizer
+    final_text = unwrapped_tokenizer.convert_ids_to_tokens(input_text)
     for ii, mod_name in enumerate(modality_infos["names"]):
         start_pos = modality_infos["starts"][ii]
         length = modality_infos["lengths"][ii]
@@ -105,16 +108,17 @@ if __name__ == "__main__":
     out_dir = "logs/smollm3B"
     eval_interval = 100
     log_interval = 10
-    checkpoint_interval = 5000
+    checkpoint_interval = 1000
     assert checkpoint_interval % eval_interval == 0
     eval_iters = 50
     eval_only = False  # if True, script exits right after the first eval
     always_save_checkpoint = (
         False  # if True, always save a checkpoint at each checkpoint_interval
     )
-    init_from = "scratch"  # 'scratch' or 'resume'
+    init_from = "scratch" # 'scratch' or 'resume'
     use_hf = True  # use the huggingface dataset version of our galz
     stream_hf_dataset = True  # stream the galaxies from huggingface
+    leak_check = True # check for RAM leaks and reset dataloader if we reach > 80% RAM used
     # data
     gradient_accumulation_steps = 5 #* 8  # used to simulate larger batch sizes
     batch_size = 32 # if gradient_accumulation_steps > 1, this is the micro-batch size
@@ -125,17 +129,15 @@ if __name__ == "__main__":
     n_chan = 3  # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
     # Define modalities configuration
     galaxy_params = [
-        "redshift", "elpetro_mass_log", "u_minus_r", "petro_th50", "sersic_n",
-        "elpetro_ba", "smooth-or-featured_smooth_fraction", "total_ssfr_avg",
-        "mag_r", "mag_g", "mag_z", "elpetro_absmag_r", "elpetro_absmag_g",
-        "elpetro_absmag_z", "sersic_phi", "total_sfr_avg", "fibre_ssfr_avg",
-        "fibre_sfr_avg", "photo_z", "spec_z", "mass_med_photoz",
-        "sfr_sup_photoz", "ssfr_med_photoz", "mag_abs_g_photoz",
-        "mag_abs_r_photoz", "mag_abs_z_photoz", "log_l_ha", "log_m_bh",
-        "equiv_width", "logMH", "HIflux", "W50", "SNR", "bar_weak_fraction",
-        "bar_no_fraction", "smooth-or-featured_featured-or-disk_fraction",
-        "edge-on-bulge_boxy_fraction", "edge-on-bulge_rounded_fraction",
-        "merging_merger_fraction",
+		'smooth-or-featured_smooth_fraction', 'disk-edge-on_yes_fraction',
+        'has-spiral-arms_yes_fraction', 'bar_strong_fraction',
+        'bulge-size_dominant_fraction', 'how-rounded_cigar-shaped_fraction',
+        'edge-on-bulge_boxy_fraction', 'spiral-winding_tight_fraction',
+        'merging_merger_fraction', 'mag_u', 'mag_g', 'mag_r', 'mag_i', 'mag_z',
+        'u_minus_r', 'elpetro_absmag_r', 'est_petro_th50_kpc', 'petro_ba50',
+        'petro_ba90', 'elpetro_ba', 'elpetro_phi', 'sersic_n', 'sersic_ba',
+        'sersic_phi', 'elpetro_mass_log', 'redshift', 'fibre_sfr_median',
+        'fibre_ssfr_median', 'total_sfr_median', 'total_ssfr_median'
     ]
     #galaxy_params = [
     #    'redshift',                                   # Distance/cosmological context
@@ -181,7 +183,7 @@ if __name__ == "__main__":
     # we follow the same schedule here as Chinchilla
     learning_rate = 6e-4  # max learning rate
     max_iters = (
-        30000  # total number of training iterations for one pass over our dataset
+        12000  # total number of training iterations for one pass over our dataset
     )
     weight_decay = 1e-1
     beta1 = 0.9
@@ -190,7 +192,7 @@ if __name__ == "__main__":
     # learning rate decay settings
     decay_lr = True  # whether to decay the learning rate
     warmup_iters = 1000  # how many steps to warm up for
-    lr_decay_iters = 27000 * 1.1  # should be ~= max_iters per Chinchilla
+    lr_decay_iters = 10000 * 1.1  # should be ~= max_iters per Chinchilla
     min_lr = (
         learning_rate / 10
     )  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
@@ -328,48 +330,53 @@ if __name__ == "__main__":
 
     galaxies_train = load_dataset(
         "Smith42/galaxies", revision="v2.0", streaming=stream_hf_dataset, split="train",
-    ).select_columns(["image"] + galaxy_params)
+    ).select_columns(["image"] + galaxy_params).shuffle(seed=None, buffer_size=1000)
     galaxies_train = itertools.cycle(galaxies_train)
     galaxies_test = load_dataset(
         "Smith42/galaxies", revision="v2.0", streaming=stream_hf_dataset, split="test",
-    ).select_columns(["image"] + galaxy_params)
+    ).select_columns(["image"] + galaxy_params).shuffle(seed=None, buffer_size=1000)
     galaxies_test = itertools.cycle(galaxies_test)
 
     transforms = {"images": data_transforms()}
-    tds = LLMModalityDataset(
-        hf_dataset=galaxies_train,
-        modality_registry=modality_registry,
-        tokenizer=model.tokenizer,
-        special_token_ids=model.special_token_ids,
-        transforms=transforms,
-        random_order=True,
-    )
-    vds = LLMModalityDataset(
-        hf_dataset=galaxies_test,
-        modality_registry=modality_registry,
-        tokenizer=model.tokenizer,
-        special_token_ids=model.special_token_ids,
-        transforms=transforms,
-        random_order=True,
-    )
-    tdl = iter(
-        DataLoader(
-            tds,
-            batch_size=batch_size,
-            num_workers=num_workers,
-            collate_fn=llm_collate_fn,
-            pin_memory=True,
+    def create_dataloaders():
+        unwrapped_model = (model.module if hasattr(model, 'module') else model)
+        tds = LLMModalityDataset(
+            hf_dataset=galaxies_train,
+            modality_registry=modality_registry,
+            tokenizer=unwrapped_model.tokenizer,
+            special_token_ids=unwrapped_model.special_token_ids,
+            transforms=transforms,
+            random_order=True,
         )
-    )
-    vdl = iter(
-        DataLoader(
-            vds,
-            batch_size=batch_size,
-            num_workers=num_workers,
-            collate_fn=llm_collate_fn,
-            pin_memory=True,
+        vds = LLMModalityDataset(
+            hf_dataset=galaxies_test,
+            modality_registry=modality_registry,
+            tokenizer=unwrapped_model.tokenizer,
+            special_token_ids=unwrapped_model.special_token_ids,
+            transforms=transforms,
+            random_order=True,
         )
-    )
+        tdl = iter(
+            DataLoader(
+                tds,
+                batch_size=batch_size,
+                num_workers=num_workers,
+                collate_fn=llm_collate_fn,
+                pin_memory=True,
+            )
+        )
+        vdl = iter(
+            DataLoader(
+                vds,
+                batch_size=batch_size,
+                num_workers=num_workers,
+                collate_fn=llm_collate_fn,
+                pin_memory=True,
+            )
+        )
+        return tds, vds, tdl, vdl
+
+    tds, vds, tdl, vdl = create_dataloaders()
 
     # logging via wandb if available
     # this is here so we can get the number of params from model()
@@ -432,12 +439,8 @@ if __name__ == "__main__":
         # future torch version so check periodically. I tested this on:
         # 2.6.0.dev20241126+cu124
         torch._dynamo.config.optimize_ddp = False
-        # For LLM backbone, we need find_unused_parameters=True because
-        # the LLM parameters are frozen and not all may be used
-        if hasattr(model, 'llm') and model.llm is not None:
-            model = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=False)
         # if we have only one modality all params are used in a forward pass:
-        elif len(modalities) == 1:
+        if len(modalities) == 1:
             model = DDP(model, device_ids=[ddp_local_rank])
         else:
             model = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=True)
@@ -469,8 +472,8 @@ if __name__ == "__main__":
                     for ii, pred_name in enumerate(P_info["names"]):
                         mode_losses[pred_name].append(P_info["losses"][ii])
                         if pred_name != "images":
-                            P_data[pred_name].append(P_info["data"][ii].squeeze().item())
-                            Y_data[pred_name].append(Y_info["data"][ii].squeeze().item())
+                            P_data[pred_name].append(P_info["data"][ii].squeeze().detach().cpu().item())
+                            Y_data[pred_name].append(Y_info["data"][ii].squeeze().detach().cpu().item())
                 losses[k] = loss.item()
             out[split]["all"] = losses.mean()
             for name in modality_registry.names():
@@ -551,7 +554,7 @@ if __name__ == "__main__":
                 bbox_inches="tight",
                 pad_inches=0,
             )
-            plt.close()
+            plt.close(f)
         model.train()
 
     # learning rate decay scheduler (cosine with warmup)
@@ -649,7 +652,7 @@ if __name__ == "__main__":
                 [ax.set_yscale("log") for ax in axs.ravel()]
                 [ax.legend() for ax in axs.ravel()]
                 f.savefig(os.path.join(out_dir, "loss.png"))
-                plt.close()
+                plt.close(f)
 
             if val_loss < best_val_loss or always_save_checkpoint:
                 best_val_loss = val_loss
@@ -693,6 +696,7 @@ if __name__ == "__main__":
             B = to_device(next(tdl), device=device)
             # backward pass, with gradient scaling if training in fp16
             scaler.scale(loss).backward()
+
         # clip the gradient
         if grad_clip != 0.0:
             scaler.unscale_(optimizer)
@@ -731,6 +735,12 @@ if __name__ == "__main__":
                     f"iter {iter_num}: loss {lossf:.6f}, time {np.mean(dts) * 1000:.2f}ms, mfu {running_mfu * 100:.2f}%"
                 )
             dts = []
+
+        if leak_check and psutil.virtual_memory().percent > 80 and iter_num > 0:
+            # We reset the dataloaders as Hugging Face has an annoying data leak for its streaming dataloaders!
+            if master_process:
+                print(f"Resetting DataLoader workers as RAM is >80% used")
+            tds, vds, tdl, vdl = create_dataloaders()
 
         iter_num += 1
         local_iter_num += 1
