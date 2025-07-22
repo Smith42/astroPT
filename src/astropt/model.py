@@ -663,16 +663,18 @@ class GPT(nn.Module):
                 length = mod_info_batch["lengths"][ii]
                 mod_data = mod_info_batch["data"][ii].unsqueeze(0)  # Add batch dim
                 mod_positions = mod_info_batch["positions"][ii].unsqueeze(0)
-                
+
                 # Encode modality data
                 mod_embeddings = self.encoders[mod_name](mod_data)
                 pos_embeddings = self.embedders[mod_name](mod_positions)
                 combined_embeddings = mod_embeddings + pos_embeddings
-                
+
                 # Replace placeholder embeddings
                 end_pos = start_pos + length
-                final_embeddings[batch_idx, start_pos:end_pos, :] = combined_embeddings.squeeze(0)
-                
+                final_embeddings[batch_idx, start_pos:end_pos, :] = (
+                    combined_embeddings.squeeze(0)
+                )
+
         # Forward through LLM with custom embeddings
         x = self.llm(
             inputs_embeds=final_embeddings,
@@ -685,23 +687,34 @@ class GPT(nn.Module):
 
         # Decode outputs for each modality
         pred_modality_infos = [
-           {"names": [], "starts": [], "lengths": [], "data": [], "positions": [], "losses": []}
-           for _ in range(batch_size)
+            {
+                "names": [],
+                "starts": [],
+                "lengths": [],
+                "data": [],
+                "positions": [],
+                "losses": [],
+            }
+            for _ in range(batch_size)
         ]
         for batch_idx, mod_info_batch in enumerate(modality_infos):
             for ii, mod_name in enumerate(mod_info_batch["names"]):
                 start_pos = mod_info_batch["starts"][ii] - 1
                 length = mod_info_batch["lengths"][ii]
 
-                mod_hidden = hidden_states[batch_idx:batch_idx+1, start_pos:start_pos+length, :]
+                mod_hidden = hidden_states[
+                    batch_idx : batch_idx + 1, start_pos : start_pos + length, :
+                ]
                 decoded = self.decoders[mod_name](mod_hidden)
 
                 pred_modality_infos[batch_idx]["names"].append(mod_name)
                 pred_modality_infos[batch_idx]["starts"].append(start_pos)
                 pred_modality_infos[batch_idx]["lengths"].append(length)
                 pred_modality_infos[batch_idx]["data"].append(decoded.squeeze(0))
-                pred_modality_infos[batch_idx]["positions"].append(torch.arange(length, dtype=torch.long))
- 
+                pred_modality_infos[batch_idx]["positions"].append(
+                    torch.arange(length, dtype=torch.long)
+                )
+
         # Calculate loss if targets provided
         if targets is not None:
             target_modality_infos = targets["modality_infos"]
@@ -715,10 +728,16 @@ class GPT(nn.Module):
                     target_data = target_info["data"][ii].squeeze()
                     pred_data = pred_info["data"][ii].squeeze()
                     assert pred_name == target_info["names"][ii]
-                    assert pred_data.shape == target_data.shape, f"Assertion error: {pred_info['data']}, {target_info['data']}"
+                    assert pred_data.shape == target_data.shape, (
+                        f"Assertion error: {pred_info['data']}, {target_info['data']}"
+                    )
                     mod_config = self.modality_registry.get_config(pred_name)
-                    unweighted_loss = F.huber_loss(pred_data.squeeze(), target_data.squeeze())
-                    pred_modality_infos[batch_idx]["losses"].append(unweighted_loss.detach().item())
+                    unweighted_loss = F.huber_loss(
+                        pred_data.squeeze(), target_data.squeeze()
+                    )
+                    pred_modality_infos[batch_idx]["losses"].append(
+                        unweighted_loss.detach().item()
+                    )
                     loss += unweighted_loss * mod_config.loss_weight
                     loss_count += 1
 
