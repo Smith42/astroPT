@@ -6,6 +6,8 @@ def load_astropt(
     repo_id="smith42/astropt_sparse",
     path="astropt/p16k10",
     weights_filename="ckpt.pt",
+    use_llm_backbone=False,
+    llm_model_name=None,
 ):
     """
     Load an AstroPT model.
@@ -48,8 +50,19 @@ def load_astropt(
     checkpoint = torch.load(weights_path, weights_only=False, map_location="cpu")
     model_args = checkpoint["model_args"]
     modality_registry = checkpoint["modality_registry"]
+
+    if use_llm_backbone:
+        model_args["backbone"] = "llm"
+        model_args["llm_model_name"] = llm_model_name
+
     config = GPTConfig(**model_args)
-    model = GPT(config, modality_registry)
+    model = GPT(
+        config,
+        modality_registry,
+        backbone=config.backbone,
+        llm_model_name=config.llm_model_name,
+    )
+
     state_dict = checkpoint["model"]
     # fix the keys of the state dictionary :(
     # honestly no idea how checkpoints sometimes get this prefix, have to debug more
@@ -58,6 +71,7 @@ def load_astropt(
         if k.startswith(unwanted_prefix):
             state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
     model.load_state_dict(state_dict)
+
     dir_info = f"/{path}" if path else ""
     print(f"model loaded successfully from {repo_id}{dir_info}")
     print("args:", model_args)
