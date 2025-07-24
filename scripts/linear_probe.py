@@ -41,11 +41,11 @@ if __name__ == "__main__":
             torch.from_numpy(np.array(idx["image"]).swapaxes(0, 2)).to(float)
         ).to(torch.float)
         galaxy_positions = torch.arange(0, len(galaxy), dtype=torch.long)
-        redshift = idx["redshift"]
+        mag_g = idx["mag_g"]
         return {
             "images": galaxy,
             "images_positions": galaxy_positions,
-            "redshift": redshift,
+            "mag_g": mag_g,
         }
 
     model = load_astropt("Smith42/astroPT_v2.0", path="astropt/095M")
@@ -55,15 +55,16 @@ if __name__ == "__main__":
         transform={"images": data_transforms()},
         modality_registry=model.modality_registry,
     )
+    # load dataset: we select mag_g as it is easy for this example but there are many values in Smith42/galaxies v2.0, you can choose from any column in hf.co/datasets/Smith42/galaxies_metadata
     ds = (
         load_dataset("Smith42/galaxies", split="test", revision="v2.0", streaming=True)
-        .select_columns(("image", "redshift"))
-        .filter(lambda idx: idx["redshift"] is not None)
+        .select_columns(("image", "mag_g"))
+        .filter(lambda idx: idx["mag_g"] is not None)
         .map(partial(_process_galaxy_wrapper, func=galproc.process_galaxy))
         .with_format("torch")
         .take(
-            10000
-        )  # use the first 10k examples of our dataset to shorten total inference time
+            1000
+        )  # use the first 1k examples of our dataset to shorten total inference time
     )
     dl = iter(
         DataLoader(
@@ -85,7 +86,7 @@ if __name__ == "__main__":
         for B in tqdm(dl):
             zs = model.generate_embeddings(B)["images"].detach().numpy()
             zss.append(zs)
-            yss.append(B["redshift"].detach().numpy())
+            yss.append(B["mag_g"].detach().numpy())
         zss = np.concatenate(zss, axis=0)
         yss = np.concatenate(yss, axis=0)
         np.save("zss.npy", zss)
@@ -100,6 +101,7 @@ if __name__ == "__main__":
     print("Training probe...")
     # Now we train a linear probe on half the data and test on the other half
     # In a "real" setting you may want to use a more powerful model than a linear regressor
+    # (and possibly a more difficult problem then magnitude prediction ;) !)
     halfway = len(zss) // 2
     probe = train_probe(zss[:halfway], yss[:halfway])
     pss = probe.predict(zss[halfway:])
@@ -113,5 +115,10 @@ if __name__ == "__main__":
 
     vmax = np.percentile(yss, 95)
     plt.scatter(X_pca[:, 0], X_pca[:, 1], c=yss, vmax=vmax, cmap="viridis")
-    plt.colorbar(label="Redshift")
+    plt.colorbar(label="mag_g")
+    plt.show()
+
+    plt.plot(yss[halfway:], pss, ".")
+    plt.ylabel("Ground truth magnitude")
+    plt.ylabel("Predicted magnitude")
     plt.show()
