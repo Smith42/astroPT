@@ -613,6 +613,7 @@ class LLMModalityDataset(IterableDataset):
                     (key not in ["dr8_id", "image"])
                     and (raw_sample[key] is not None)
                     and (raw_sample[key] > -90)
+                    and np.isfinite(raw_sample[key])
                 ):
                     # assume all other inputs that aren't image crop or dr8_id
                     # are parameters
