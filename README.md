@@ -67,7 +67,7 @@ To load and run a pre-trained AstroPT model from HuggingFace you can use the `lo
 ```python
 from astropt.model_utils import load_astropt
 
-model, model_args = load_astropt(
+model = load_astropt(
     repo_id="smith42/astropt_v2.0",
     path="astropt/095M",
     weights_filename="ckpt.pt",
