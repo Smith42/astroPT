@@ -2,11 +2,20 @@
     
 <img src="https://github.com/Smith42/astroPT/raw/main/assets/shoggoth_telescope_sticker_2.png" alt="astroPT_shoggoth" width="300"/>
 
+<p></p>
+
+[![PyPI](https://img.shields.io/pypi/v/astropt)](https://pypi.org/project/astropt/)
+[![PyPI Downloads](https://static.pepy.tech/badge/astropt)](https://pepy.tech/projects/astropt) 
+[![docs](https://app.readthedocs.org/projects/astropt/badge/)](https://astropt.readthedocs.io/)
+[![License: AGPL-v3](https://img.shields.io/badge/License-AGPLv3-green.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
+[![All Contributors](https://img.shields.io/badge/all_contributors-5-orange.svg?style=flat-square)](#contributors-)
+
 [![ICML](https://img.shields.io/badge/AI4Science@ICML-2024---?logo=https%3A%2F%2Fneurips.cc%2Fstatic%2Fcore%2Fimg%2FNeurIPS-logo.svg&labelColor=68448B&color=b3b3b3)](https://openreview.net/forum?id=aOLuuLxqav)
 [![arXiv](https://img.shields.io/badge/arXiv-2405.14930---?logo=arXiv&labelColor=b31b1b&color=grey)](https://arxiv.org/abs/2405.14930)
 [![arXiv](https://img.shields.io/badge/arXiv-2503.15312---?logo=arXiv&labelColor=b31b1b&color=grey)](https://arxiv.org/abs/2503.15312)
-[![License: AGPL-v3](https://img.shields.io/badge/License-AGPLv3-green.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
-[![All Contributors](https://img.shields.io/badge/all_contributors-5-orange.svg?style=flat-square)](#contributors-)
+
+[![Model on HF](https://huggingface.co/datasets/huggingface/badges/resolve/main/model-on-hf-sm.svg)](https://huggingface.co/Smith42/astroPT_v2.0)
+[![Dataset on HF](https://huggingface.co/datasets/huggingface/badges/resolve/main/dataset-on-hf-sm.svg)](https://huggingface.co/datasets/Smith42/galaxies)
 </div>
 
 # AstroPT: a Large Observation (foundation) Model for astronomy 🔭
@@ -54,9 +63,11 @@ You can install via pip from PyPI:
 pip install astropt
 ```
 
-Or if you install locally via a git clone, you can uv install via:
+Or if you install locally via a git clone, you can [uv](https://docs.astral.sh/uv/) install via:
 
 ```bash
+git clone https://github.com/Smith42/astroPT.git
+cd astroPT
 uv sync
 ```
 
@@ -85,15 +96,20 @@ Please make sure that you are using the correct version of AstroPT to load these
 | Survey | Modalities | AstroPT version | Model weights | Dataset | Paper |
 | :----- | :--------- | :-------------- | :------------ | :------ | :---- |
 | DESI Legacy Survey | JPG galaxy imagery | v1.0.0   | [AstroPT](https://huggingface.co/Smith42/astroPT) | [Galaxies Dataset](https://huggingface.co/datasets/Smith42/galaxies) | [arXiv:2405.14930](https://arxiv.org/abs/2405.14930) |
-| DESI Legacy Survey | JPG galaxy imagery | v2.0.4   | [AstroPT v2.0](https://huggingface.co/Smith42/astroPT_v2.0) | [Galaxies Dataset](https://huggingface.co/datasets/Smith42/galaxies) clipped galaxies only | [arXiv:2405.14930](https://arxiv.org/abs/2405.14930) |
 | Euclid | FITS VIS, NISP galaxy imagery and SED data | v1.0.2 | [AstroPT-Euclid](https://huggingface.co/collections/msiudek/astropt-euclid-67d061928ac0a447265ac8b8) | [Euclid Training Dataset](https://huggingface.co/datasets/msiudek/astroPT_euclid_training_dataset) | [arXiv:2503.15312](https://arxiv.org/abs/2503.15312) |
+| DESI Legacy Survey | JPG galaxy imagery | v2.0.5   | [AstroPT v2.0](https://huggingface.co/Smith42/astroPT_v2.0) | [Galaxies Dataset v2.0](https://huggingface.co/datasets/Smith42/galaxies) | [arXiv:2405.14930](https://arxiv.org/abs/2405.14930) |
 
 ## Scripts for pre-training and processing data
 
 Check out `scripts` for a collection of all the scripts we have used to get the
 results in these papers, and `scripts/train.py` for an example boilerplate
-script for training your own AstroPT. `config` contains example user
-configurations.
+script for pre-training your own AstroPT. `config` contains example user
+configurations for pre-training.
+
+`scripts/linear_probe.py` has an example script for inferring embeddings from a 
+pre-trained model and  running a finetuning routine on them 🌝.
+
+And finally `scripts/finetune.py` has an example LoRA finetune routine.
 
 # Contributors
 
