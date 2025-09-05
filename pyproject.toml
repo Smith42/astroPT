@@ -34,7 +34,6 @@ dependencies = [
     "torchvision",
     "tqdm>=4.67.1",
     "traces>=0.6.4",
-    "umap-learn>=0.5.7",
     "wandb>=0.18.7",
     "loralib",
     "pre-commit>=4.2.0",

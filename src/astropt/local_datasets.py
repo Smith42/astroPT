@@ -32,20 +32,23 @@ class GalaxyImageDataset(Dataset):
             spiral: spiral form instead of raster form
             modality_registry: size of ViT patch
         """
-        self.paths = {}
-        for modality, path in paths.items():
-            self.paths[modality] = None
-            if paths[modality] is not None:
-                self.paths[modality] = np.genfromtxt(path, delimiter=",", dtype=str)
-            else:
+        if paths is not None:
+            self.paths = {}
+            for modality, path in paths.items():
                 self.paths[modality] = None
-        # get length of first dataset that is not None
-        try:
-            self.dataset_len = len(
-                next(v for v in self.paths.values() if v is not None)
-            )
-        except StopIteration:
-            self.dataset_len = None
+                if paths[modality] is not None:
+                    self.paths[modality] = np.genfromtxt(path, delimiter=",", dtype=str)
+                else:
+                    self.paths[modality] = None
+            # get length of first dataset that is not None
+            try:
+                self.dataset_len = len(
+                    next(v for v in self.paths.values() if v is not None)
+                )
+            except StopIteration:
+                self.dataset_len = None
+        else:
+            self.paths = paths
         self.transform = transform
         self.modality_registry = modality_registry
         self.stochastic = stochastic

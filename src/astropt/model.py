@@ -281,7 +281,7 @@ class Encoder(nn.Module):
     def forward(self, x):
         if self.tokeniser == "affine":
             return self.c_fc(x)
-        else:  # assume AIM
+        else: # assume AIM
             x = self.c_fc(x)
             x = new_gelu(x)
             x = self.c_proj(x)
@@ -304,7 +304,7 @@ class Decoder(nn.Module):
     def forward(self, x):
         if self.tokeniser == "affine":
             return self.c_fc(x)
-        else:  # assume AIM
+        else: # assume AIM
             x = self.c_fc(x)
             x = new_gelu(x)
             x = self.c_proj(x)
@@ -332,7 +332,7 @@ class GPTConfig:
     dropout: float = 0.0
     bias: bool = False  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     attn_type: str = "causal"  # causal or prefix
-    tokeniser: str = "aim"  # one of "aim" or "affine"
+    tokeniser: str = "aim" # one of "aim" or "affine"
     # LoRA params
     lora_r: int = 0  # rank, 0 disables LoRA
     lora_alpha: int = 16

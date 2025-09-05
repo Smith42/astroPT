@@ -192,19 +192,19 @@ def create_cosmo_conversation_prompt(example):
         "\n\nBased on this information")[0]
     
     conversation_prompt = f"""
-Generate an entertaining and educational conversation between a curious human and Cosmo, an astronomical AI assistant passionate about galaxies. The conversation should use the following galaxy data as a rough guide (but not reference it directly):
+Generate an entertaining and educational conversation between a curious human and AstroPetey, an astronomical AI assistant passionate about galaxies. The conversation should use the following galaxy data as a rough guide (but not reference it directly):
 {galaxy_data}
 
 The conversation should follow this pattern:
 
-1. Human asks Cosmo about the galaxy in the image
-2. Cosmo explains the basic features enthusiastically, using a friendly tone with occasional astronomy puns
+1. Human asks AstroPetey about the galaxy in the image
+2. AstroPetey explains the basic features enthusiastically, using a friendly tone with occasional astronomy puns
 3. Human asks a follow-up question about something specific (morphology, color, size, etc.)
-4. Cosmo provides a more detailed explanation, connecting the feature to broader astronomical concepts
+4. AstroPetey provides a more detailed explanation, connecting the feature to broader astronomical concepts
 5. Human expresses amazement and asks another question
-6. Cosmo shares an interesting fact or comparison about this type of galaxy
+6. AstroPetey shares an interesting fact or comparison about this type of galaxy
 
-Guidelines for Cosmo's personality:
+Guidelines for AstroPetey's personality:
 - Enthusiastic and passionate about astronomy
 - Uses accessible language but includes proper scientific terminology
 - Occasionally uses space-related puns or expressions ("out of this world," "stellar example," etc.)
@@ -275,7 +275,7 @@ def caption_image(image, information, conversation=False):
 def process_example(example, conversation=False):
     """Process a single example in parallel"""
     try:
-        image = Image.open(io.BytesIO(example['image_crop']['bytes']))
+        image = Image.open(io.BytesIO(example['image']['bytes']))
         image_id = example['dr8_id']
         caption = caption_image(image, example, conversation=conversation)
         
@@ -328,17 +328,15 @@ def main():
             print("Couldn't load checkpoint. Starting fresh.")
     
     # Load datasets and use skip() to efficiently skip processed examples
-    galaxies = load_dataset("Smith42/galaxies", split=split, name="with_crops", revision="refs/pr/2", streaming=True)
-    metadata = load_dataset("Smith42/galaxies_metadata", split=split, streaming=True).remove_columns("dr8_id")
+    galaxies = load_dataset("Smith42/galaxies", split=split, revision="v2.0", streaming=True)
     
     # Skip already processed examples using HF's skip() method
     if completed_count > 0:
         galaxies = galaxies.skip(completed_count)
-        metadata = metadata.skip(completed_count)
     
-    dataset = concatenate_datasets([galaxies, metadata], axis=1)
+    dataset = galaxies
 
-    max_examples = metadata.info.splits[split].num_examples
+    max_examples = dataset.info.splits[split].num_examples
     if completed_count >= max_examples:
         print("All examples already processed.")
         save_results(results, "galaxy_captions.json")
