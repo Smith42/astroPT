@@ -556,7 +556,7 @@ class GPT(nn.Module):
             input_tensor = inputs[mod_name]
             embeddings.append(self.encoders[mod_name](input_tensor))
             pos = inputs[mod_name + "_positions"]
-            pos_embeddings.append(self.embeddings[mod_name](pos))
+            pos_embeddings.append(self.embedders[mod_name](pos))
         tok_emb = torch.cat(embeddings, dim=1)
         pos_emb = torch.cat(pos_embeddings, dim=1)
 
@@ -606,7 +606,7 @@ class GPT(nn.Module):
                 if self.config.attn_type == "prefix":
                     # TODO fix this and debug
                     raise NotImplementedError(
-                        "Prefix attention not implemented for multimodal model"
+                        "Prefix attention not yet implemented for multimodal model"
                     )
                     ## if we have prefix attention on we only want to
                     ## backprop through tokens where our model cannot

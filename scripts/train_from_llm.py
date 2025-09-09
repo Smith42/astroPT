@@ -113,16 +113,15 @@ if __name__ == "__main__":
     # default config values designed to test run a 4B LLM backbone AstroPT model on DESI galaxy imagery
     out_dir = "logs/smollm3B"
     eval_interval = 500
-    log_interval = 10
+    log_interval = 50
     checkpoint_interval = 1000
     assert checkpoint_interval % eval_interval == 0
-    eval_iters = 50
+    eval_iters = 100
     eval_only = False  # if True, script exits right after the first eval
     always_save_checkpoint = (
         False  # if True, always save a checkpoint at each checkpoint_interval
     )
     init_from = "scratch"  # 'scratch' or 'resume'
-    use_hf = True  # use the huggingface dataset version of our galz
     stream_hf_dataset = True  # stream the galaxies from huggingface
     leak_check = (
         True  # check for RAM leaks and reset dataloader if we reach > 80% RAM used
@@ -192,6 +191,7 @@ if __name__ == "__main__":
     device = "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
     dtype = "bfloat16"  # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
     compile = True  # use PyTorch 2.0 to compile the model to be faster
+    wandb_project = None
     # -----------------------------------------------------------------------------
     config_keys = [
         k
@@ -382,10 +382,16 @@ if __name__ == "__main__":
     # logging via wandb if available
     # this is here so we can get the number of params from model()
     if log_via_wandb and master_process:
-        wandb.init(
-            project=f"AstroPT-{model.get_num_params() / 1e6:06.1f}M",
-            config=config,
-        )
+        if wandb_project is None:
+            wandb.init(
+                project=f"AstroPT-{model.get_num_params() / 1e6:06.1f}M",
+                config=config,
+            )
+        else:
+            wandb.init(
+                project=wandb_project,
+                config=config,
+            )
     # write config and important information to log file
     with open(f"{out_dir}/hparams.txt", "w") as fi:
         fi.write(f"AstroPT-{model.get_num_params() / 1e6:06.1f}M\n")
@@ -409,10 +415,7 @@ if __name__ == "__main__":
             module.to(device)
 
     # initialize a GradScaler. If enabled=False scaler is a no-op
-    try:  # initting gradscaler changed in Pytorch 2.5.1
-        scaler = torch.amp.GradScaler(enabled=(dtype == "float16"))
-    except Exception:  # fallback to old scaler if we hit an error
-        scaler = torch.cuda.amp.GradScaler(enabled=(dtype == "float16"))
+    scaler = torch.amp.GradScaler(enabled=(dtype == "float16"))
 
     # optimizer
     optimizer = model.configure_optimizers(

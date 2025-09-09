@@ -70,7 +70,7 @@ def data_transforms(use_hf):
 
 
 def process_galaxy_wrapper(galdict, func):
-    patch_galaxy = func(np.array(galdict["image_crop"]).swapaxes(0, 2))
+    patch_galaxy = func(np.array(galdict["image"]).swapaxes(0, 2))
     return {
         "images": patch_galaxy.to(torch.float),
         "images_positions": torch.arange(0, len(patch_galaxy), dtype=torch.long),
@@ -122,6 +122,8 @@ if __name__ == "__main__":
     ]
     # Create modality registry
     modality_registry = ModalityRegistry(modalities)
+    # Choose tokenisers from "affine" and "aim"
+    tokeniser = "aim"
     # adamw optimizer
     # we follow the same schedule here as Chinchilla
     learning_rate = 6e-4  # max learning rate
@@ -139,12 +141,12 @@ if __name__ == "__main__":
     min_lr = (
         learning_rate / 10
     )  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
+    attn_type = "causal"
     # DDP settings
     backend = "nccl"  # 'nccl', 'gloo', etc.
     # system
     device = "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
     dtype = "bfloat16"  # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
-    attn_type = "causal"
     compile = True  # use PyTorch 2.0 to compile the model to be faster
     log_via_wandb = False
     # -----------------------------------------------------------------------------
@@ -237,6 +239,7 @@ if __name__ == "__main__":
 
         tds_hf = load_dataset(
             "Smith42/galaxies",
+            revision="v2.0",
             split="train",
             streaming=(True if stream_hf_dataset else False),
         )
@@ -247,6 +250,7 @@ if __name__ == "__main__":
 
         vds_hf = load_dataset(
             "Smith42/galaxies",
+            revision="v2.0",
             split="test",
             streaming=(True if stream_hf_dataset else False),
         )
@@ -323,10 +327,16 @@ if __name__ == "__main__":
     # logging via wandb if available
     # this is here so we can get the number of params from model()
     if log_via_wandb and master_process:
-        wandb.init(
-            project=f"AstroPT-{model.get_num_params() / 1e6:06.1f}M",
-            config=config,
-        )
+        if wandb_project is None:
+            wandb.init(
+                project=f"AstroPT-{model.get_num_params() / 1e6:06.1f}M",
+                config=config,
+            )
+        else:
+            wandb.init(
+                project=wandb_project,
+                config=config,
+            )
     # write config and important information to log file
     with open(f"{out_dir}/hparams.txt", "w") as fi:
         fi.write(f"AstroPT-{model.get_num_params() / 1e6:06.1f}M\n")
@@ -452,7 +462,7 @@ if __name__ == "__main__":
                 bbox_inches="tight",
                 pad_inches=0,
             )
-            plt.close()
+            plt.close(f)
         model.train()
 
     # learning rate decay scheduler (cosine with warmup)
@@ -521,7 +531,7 @@ if __name__ == "__main__":
                     f"{iter_num},{train_loss_str},{valid_loss_str},{lr},{running_mfu * 100}\n"
                 )
             if log_via_wandb:
-                wandb.log({"valloss": losses["val"]})
+                wandb.log({"valloss": losses["val"]}, step=iter_num)
             if iter_num != 0:
                 loss_df = pd.read_csv(os.path.join(out_dir, "loss.txt"))
                 f, axs = plt.subplots(
@@ -552,13 +562,14 @@ if __name__ == "__main__":
                 [ax.set_yscale("log") for ax in axs.ravel()]
                 [ax.legend() for ax in axs.ravel()]
                 f.savefig(os.path.join(out_dir, "loss.png"))
-                plt.close()
+                plt.close(f)
 
             if val_loss < best_val_loss or always_save_checkpoint:
                 best_val_loss = val_loss
                 if iter_num > 0:
+                    model_state = raw_model.state_dict()
                     checkpoint = {
-                        "model": raw_model.state_dict(),
+                        "model": model_state,
                         "optimizer": optimizer.state_dict(),
                         "model_args": model_args,
                         "iter_num": iter_num,
@@ -597,6 +608,7 @@ if __name__ == "__main__":
             )  # fetch the very first batch
             # backward pass, with gradient scaling if training in fp16
             scaler.scale(loss).backward()
+
         # clip the gradient
         if grad_clip != 0.0:
             scaler.unscale_(optimizer)
@@ -624,7 +636,7 @@ if __name__ == "__main__":
                     mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
                 )
             if log_via_wandb:
-                wandb.log({"loss": lossf, "time": dt})
+                wandb.log({"loss": lossf, "time": dt}, step=iter_num)
             if log_emissions:
                 emissions: float = tracker.flush()
                 print(
