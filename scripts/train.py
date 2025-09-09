@@ -238,6 +238,7 @@ if __name__ == "__main__":
 
         tds_hf = load_dataset(
             "Smith42/galaxies",
+            revision="v2.0",
             split="train",
             streaming=(True if stream_hf_dataset else False),
         )
@@ -248,6 +249,7 @@ if __name__ == "__main__":
 
         vds_hf = load_dataset(
             "Smith42/galaxies",
+            revision="v2.0",
             split="test",
             streaming=(True if stream_hf_dataset else False),
         )
