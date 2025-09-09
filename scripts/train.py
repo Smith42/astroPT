@@ -69,7 +69,7 @@ def data_transforms(use_hf):
 
 
 def process_galaxy_wrapper(galdict, func):
-    patch_galaxy = func(np.array(galdict["image_crop"]).swapaxes(0, 2))
+    patch_galaxy = func(np.array(galdict["image"]).swapaxes(0, 2))
     return {
         "images": patch_galaxy.to(torch.float),
         "images_positions": torch.arange(
@@ -147,6 +147,7 @@ if __name__ == "__main__":
     attn_type = "causal"
     compile = True  # use PyTorch 2.0 to compile the model to be faster
     log_via_wandb = False
+    wandb_project = None
     # -----------------------------------------------------------------------------
     config_keys = [
         k
@@ -240,20 +241,20 @@ if __name__ == "__main__":
             split="train",
             streaming=(True if stream_hf_dataset else False),
         )
-        tds_hf = tds_hf.select_columns("image_crop").map(
+        tds_hf = tds_hf.select_columns("image").map(
             partial(process_galaxy_wrapper, func=tds.process_galaxy)
         )
-        tds_hf = tds_hf.remove_columns("image_crop")
+        tds_hf = tds_hf.remove_columns("image")
 
         vds_hf = load_dataset(
             "Smith42/galaxies",
             split="test",
             streaming=(True if stream_hf_dataset else False),
         )
-        vds_hf = vds_hf.select_columns("image_crop").map(
+        vds_hf = vds_hf.select_columns("image").map(
             partial(process_galaxy_wrapper, func=tds.process_galaxy)
         )
-        vds_hf = vds_hf.remove_columns("image_crop")
+        vds_hf = vds_hf.remove_columns("image")
 
     tdl = iter(
         DataLoader(
@@ -323,10 +324,16 @@ if __name__ == "__main__":
     # logging via wandb if available
     # this is here so we can get the number of params from model()
     if log_via_wandb and master_process:
-        wandb.init(
-            project=f"AstroPT-{model.get_num_params() / 1e6:06.1f}M",
-            config=config,
-        )
+        if wandb_project is None:
+            wandb.init(
+                project=f"AstroPT-{model.get_num_params() / 1e6:06.1f}M",
+                config=config,
+            )
+        else:
+            wandb.init(
+                project=wandb_project,
+                config=config,
+            )
     # write config and important information to log file
     with open(f"{out_dir}/hparams.txt", "w") as fi:
         fi.write(f"AstroPT-{model.get_num_params() / 1e6:06.1f}M\n")
