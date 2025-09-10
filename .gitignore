@@ -183,3 +183,5 @@ __pycache__/
 *.pyc
 
 src/astropt/_version.py
+
+wandb/
