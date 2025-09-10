@@ -447,10 +447,16 @@ class GPT(nn.Module):
         # Add special modality tokens
         special_tokens = []
         for mod_name in self.modality_registry.names():
-            special_tokens.extend([f"<|begin_{mod_name}|>", f"<|end_{mod_name}|>"])
+            special_tokens.extend([f"<|begin_{mod_name}|>", f"<|{mod_name}|>", f"<|end_{mod_name}|>"])
 
-        self.tokenizer.add_special_tokens({"additional_special_tokens": special_tokens})
-        self.llm.resize_token_embeddings(len(self.tokenizer))
+        # Check if special tokens are already in tokenizer (e.g., when loading checkpoint)
+        tokens_to_add = [token for token in special_tokens 
+                         if token not in self.tokenizer.get_vocab()]
+
+        if tokens_to_add:
+            self.tokenizer.add_special_tokens({"additional_special_tokens": tokens_to_add})
+            self.llm.resize_token_embeddings(len(self.tokenizer))
+
         self.special_token_ids = {
             token: self.tokenizer.convert_tokens_to_ids(token)
             for token in special_tokens

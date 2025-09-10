@@ -51,25 +51,23 @@ def load_astropt(
     model_args = checkpoint["model_args"]
     modality_registry = checkpoint["modality_registry"]
 
-    if use_llm_backbone:
-        model_args["backbone"] = "llm"
-        model_args["llm_model_name"] = llm_model_name
-
     config = GPTConfig(**model_args)
     model = GPT(
         config,
         modality_registry,
-        backbone=config.backbone,
-        llm_model_name=config.llm_model_name,
     )
 
     state_dict = checkpoint["model"]
     # fix the keys of the state dictionary :(
-    # honestly no idea how checkpoints sometimes get this prefix, have to debug more
+    # torch.compile adds _orig_mod. prefix to parameter names so we fix below
     unwanted_prefix = "_orig_mod."
-    for k, v in list(state_dict.items()):
-        if k.startswith(unwanted_prefix):
-            state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
+    keys_to_update = []
+    for k in state_dict.keys():
+        if unwanted_prefix in k:
+            new_key = k.replace(unwanted_prefix, "")
+            keys_to_update.append((k, new_key))
+    for old_key, new_key in keys_to_update:
+        state_dict[new_key] = state_dict.pop(old_key)
     model.load_state_dict(state_dict)
 
     dir_info = f"/{path}" if path else ""
