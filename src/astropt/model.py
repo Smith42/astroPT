@@ -338,6 +338,9 @@ class GPTConfig:
     lora_alpha: int = 16
     lora_dropout: float = 0.1
     modalities: list[ModalityConfig] = None
+    # LLM specific parameters
+    backbone: str = "native"  # native or llm
+    llm_model_name: str = None
 
 
 class GPT(nn.Module):
@@ -351,12 +354,63 @@ class GPT(nn.Module):
         assert config.block_size is not None
         self.config = config
         self.modality_registry = modality_registry
+        self.backbone = config.backbone
+
+        if self.backbone == "native":
+            self._init_native_backbone(config)
+        elif self.backbone == "llm":
+            self._init_llm_backbone(config)
+        else:
+            raise ValueError(f"Unknown backbone type: {self.backbone}")
+
+        # optional task head for finetuning
+        self.task_head = None
+        if hasattr(config, "output_dim"):
+            self.task_head = TaskHead(config, config.output_dim)
+
+        # init weights for native model
+        if self.backbone == "native":
+            # init all weights
+            self.apply(self._init_weights)
+            # apply special scaled init to the residual projections, per GPT-2 paper
+            for pn, p in self.named_parameters():
+                if pn.endswith("c_proj.weight"):
+                    torch.nn.init.normal_(
+                        p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer)
+                    )
+
+        # report number of parameters
+        self.master_process = master_process
+        if self.master_process:
+            total_params = sum(p.numel() for p in self.parameters())
+            trainable_params = sum(
+                p.numel() for p in self.parameters() if p.requires_grad
+            )
+            print(f"Model type: {self.backbone}")
+            if self.backbone == "llm":
+                print(f"LLM backbone: {getattr(self, 'llm_config', {}).architectures}")
+            print(f"Total parameters: {total_params / 1e6:.2f}M")
+            print(f"Trainable parameters: {trainable_params / 1e6:.2f}M")
+
+    def get_num_params(self):
+        """Return the number of parameters in the model."""
+        return sum(p.numel() for p in self.parameters())
+
+    def _init_native_backbone(self, config):
+        """Initialize native AstroPT transformer"""
+        self.transformer = nn.ModuleDict(
+            dict(
+                drop=nn.Dropout(config.dropout),
+                h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+                ln_f=LayerNorm(config.n_embd, bias=config.bias),
+            )
+        )
 
         # create encoders and decoders
         encoders = {}
         decoders = {}
         embedders = {}
-        for name, mod_config in modality_registry.modalities.items():
+        for name, mod_config in self.modality_registry.modalities.items():
             encoders[name] = Encoder(config, mod_config.input_size)
             if mod_config.embed_pos:
                 embedders[name] = Embedder(config)
@@ -364,44 +418,80 @@ class GPT(nn.Module):
                 embedders[name] = Encoder(config, mod_config.pos_input_size)
             decoders[name] = Decoder(config, mod_config.input_size)
 
-        self.transformer = nn.ModuleDict(
-            dict(
-                wte=nn.ModuleDict(encoders),
-                wpe=nn.ModuleDict(embedders),
-                drop=nn.Dropout(config.dropout),
-                h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-                ln_f=LayerNorm(config.n_embd, bias=config.bias),
-            )
-        )
-        self.lm_head = nn.ModuleDict(decoders)
+        self.encoders = nn.ModuleDict(encoders)
+        self.decoders = nn.ModuleDict(decoders)
+        self.embedders = nn.ModuleDict(embedders)
+
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
         # This behavior is deprecated and will be an error in future versions"
         # not 100% sure what this is, so far seems to be harmless. TODO investigate
         # TODO rethink weight tying
-        # self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
-        # optional task head for finetuning
-        self.task_head = None
-        if hasattr(config, "output_dim"):
-            self.task_head = TaskHead(config, config.output_dim)
+        # self.encoders.weight = self.decoders.weight # https://paperswithcode.com/method/weight-tying
 
-        # init all weights
-        self.apply(self._init_weights)
-        # apply special scaled init to the residual projections, per GPT-2 paper
-        for pn, p in self.named_parameters():
-            if pn.endswith("c_proj.weight"):
-                torch.nn.init.normal_(
-                    p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer)
-                )
+    def _init_llm_backbone(self, config):
+        """Initialise with pretrained LLM backbone"""
+        from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
-        # report number of parameters
-        self.master_process = master_process
-        if self.master_process:
-            print("number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
+        # Initialize tokenizer for special token handling
+        self.tokenizer = AutoTokenizer.from_pretrained(config.llm_model_name)
 
-    def get_num_params(self):
-        """Return the number of parameters in the model."""
-        return sum(p.numel() for p in self.parameters())
+        self.llm_config = AutoConfig.from_pretrained(config.llm_model_name)
+        self.llm = AutoModelForCausalLM.from_pretrained(
+            config.llm_model_name,
+            torch_dtype=torch.bfloat16,
+        )
+
+        self.config.n_embd = self.llm_config.hidden_size
+
+        # Add special modality tokens
+        special_tokens = []
+        for mod_name in self.modality_registry.names():
+            special_tokens.extend([f"<|begin_{mod_name}|>", f"<|end_{mod_name}|>"])
+
+        self.tokenizer.add_special_tokens({"additional_special_tokens": special_tokens})
+        self.llm.resize_token_embeddings(len(self.tokenizer))
+        self.special_token_ids = {
+            token: self.tokenizer.convert_tokens_to_ids(token)
+            for token in special_tokens
+        }
+
+        if hasattr(config, "lora_r") and config.lora_r > 0:
+            from peft import LoraConfig, get_peft_model
+
+            lora_config = LoraConfig(
+                r=config.lora_r,
+                lora_alpha=2 * config.lora_r,  # a suggested "rule-of-thumb" default
+                target_modules=["q_proj", "v_proj"],
+                task_type="CAUSAL_LM",
+            )
+            self.llm = get_peft_model(self.llm, lora_config)
+        else:
+            for param in self.llm.parameters():
+                param.requires_grad = False
+
+        # create encoders and decoders
+        encoders = {}
+        decoders = {}
+        embedders = {}
+        for name, mod_config in self.modality_registry.modalities.items():
+            encoders[name] = Encoder(config, mod_config.input_size)
+            if mod_config.embed_pos:
+                embedders[name] = Embedder(config)
+            else:
+                embedders[name] = Encoder(config, mod_config.pos_input_size)
+            decoders[name] = Decoder(config, mod_config.input_size)
+
+        self.encoders = nn.ModuleDict(encoders)
+        self.decoders = nn.ModuleDict(decoders)
+        self.embedders = nn.ModuleDict(embedders)
+
+    def to(self, device):
+        """Override to method to ensure LLM backbone moves with the model"""
+        super().to(device)
+        if hasattr(self, "llm") and self.llm is not None:
+            self.llm.to(device)
+        return self
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -411,7 +501,33 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, inputs, targets=None, prefix_len=None, target_modality=None, attention_mask=None):
+    def forward(
+        self,
+        inputs,
+        targets=None,
+        prefix_len=None,
+        target_modality=None,
+        attention_mask=None,
+    ):
+        if self.backbone == "native":
+            return self._forward_native(
+                inputs, targets, prefix_len, target_modality, attention_mask
+            )
+        elif self.backbone == "llm":
+            return self._forward_llm(
+                inputs, targets, prefix_len, target_modality, attention_mask
+            )
+        else:
+            raise ValueError(f"Unknown backbone type: {self.backbone}")
+
+    def _forward_native(
+        self,
+        inputs,
+        targets=None,
+        prefix_len=None,
+        target_modality=None,
+        attention_mask=None,
+    ):
         tt = sum(v.size(1) for k, v in inputs.items() if k.endswith("_positions"))
         assert tt <= self.config.block_size, (
             f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
@@ -438,9 +554,9 @@ class GPT(nn.Module):
         pos_embeddings = []
         for mod_name in self.modality_registry.names():
             input_tensor = inputs[mod_name]
-            embeddings.append(self.transformer.wte[mod_name](input_tensor))
+            embeddings.append(self.encoders[mod_name](input_tensor))
             pos = inputs[mod_name + "_positions"]
-            pos_embeddings.append(self.transformer.wpe[mod_name](pos))
+            pos_embeddings.append(self.embedders[mod_name](pos))
         tok_emb = torch.cat(embeddings, dim=1)
         pos_emb = torch.cat(pos_embeddings, dim=1)
 
@@ -460,12 +576,12 @@ class GPT(nn.Module):
                     if mod_name == target_modality:
                         seq_len = input_tensor.size(1)
                         hidden_state = x[:, current_idx : current_idx + seq_len]
-                        outputs[mod_name] = self.lm_head[mod_name](hidden_state)
+                        outputs[mod_name] = self.decoders[mod_name](hidden_state)
                     current_idx += input_tensor.size(1)
             # target modality not in inputs so start a new sequence
             else:
                 hidden_state = x[:, -1:, :]
-                outputs[target_modality] = self.lm_head[target_modality](hidden_state)
+                outputs[target_modality] = self.decoders[target_modality](hidden_state)
 
         for ii, mod_name in enumerate(self.modality_registry.names()):
             input_tensor = inputs[mod_name]
@@ -475,7 +591,7 @@ class GPT(nn.Module):
             if ii == 0 and len(self.modality_registry.names()) > 1:
                 seq_len = seq_len - 1
             hidden_state = x[:, current_idx : current_idx + seq_len]
-            outputs[mod_name] = self.lm_head[mod_name](hidden_state)
+            outputs[mod_name] = self.decoders[mod_name](hidden_state)
             current_idx += seq_len
 
         if targets is not None:
@@ -490,7 +606,7 @@ class GPT(nn.Module):
                 if self.config.attn_type == "prefix":
                     # TODO fix this and debug
                     raise NotImplementedError(
-                        "Prefix attention not implemented for multimodal model"
+                        "Prefix attention not yet implemented for multimodal model"
                     )
                     ## if we have prefix attention on we only want to
                     ## backprop through tokens where our model cannot
@@ -508,7 +624,7 @@ class GPT(nn.Module):
                     #    prefix_mask[:, :prefix_sublen] = False
                 elif attention_mask is not None:
                     # Extract attention mask for this modality
-                    mod_mask = attention_mask[:, current_idx:current_idx + seq_len]
+                    mod_mask = attention_mask[:, current_idx : current_idx + seq_len]
 
                     unmasked_loss = F.huber_loss(pred, target, reduction="none")
                     mask = mod_mask.unsqueeze(-1)
@@ -522,6 +638,149 @@ class GPT(nn.Module):
             loss = None
 
         return outputs, loss
+
+    def _forward_llm(
+        self,
+        inputs,
+        targets=None,
+        prefix_len=None,
+        target_modality=None,
+        attention_mask=None,
+    ):
+        token_sequences = inputs["token_sequences"]
+        attention_masks = inputs["attention_masks"]
+        modality_infos = inputs["modality_infos"]
+
+        batch_size = token_sequences.shape[0]
+
+        initial_embeddings = self.llm.get_input_embeddings()(token_sequences)
+
+        # Replace placeholder embeddings with actual modality embeddings
+        final_embeddings = initial_embeddings.clone()
+        for batch_idx, mod_info_batch in enumerate(modality_infos):
+            for ii, mod_name in enumerate(mod_info_batch["names"]):
+                start_pos = mod_info_batch["starts"][ii]
+                length = mod_info_batch["lengths"][ii]
+                mod_data = mod_info_batch["data"][ii].unsqueeze(0)  # Add batch dim
+                mod_positions = mod_info_batch["positions"][ii].unsqueeze(0)
+
+                # Encode modality data
+                mod_embeddings = self.encoders[mod_name](mod_data)
+                pos_embeddings = self.embedders[mod_name](mod_positions)
+                combined_embeddings = mod_embeddings + pos_embeddings
+
+                # Replace placeholder embeddings
+                end_pos = start_pos + length
+                final_embeddings[batch_idx, start_pos:end_pos, :] = (
+                    combined_embeddings.squeeze(0)
+                )
+
+        # Forward through LLM with custom embeddings
+        x = self.llm(
+            inputs_embeds=final_embeddings,
+            attention_mask=attention_masks,
+            output_hidden_states=True,
+            return_dict=True,
+        )
+
+        hidden_states = x.hidden_states[-1]
+
+        # Decode outputs for each modality
+        pred_modality_infos = [
+            {
+                "names": [],
+                "starts": [],
+                "lengths": [],
+                "data": [],
+                "positions": [],
+                "losses": [],
+            }
+            for _ in range(batch_size)
+        ]
+        for batch_idx, mod_info_batch in enumerate(modality_infos):
+            for ii, mod_name in enumerate(mod_info_batch["names"]):
+                start_pos = mod_info_batch["starts"][ii] - 1
+                length = mod_info_batch["lengths"][ii]
+
+                mod_hidden = hidden_states[
+                    batch_idx : batch_idx + 1, start_pos : start_pos + length, :
+                ]
+                decoded = self.decoders[mod_name](mod_hidden)
+
+                pred_modality_infos[batch_idx]["names"].append(mod_name)
+                pred_modality_infos[batch_idx]["starts"].append(start_pos)
+                pred_modality_infos[batch_idx]["lengths"].append(length)
+                pred_modality_infos[batch_idx]["data"].append(decoded.squeeze(0))
+                pred_modality_infos[batch_idx]["positions"].append(
+                    torch.arange(length, dtype=torch.long)
+                )
+
+        # Calculate loss if targets provided
+        if targets is not None:
+            target_modality_infos = targets["modality_infos"]
+            loss = 0
+            loss_count = 0
+            for batch_idx in range(len(pred_modality_infos)):
+                pred_info = pred_modality_infos[batch_idx]
+                target_info = target_modality_infos[batch_idx]
+
+                for ii, pred_name in enumerate(pred_info["names"]):
+                    target_data = target_info["data"][ii].squeeze()
+                    pred_data = pred_info["data"][ii].squeeze()
+                    assert pred_name == target_info["names"][ii]
+                    assert pred_data.shape == target_data.shape, (
+                        f"Assertion error: {pred_info['data']}, {target_info['data']}"
+                    )
+                    mod_config = self.modality_registry.get_config(pred_name)
+                    unweighted_loss = F.huber_loss(
+                        pred_data.squeeze(), target_data.squeeze()
+                    )
+                    pred_modality_infos[batch_idx]["losses"].append(
+                        unweighted_loss.detach().item()
+                    )
+                    loss += unweighted_loss * mod_config.loss_weight
+                    loss_count += 1
+
+            loss = loss / loss_count if loss_count > 0 else None
+        else:
+            loss = None
+
+        return pred_modality_infos, loss
+
+    @torch.no_grad()
+    def generate_with_modality_prompts(
+        self, text_prompt, modality_requests, max_new_tokens=50, temperature=0.7
+    ):
+        """Generate responses with modality-specific prompts
+
+        Args:
+            text_prompt: Initial text prompt
+            modality_requests: List of modality names to generate
+            max_new_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+        """
+        # Tokenize initial prompt
+        inputs = self.tokenizer(text_prompt, return_tensors="pt")
+
+        # Add modality begin tokens
+        for mod_name in modality_requests:
+            begin_token = f"<|begin_{mod_name}|>"
+            begin_token_ids = self.tokenizer(
+                begin_token, return_tensors="pt", add_special_tokens=False
+            )
+            inputs.input_ids = torch.cat(
+                [inputs.input_ids, begin_token_ids.input_ids], dim=1
+            )
+
+        # Generate with the LLM
+        outputs = self.llm.generate(
+            inputs.input_ids,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            do_sample=True,
+        )
+
+        return self.tokenizer.decode(outputs[0], skip_special_tokens=False)
 
     def get_embeddings(self, inputs, draw_from_centre=True, prefix_len=None):
         """
@@ -545,9 +804,9 @@ class GPT(nn.Module):
         pos_embeddings = []
         for mod_name in self.modality_registry.names():
             input_tensor = inputs[mod_name]
-            embeddings.append(self.transformer.wte[mod_name](input_tensor))
+            embeddings.append(self.encoders[mod_name](input_tensor))
             pos = inputs[mod_name + "_positions"]
-            pos_embeddings.append(self.transformer.wpe[mod_name](pos))
+            pos_embeddings.append(self.embedders[mod_name](pos))
         tok_emb = torch.cat(embeddings, dim=1)
         pos_emb = torch.cat(pos_embeddings, dim=1)
         x = self.transformer.drop(tok_emb + pos_emb)
@@ -592,9 +851,9 @@ class GPT(nn.Module):
         pos_embeddings = []
         for mod_name in self.modality_registry.names():
             input_tensor = inputs[mod_name]
-            embeddings.append(self.transformer.wte[mod_name](input_tensor))
+            embeddings.append(self.encoders[mod_name](input_tensor))
             pos = inputs[mod_name + "_positions"]
-            pos_embeddings.append(self.transformer.wpe[mod_name](pos))
+            pos_embeddings.append(self.embedders[mod_name](pos))
         tok_emb = torch.cat(embeddings, dim=1)
         pos_emb = torch.cat(pos_embeddings, dim=1)
         x = self.transformer.drop(tok_emb + pos_emb)
@@ -614,9 +873,7 @@ class GPT(nn.Module):
         # model surgery to decrease the block size if necessary
         assert block_size <= self.config.block_size
         self.config.block_size = block_size
-        self.transformer.wpe.weight = nn.Parameter(
-            self.transformer.wpe.weight[:block_size]
-        )
+        self.embedders.weight = nn.Parameter(self.embedders.weight[:block_size])
         for block in self.transformer.h:
             if hasattr(block.attn, "bias"):
                 block.attn.bias = block.attn.bias[:, :, :block_size, :block_size]
