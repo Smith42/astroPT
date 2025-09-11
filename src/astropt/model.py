@@ -800,45 +800,55 @@ class GPT(nn.Module):
         Returns:
             dictionary of embeddings for each modality
         """
-        tt = sum(v.size(1) for k, v in inputs.items() if k.endswith("_positions"))
-        assert tt <= self.config.block_size, (
-            f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
-        )
+        if self.backbone == "llm":
+            raise NotImplementedError("LLM on the way")
+        elif self.backbone == "native":
+            tt = sum(v.size(1) for k, v in inputs.items() if k.endswith("_positions"))
+            assert tt <= self.config.block_size, (
+                f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
+            )
 
-        # generate token embeddings per modality
-        embeddings = []
-        pos_embeddings = []
-        for mod_name in self.modality_registry.names():
-            input_tensor = inputs[mod_name]
-            embeddings.append(self.encoders[mod_name](input_tensor))
-            pos = inputs[mod_name + "_positions"]
-            pos_embeddings.append(self.embedders[mod_name](pos))
-        tok_emb = torch.cat(embeddings, dim=1)
-        pos_emb = torch.cat(pos_embeddings, dim=1)
-        x = self.transformer.drop(tok_emb + pos_emb)
+            # generate token embeddings per modality
+            embeddings = []
+            pos_embeddings = []
+            for mod_name in self.modality_registry.names():
+                try:
+                    input_tensor = inputs[mod_name]
+                    print(input_tensor.shape)
+                except KeyError as err:
+                    print(err)
+                    continue
+                embeddings.append(self.encoders[mod_name](input_tensor))
+                pos = inputs[mod_name + "_positions"]
+                pos_embeddings.append(self.embedders[mod_name](pos))
+            tok_emb = torch.cat(embeddings, dim=1)
+            pos_emb = torch.cat(pos_embeddings, dim=1)
+            x = self.transformer.drop(tok_emb + pos_emb)
 
-        for i, block in enumerate(
-            self.transformer.h
-        ):  # by default we take the penultimate layer as the embedding layer
-            x = block(x)
-            if draw_from_centre and i == len(self.transformer.h) // 2:
-                centre_embeddings = x
+            for i, block in enumerate(
+                self.transformer.h
+            ):  # by default we take the penultimate layer as the embedding layer
+                x = block(x)
+                if draw_from_centre and i == len(self.transformer.h) // 2:
+                    centre_embeddings = x
 
-        if not draw_from_centre:
-            embeddings_out = self.transformer.ln_f(x)
+            if not draw_from_centre:
+                embeddings_out = self.transformer.ln_f(x)
+            else:
+                embeddings_out = centre_embeddings
+
+            # split embeddings by modality
+            result = {}
+            current_idx = 0
+            for mod_name in self.modality_registry.names():
+                input_tensor = inputs[mod_name]
+                seq_len = input_tensor.size(1)
+                result[mod_name] = embeddings_out[:, current_idx : current_idx + seq_len]
+                current_idx += seq_len
+
+            return result
         else:
-            embeddings_out = centre_embeddings
-
-        # split embeddings by modality
-        result = {}
-        current_idx = 0
-        for mod_name in self.modality_registry.names():
-            input_tensor = inputs[mod_name]
-            seq_len = input_tensor.size(1)
-            result[mod_name] = embeddings_out[:, current_idx : current_idx + seq_len]
-            current_idx += seq_len
-
-        return result
+            raise NotImplementedError("Backbone needs to be one of 'native' and 'llm'")
 
     def get_task_prediction(self, inputs, prefix_len=None, targets=None):
         """Forward pass for task prediction during finetuning"""
