@@ -51,9 +51,9 @@ if __name__ == "__main__":
             streaming=True,
             split="test",
         )
-        .select_columns(("image", "mag_g"))
+        .select_columns(("image", "smooth-or-featured_smooth_fraction"))
         #.filter(lambda idx: idx["mag_g"] is not None)
-        .shuffle(seed=None, buffer_size=1000)
+        #.shuffle(seed=None, buffer_size=1000)
         .take(1000)
     )
 
@@ -88,9 +88,10 @@ if __name__ == "__main__":
         zss = []
         yss = []
         for B in tqdm(dl):
-            zs = model.generate_embeddings(B["X"])["images"].detach().numpy()
+            zs = model.generate_embeddings(B["X"])["images"].detach().float().numpy()
             zss.append(zs)
-            yss.append(B["mag_g"].detach().numpy())
+            mag_g_values = [info["data"][info["names"].index("smooth-or-featured_smooth_fraction")].item() for info in B["X"]["modality_infos"]]
+            yss.append(np.array(mag_g_values))
         zss = np.concatenate(zss, axis=0)
         yss = np.concatenate(yss, axis=0)
         np.save("zss.npy", zss)
@@ -119,7 +120,7 @@ if __name__ == "__main__":
 
     vmax = np.percentile(yss, 95)
     plt.scatter(X_pca[:, 0], X_pca[:, 1], c=yss, vmax=vmax, cmap="viridis")
-    plt.colorbar(label="mag_g")
+    plt.colorbar(label="smooth-or-featured_smooth_fraction")
     plt.show()
 
     plt.plot(yss[halfway:], pss, ".")

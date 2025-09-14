@@ -854,7 +854,8 @@ class GPT(nn.Module):
                     if mod_name not in result:
                         result[mod_name] = mod_hidden
                     else:
-                        result[mod_name] = torch.cat([result[mod_name], mod_hidden, dim=0])
+                        result[mod_name] = torch.cat([result[mod_name], mod_hidden], dim=0)
+            return result
 
         elif self.backbone == "native":
             tt = sum(v.size(1) for k, v in inputs.items() if k.endswith("_positions"))
