@@ -67,14 +67,6 @@ def data_transforms():
     return transform
 
 
-def process_galaxy_wrapper(galdict, func):
-    patch_galaxy = func(np.array(galdict["image"]).swapaxes(0, 2))
-    return {
-        "images": patch_galaxy.to(torch.float),
-        "images_positions": torch.arange(0, len(patch_galaxy), dtype=torch.long),
-    }
-
-
 def to_device(x, device):
     if hasattr(x, "to"):
         return x.to(device)

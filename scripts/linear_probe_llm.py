@@ -28,25 +28,9 @@ if __name__ == "__main__":
 
     def data_transforms():
         transform = transforms.Compose(
-            [
-                transforms.Lambda(normalise),
-            ]
+            [transforms.Lambda(normalise),]
         )
         return transform
-
-    def _process_galaxy_wrapper(idx, func):
-        """This function ensures that the image is tokenised in the same way as
-        the pre-trained model is expecting"""
-        galaxy = func(
-            torch.from_numpy(np.array(idx["image"]).swapaxes(0, 2)).to(float)
-        ).to(torch.float)
-        galaxy_positions = torch.arange(0, len(galaxy), dtype=torch.long)
-        mag_g = idx["mag_g"]
-        return {
-            "images": galaxy,
-            "images_positions": galaxy_positions,
-            "mag_g": mag_g,
-        }
 
     model = load_astropt(repo_id="Smith42/astroPT_v3.0", path="astropt/smollm")
 
@@ -55,7 +39,7 @@ if __name__ == "__main__":
         load_dataset(
             "Smith42/galaxies",
             revision="v2.0",
-            streaming=stream_hf_dataset,
+            streaming=True,
             split="test",
         )
         .select_columns(("image", "mag_g"))
@@ -68,8 +52,8 @@ if __name__ == "__main__":
 
     unwrapped_model = model.module if hasattr(model, "module") else model
     ds = LLMModalityDataset(
-        hf_dataset=galaxies_test,
-        modality_registry=modality_registry,
+        hf_dataset=galaxies,
+        modality_registry=unwrapped_model.modality_registry,
         tokenizer=unwrapped_model.tokenizer,
         special_token_ids=unwrapped_model.special_token_ids,
         transforms=transforms,
