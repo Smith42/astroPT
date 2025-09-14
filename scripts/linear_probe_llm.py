@@ -20,6 +20,15 @@ from tqdm import tqdm
 from astropt.local_datasets import LLMModalityDataset, llm_collate_fn
 from astropt.model_utils import load_astropt
 
+def to_device(x, device):
+    if hasattr(x, "to"):
+        return x.to(device)
+    if isinstance(x, dict):
+        return {k: to_device(v, device) for k, v in x.items()}
+    if isinstance(x, list):
+        return [to_device(i, device) for i in x]
+    return x
+
 if __name__ == "__main__":
     # set up HF galaxies in test set to be processed
     def normalise(x):
@@ -43,7 +52,7 @@ if __name__ == "__main__":
             split="test",
         )
         .select_columns(("image", "mag_g"))
-        .filter(lambda idx: idx["mag_g"] is not None)
+        #.filter(lambda idx: idx["mag_g"] is not None)
         .shuffle(seed=None, buffer_size=1000)
         .take(1000)
     )
@@ -79,9 +88,7 @@ if __name__ == "__main__":
         zss = []
         yss = []
         for B in tqdm(dl):
-            zs = model.generate_embeddings({
-                "images": B["images"], "images_positions": B["images_positions"]
-            })["images"].detach().numpy()
+            zs = model.generate_embeddings(B["X"])["images"].detach().numpy()
             zss.append(zs)
             yss.append(B["mag_g"].detach().numpy())
         zss = np.concatenate(zss, axis=0)

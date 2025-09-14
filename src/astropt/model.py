@@ -837,10 +837,39 @@ class GPT(nn.Module):
                 return_dict=True,
             )
 
-            layer_idx = len(outputs.hidden_states) // 2 if draw_from_centre else -1 
+            layer_idx = len(x.hidden_states) // 2 if draw_from_centre else -1 
             hidden_states = x.hidden_states[layer_idx]
 
-            return hidden_states
+            # Decode outputs for each modality
+            pred_modality_infos = [
+                {
+                    "names": [],
+                    "starts": [],
+                    "lengths": [],
+                    "data": [],
+                    "positions": [],
+                    "losses": [],
+                }
+                for _ in range(batch_size)
+            ]
+            for batch_idx, mod_info_batch in enumerate(modality_infos):
+                for ii, mod_name in enumerate(mod_info_batch["names"]):
+                    start_pos = mod_info_batch["starts"][ii] - 1
+                    length = mod_info_batch["lengths"][ii]
+
+                    mod_hidden = hidden_states[
+                        batch_idx : batch_idx + 1, start_pos : start_pos + length, :
+                    ]
+
+                    pred_modality_infos[batch_idx]["names"].append(mod_name)
+                    pred_modality_infos[batch_idx]["starts"].append(start_pos)
+                    pred_modality_infos[batch_idx]["lengths"].append(length)
+                    pred_modality_infos[batch_idx]["data"].append(mod_hidden)
+                    pred_modality_infos[batch_idx]["positions"].append(
+                        torch.arange(length, dtype=torch.long)
+                    )
+
+            return pred_modality_infos
 
         elif self.backbone == "native":
             tt = sum(v.size(1) for k, v in inputs.items() if k.endswith("_positions"))
