@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
 
-from astropt.local_datasets import GalaxyImageDataset
+from astropt.local_datasets import LLMModalityDataset, llm_collate_fn
 from astropt.model_utils import load_astropt
 
 if __name__ == "__main__":
@@ -49,28 +49,39 @@ if __name__ == "__main__":
         }
 
     model = load_astropt(repo_id="Smith42/astroPT_v3.0", path="astropt/smollm")
-    galproc = GalaxyImageDataset(
-        None,
-        spiral=True,
-        transform={"images": data_transforms()},
-        modality_registry=model.modality_registry,
-    )
+
     # load dataset: we select mag_g as it is easy for this example but there are many values in Smith42/galaxies v2.0, you can choose from any column in hf.co/datasets/Smith42/galaxies_metadata
-    ds = (
-        load_dataset("Smith42/galaxies", split="test", revision="v2.0", streaming=True)
+    galaxies = (
+        load_dataset(
+            "Smith42/galaxies",
+            revision="v2.0",
+            streaming=stream_hf_dataset,
+            split="test",
+        )
         .select_columns(("image", "mag_g"))
         .filter(lambda idx: idx["mag_g"] is not None)
-        .map(partial(_process_galaxy_wrapper, func=galproc.process_galaxy))
-        .with_format("torch")
-        .take(
-            1000
-        )  # use the first 1k examples of our dataset to shorten total inference time
+        .shuffle(seed=None, buffer_size=1000)
+        .take(1000)
+    )
+
+    transforms = {"images": data_transforms()}
+
+    unwrapped_model = model.module if hasattr(model, "module") else model
+    ds = LLMModalityDataset(
+        hf_dataset=galaxies_test,
+        modality_registry=modality_registry,
+        tokenizer=unwrapped_model.tokenizer,
+        special_token_ids=unwrapped_model.special_token_ids,
+        transforms=transforms,
+        random_order=False,
     )
     dl = iter(
         DataLoader(
             ds,
-            batch_size=32,
+            batch_size=16,
             num_workers=0,
+            collate_fn=llm_collate_fn,
+            pin_memory=True,
         )
     )
 

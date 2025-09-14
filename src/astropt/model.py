@@ -801,7 +801,47 @@ class GPT(nn.Module):
             dictionary of embeddings for each modality
         """
         if self.backbone == "llm":
-            raise NotImplementedError("LLM on the way")
+            token_sequences = inputs["token_sequences"]
+            attention_masks = inputs["attention_masks"]
+            modality_infos = inputs["modality_infos"]
+
+            batch_size = token_sequences.shape[0]
+
+            initial_embeddings = self.llm.get_input_embeddings()(token_sequences)
+
+            # Replace placeholder embeddings with actual modality embeddings
+            final_embeddings = initial_embeddings.clone()
+            for batch_idx, mod_info_batch in enumerate(modality_infos):
+                for ii, mod_name in enumerate(mod_info_batch["names"]):
+                    start_pos = mod_info_batch["starts"][ii]
+                    length = mod_info_batch["lengths"][ii]
+                    mod_data = mod_info_batch["data"][ii].unsqueeze(0)  # Add batch dim
+                    mod_positions = mod_info_batch["positions"][ii].unsqueeze(0)
+
+                    # Encode modality data
+                    mod_embeddings = self.encoders[mod_name](mod_data)
+                    pos_embeddings = self.embedders[mod_name](mod_positions)
+                    combined_embeddings = mod_embeddings + pos_embeddings
+
+                    # Replace placeholder embeddings
+                    end_pos = start_pos + length
+                    final_embeddings[batch_idx, start_pos:end_pos, :] = (
+                        combined_embeddings.squeeze(0)
+                    )
+
+            # Forward through LLM with custom embeddings
+            x = self.llm(
+                inputs_embeds=final_embeddings,
+                attention_mask=attention_masks,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+
+            layer_idx = len(outputs.hidden_states) // 2 if draw_from_centre else -1 
+            hidden_states = x.hidden_states[layer_idx]
+
+            return hidden_states
+
         elif self.backbone == "native":
             tt = sum(v.size(1) for k, v in inputs.items() if k.endswith("_positions"))
             assert tt <= self.config.block_size, (
