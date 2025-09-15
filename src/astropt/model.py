@@ -447,10 +447,16 @@ class GPT(nn.Module):
         # Add special modality tokens
         special_tokens = []
         for mod_name in self.modality_registry.names():
-            special_tokens.extend([f"<|begin_{mod_name}|>", f"<|end_{mod_name}|>"])
+            special_tokens.extend([f"<|begin_{mod_name}|>", f"<|{mod_name}|>", f"<|end_{mod_name}|>"])
 
-        self.tokenizer.add_special_tokens({"additional_special_tokens": special_tokens})
-        self.llm.resize_token_embeddings(len(self.tokenizer))
+        # Check if special tokens are already in tokenizer (e.g., when loading checkpoint)
+        tokens_to_add = [token for token in special_tokens 
+                         if token not in self.tokenizer.get_vocab()]
+
+        if tokens_to_add:
+            self.tokenizer.add_special_tokens({"additional_special_tokens": tokens_to_add})
+            self.llm.resize_token_embeddings(len(self.tokenizer))
+
         self.special_token_ids = {
             token: self.tokenizer.convert_tokens_to_ids(token)
             for token in special_tokens
@@ -794,45 +800,110 @@ class GPT(nn.Module):
         Returns:
             dictionary of embeddings for each modality
         """
-        tt = sum(v.size(1) for k, v in inputs.items() if k.endswith("_positions"))
-        assert tt <= self.config.block_size, (
-            f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
-        )
+        if self.backbone == "llm":
+            token_sequences = inputs["token_sequences"]
+            attention_masks = inputs["attention_masks"]
+            modality_infos = inputs["modality_infos"]
 
-        # generate token embeddings per modality
-        embeddings = []
-        pos_embeddings = []
-        for mod_name in self.modality_registry.names():
-            input_tensor = inputs[mod_name]
-            embeddings.append(self.encoders[mod_name](input_tensor))
-            pos = inputs[mod_name + "_positions"]
-            pos_embeddings.append(self.embedders[mod_name](pos))
-        tok_emb = torch.cat(embeddings, dim=1)
-        pos_emb = torch.cat(pos_embeddings, dim=1)
-        x = self.transformer.drop(tok_emb + pos_emb)
+            batch_size = token_sequences.shape[0]
 
-        for i, block in enumerate(
-            self.transformer.h
-        ):  # by default we take the penultimate layer as the embedding layer
-            x = block(x)
-            if draw_from_centre and i == len(self.transformer.h) // 2:
-                centre_embeddings = x
+            initial_embeddings = self.llm.get_input_embeddings()(token_sequences)
 
-        if not draw_from_centre:
-            embeddings_out = self.transformer.ln_f(x)
+            # Replace placeholder embeddings with actual modality embeddings
+            final_embeddings = initial_embeddings.clone()
+            for batch_idx, mod_info_batch in enumerate(modality_infos):
+                for ii, mod_name in enumerate(mod_info_batch["names"]):
+                    start_pos = mod_info_batch["starts"][ii]
+                    length = mod_info_batch["lengths"][ii]
+                    mod_data = mod_info_batch["data"][ii].unsqueeze(0)  # Add batch dim
+                    mod_positions = mod_info_batch["positions"][ii].unsqueeze(0)
+
+                    # Encode modality data
+                    mod_embeddings = self.encoders[mod_name](mod_data)
+                    pos_embeddings = self.embedders[mod_name](mod_positions)
+                    combined_embeddings = mod_embeddings + pos_embeddings
+
+                    # Replace placeholder embeddings
+                    end_pos = start_pos + length
+                    final_embeddings[batch_idx, start_pos:end_pos, :] = (
+                        combined_embeddings.squeeze(0)
+                    )
+
+            # Forward through LLM with custom embeddings
+            x = self.llm(
+                inputs_embeds=final_embeddings,
+                attention_mask=attention_masks,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+
+            layer_idx = len(x.hidden_states) // 2 if draw_from_centre else -1 
+            hidden_states = x.hidden_states[layer_idx]
+
+            # Decode outputs for each modality
+            result = {}
+            for batch_idx, mod_info_batch in enumerate(modality_infos):
+                for ii, mod_name in enumerate(mod_info_batch["names"]):
+                    start_pos = mod_info_batch["starts"][ii] - 1
+                    length = mod_info_batch["lengths"][ii]
+
+                    mod_hidden = hidden_states[
+                        batch_idx : batch_idx + 1, start_pos : start_pos + length, :
+                    ]
+
+                    if mod_name not in result:
+                        result[mod_name] = mod_hidden
+                    else:
+                        result[mod_name] = torch.cat([result[mod_name], mod_hidden], dim=0)
+            return result
+
+        elif self.backbone == "native":
+            tt = sum(v.size(1) for k, v in inputs.items() if k.endswith("_positions"))
+            assert tt <= self.config.block_size, (
+                f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
+            )
+
+            # generate token embeddings per modality
+            embeddings = []
+            pos_embeddings = []
+            for mod_name in self.modality_registry.names():
+                try:
+                    input_tensor = inputs[mod_name]
+                    print(input_tensor.shape)
+                except KeyError as err:
+                    print(err)
+                    continue
+                embeddings.append(self.encoders[mod_name](input_tensor))
+                pos = inputs[mod_name + "_positions"]
+                pos_embeddings.append(self.embedders[mod_name](pos))
+            tok_emb = torch.cat(embeddings, dim=1)
+            pos_emb = torch.cat(pos_embeddings, dim=1)
+            x = self.transformer.drop(tok_emb + pos_emb)
+
+            for i, block in enumerate(
+                self.transformer.h
+            ):  # by default we take the penultimate layer as the embedding layer
+                x = block(x)
+                if draw_from_centre and i == len(self.transformer.h) // 2:
+                    centre_embeddings = x
+
+            if not draw_from_centre:
+                embeddings_out = self.transformer.ln_f(x)
+            else:
+                embeddings_out = centre_embeddings
+
+            # split embeddings by modality
+            result = {}
+            current_idx = 0
+            for mod_name in self.modality_registry.names():
+                input_tensor = inputs[mod_name]
+                seq_len = input_tensor.size(1)
+                result[mod_name] = embeddings_out[:, current_idx : current_idx + seq_len]
+                current_idx += seq_len
+
+            return result
         else:
-            embeddings_out = centre_embeddings
-
-        # split embeddings by modality
-        result = {}
-        current_idx = 0
-        for mod_name in self.modality_registry.names():
-            input_tensor = inputs[mod_name]
-            seq_len = input_tensor.size(1)
-            result[mod_name] = embeddings_out[:, current_idx : current_idx + seq_len]
-            current_idx += seq_len
-
-        return result
+            raise NotImplementedError("Backbone needs to be one of 'native' and 'llm'")
 
     def get_task_prediction(self, inputs, prefix_len=None, targets=None):
         """Forward pass for task prediction during finetuning"""
