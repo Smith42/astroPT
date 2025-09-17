@@ -30,6 +30,6 @@ checkpoint_interval = 1000
 eval_iters = 100
 log_interval = 50
 log_via_wandb = True
-out_dir = "logs/smollm-135M"
+out_dir = "logs/smollm-135M-fixed-param"
 
 wandb_project = "smollm"
