@@ -129,8 +129,11 @@ class SelfAttention(nn.Module):
         assert config.n_embd % config.n_head == 0
         # key, query, value projections for all heads, but in a batch
         if hasattr(config, "lora_r") and config.lora_r > 0:
+            # use rank-stabilised LoRA scaling: alpha/sqrt(rank) instead of alpha/rank
+            rs_alpha = config.lora_alpha * math.sqrt(config.lora_r)
             self.c_attn = lora.Linear(
-                config.n_embd, 3 * config.n_embd, r=config.lora_r, bias=config.bias
+                config.n_embd, 3 * config.n_embd, r=config.lora_r, 
+                lora_alpha=rs_alpha, bias=config.bias,
             )
         else:
             self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
@@ -335,8 +338,7 @@ class GPTConfig:
     tokeniser: str = "aim" # one of "aim" or "affine"
     # LoRA params
     lora_r: int = 0  # rank, 0 disables LoRA
-    lora_alpha: int = 16
-    lora_dropout: float = 0.1
+    lora_alpha: int = 32
     modalities: list[ModalityConfig] = None
     # LLM specific parameters
     backbone: str = "native"  # native or llm
@@ -467,8 +469,9 @@ class GPT(nn.Module):
 
             lora_config = LoraConfig(
                 r=config.lora_r,
-                lora_alpha=2 * config.lora_r,  # a suggested "rule-of-thumb" default
-                target_modules=["q_proj", "v_proj"],
+                lora_alpha=config.lora_alpha,
+                use_rslora=True, # use rank stabilised lora https://huggingface.co/blog/damjan-k/rslora
+                target_modules="all-linear",
                 task_type="CAUSAL_LM",
             )
             self.llm = get_peft_model(self.llm, lora_config)
