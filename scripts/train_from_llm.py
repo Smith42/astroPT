@@ -157,7 +157,8 @@ if __name__ == "__main__":
     modality_registry = ModalityRegistry(modalities)
     # Which backbone and LoRA rank do we use?
     llm_model_name = "HuggingFaceTB/SmolLM3-3B"  # or "HuggingFaceTB/SmolLM3-3B-Base"
-    lora_r = 256
+    lora_r = 32
+    use_qlora = False
     # Choose tokenisers from "affine" and "aim"
     tokeniser = "affine"
     # adamw optimizer
