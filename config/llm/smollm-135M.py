@@ -6,7 +6,7 @@
 # don't forget to $(mkdir logs) !
 
 llm_model_name = "HuggingFaceTB/SmolLM2-135M"
-lora_r = 256
+lora_r = 32
 
 tokeniser = "affine"
 
@@ -30,6 +30,6 @@ checkpoint_interval = 1000
 eval_iters = 100
 log_interval = 50
 log_via_wandb = True
-out_dir = "logs/smollm-135M-fixed-param"
+out_dir = "logs/smollm-135M"
 
 wandb_project = "smollm"

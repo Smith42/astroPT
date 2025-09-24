@@ -6,11 +6,11 @@
 # don't forget to $(mkdir logs) !
 
 llm_model_name = "HuggingFaceTB/SmolLM3-3B"
-lora_r = 18
+lora_r = 32
 
 tokeniser = "affine"
 
-learning_rate = 6e-4  # max learning rate
+learning_rate = 3e-4  # max learning rate
 max_iters = (
     12000  # total number of training iterations for one pass over our dataset
 )
@@ -30,6 +30,6 @@ checkpoint_interval = 1000
 eval_iters = 100
 log_interval = 50
 log_via_wandb = True
-out_dir = "logs/smollm-3000M-fixed-param"
+out_dir = "logs/smollm-3000M"
 
 wandb_project = "smollm"
