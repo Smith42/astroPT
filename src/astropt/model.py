@@ -338,7 +338,8 @@ class GPTConfig:
     tokeniser: str = "aim" # one of "aim" or "affine"
     # LoRA params
     lora_r: int = 0  # rank, 0 disables LoRA
-    lora_alpha: int = 32
+    lora_alpha: int = 2
+    use_qlora: bool = False
     modalities: list[ModalityConfig] = None
     # LLM specific parameters
     backbone: str = "native"  # native or llm
@@ -439,10 +440,23 @@ class GPT(nn.Module):
         self.tokenizer = AutoTokenizer.from_pretrained(config.llm_model_name)
 
         self.llm_config = AutoConfig.from_pretrained(config.llm_model_name)
-        self.llm = AutoModelForCausalLM.from_pretrained(
-            config.llm_model_name,
-            torch_dtype=torch.bfloat16,
-        )
+
+        if config.use_qlora:
+            from transformers import BitsAndBytesConfig
+            quant_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
+            )
+            self.llm = AutoModelForCausalLM.from_pretrained(
+                config.llm_model_name,
+                quantization_config=quant_config,
+            )
+        else:
+            self.llm = AutoModelForCausalLM.from_pretrained(
+                config.llm_model_name,
+                torch_dtype=torch.bfloat16,
+            )
 
         self.config.n_embd = self.llm_config.hidden_size
 
