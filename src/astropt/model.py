@@ -338,7 +338,7 @@ class GPTConfig:
     tokeniser: str = "aim" # one of "aim" or "affine"
     # LoRA params
     lora_r: int = 0  # rank, 0 disables LoRA
-    lora_alpha: int = 2
+    lora_alpha: float = 2.0
     use_qlora: bool = False
     modalities: list[ModalityConfig] = None
     # LLM specific parameters
@@ -480,7 +480,6 @@ class GPT(nn.Module):
 
         if hasattr(config, "lora_r") and config.lora_r > 0:
             from peft import LoraConfig, get_peft_model
-
             lora_config = LoraConfig(
                 r=config.lora_r,
                 lora_alpha=config.lora_alpha,
