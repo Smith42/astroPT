@@ -338,7 +338,7 @@ class GPTConfig:
     tokeniser: str = "aim" # one of "aim" or "affine"
     # LoRA params
     lora_r: int = 0  # rank, 0 disables LoRA
-    lora_alpha: int = 2
+    lora_alpha: float = 2.0
     use_qlora: bool = False
     modalities: list[ModalityConfig] = None
     # LLM specific parameters
@@ -392,6 +392,8 @@ class GPT(nn.Module):
             print(f"Model type: {self.backbone}")
             if self.backbone == "llm":
                 print(f"LLM backbone: {getattr(self, 'llm_config', {}).architectures}")
+            if self.config.use_qlora:
+                print("Note that the total param count will be lower than expected if qlora is active:\nhttps://discuss.huggingface.co/t/number-of-parameters-reduced-after-loading-in-4bit/50140/7")
             print(f"Total parameters: {total_params / 1e6:.2f}M")
             print(f"Trainable parameters: {trainable_params / 1e6:.2f}M")
 
@@ -479,8 +481,9 @@ class GPT(nn.Module):
         }
 
         if hasattr(config, "lora_r") and config.lora_r > 0:
-            from peft import LoraConfig, get_peft_model
-
+            from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+            if config.use_qlora:
+                self.llm = prepare_model_for_kbit_training(self.llm)
             lora_config = LoraConfig(
                 r=config.lora_r,
                 lora_alpha=config.lora_alpha,
