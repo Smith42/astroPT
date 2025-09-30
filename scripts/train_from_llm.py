@@ -158,7 +158,7 @@ if __name__ == "__main__":
     # Which backbone and LoRA rank do we use?
     llm_model_name = "HuggingFaceTB/SmolLM3-3B"  # or "HuggingFaceTB/SmolLM3-3B-Base"
     lora_r = 32
-    lora_alpha = 2.0
+    lora_alpha = 32
     use_qlora = False
     # Choose tokenisers from "affine" and "aim"
     tokeniser = "affine"
@@ -310,24 +310,28 @@ if __name__ == "__main__":
         iter_num = checkpoint["iter_num"]
         best_val_loss = checkpoint["best_val_loss"]
 
-    galaxies_train = (
-        load_dataset(
+    galaxies_train = load_dataset(
             "Smith42/galaxies",
             revision="v2.0",
             streaming=stream_hf_dataset,
             split="train",
-        )
+    )
+    if not stream_hf_dataset:
+        galaxies_train = galaxies_train.to_iterable_dataset(num_shards=num_workers)
+    galaxies_train = (galaxies_train
         .select_columns(["image"] + galaxy_params)
         .shuffle(seed=None, buffer_size=1000)
     )
     galaxies_train = itertools.cycle(galaxies_train)
-    galaxies_test = (
-        load_dataset(
+    galaxies_test = load_dataset(
             "Smith42/galaxies",
             revision="v2.0",
             streaming=stream_hf_dataset,
             split="test",
-        )
+    )
+    if not stream_hf_dataset:
+        galaxies_test = galaxies_test.to_iterable_dataset(num_shards=num_workers)
+    galaxies_test = (galaxies_test
         .select_columns(["image"] + galaxy_params)
         .shuffle(seed=None, buffer_size=1000)
     )
