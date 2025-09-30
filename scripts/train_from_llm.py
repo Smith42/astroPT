@@ -158,6 +158,7 @@ if __name__ == "__main__":
     # Which backbone and LoRA rank do we use?
     llm_model_name = "HuggingFaceTB/SmolLM3-3B"  # or "HuggingFaceTB/SmolLM3-3B-Base"
     lora_r = 32
+    lora_alpha = 2.0
     use_qlora = False
     # Choose tokenisers from "affine" and "aim"
     tokeniser = "affine"
@@ -260,6 +261,8 @@ if __name__ == "__main__":
         backbone="llm",
         llm_model_name=llm_model_name,
         lora_r=lora_r,
+        lora_alpha=lora_alpha,
+        use_qlora=use_qlora,
         n_chan=n_chan,
         modalities=modalities,
         tokeniser=tokeniser,
@@ -399,6 +402,9 @@ if __name__ == "__main__":
             block_size  # so that the checkpoint will have the right value
         )
     model.to(device)
+
+    print(f"Allocated model memory: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+    print(f"Reserved model memory: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
 
     # For DDP with LLM backbone, ensure all components are on the correct device
     if ddp and hasattr(model, "llm") and model.llm is not None:
