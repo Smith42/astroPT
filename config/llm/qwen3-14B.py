@@ -5,31 +5,30 @@
 #
 # don't forget to $(mkdir logs) !
 
-llm_model_name = "HuggingFaceTB/SmolLM3-3B"
-lora_r = 256
+llm_model_name = "Qwen/Qwen3-14B"
+lora_r = 256 
+use_qlora = True
 
 tokeniser = "affine"
 
 learning_rate = 1e-4  # max learning rate
-max_iters = (
-    12000  # total number of training iterations for one pass over our dataset
-)
-min_lr = learning_rate# / 10
+min_lr = learning_rate #/ 10
 
 init_from = "scratch"
 batch_size = 32
-gradient_accumulation_steps = 1 # fine for 1 GPU
+gradient_accumulation_steps = 1
 num_workers = 64
 
 max_iters = 60000 # less than in a full run
 lr_decay_iters = 55000 * 1.1
+stream_hf_dataset = False  # stream the galaxies from huggingface
 
 # eval stuff
 eval_interval = 100
 checkpoint_interval = 1000
 eval_iters = 100
-log_interval = 50
+log_interval = 10
 log_via_wandb = True
-out_dir = "logs/smollm-3000M"
+out_dir = "logs/qwen30B"
 
 wandb_project = "smollm"

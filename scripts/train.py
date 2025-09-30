@@ -148,7 +148,6 @@ if __name__ == "__main__":
     device = "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
     dtype = "bfloat16"  # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
     compile = True  # use PyTorch 2.0 to compile the model to be faster
-    log_via_wandb = False
     wandb_project = None
     # -----------------------------------------------------------------------------
     config_keys = [
@@ -453,8 +452,8 @@ if __name__ == "__main__":
                     if log_via_wandb:
                         wandb.log(
                             {
-                                "Y": wandb.Image(Yim.swapaxes(1, -1)),
-                                "P": wandb.Image(Pim.swapaxes(1, -1)),
+                                "Y": wandb.Image(Yim.to(float).swapaxes(1, -1)),
+                                "P": wandb.Image(Pim.to(float).swapaxes(1, -1)),
                             }
                         )
 

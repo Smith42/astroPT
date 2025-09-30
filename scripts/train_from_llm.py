@@ -565,11 +565,11 @@ if __name__ == "__main__":
                         wandb.log(
                             {
                                 "Y": [
-                                    wandb.Image(mmn(im.swapaxes(0, -1)))
+                                    wandb.Image(mmn(im.to(float).swapaxes(0, -1)))
                                     for im in Yim[:32]
                                 ],
                                 "P": [
-                                    wandb.Image(mmn(im.swapaxes(0, -1)))
+                                    wandb.Image(mmn(im.to(float).swapaxes(0, -1)))
                                     for im in Pim[:32]
                                 ],
                             },
