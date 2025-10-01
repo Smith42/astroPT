@@ -276,9 +276,6 @@ class Encoder(nn.Module):
         self.tokeniser = config.tokeniser
         if self.tokeniser == "affine":
             self.c_fc = nn.Linear(in_size, config.n_embd, bias=config.bias)
-        elif self.tokeniser == "aion":
-            from aion import CodecManager
-            self.codec_manager = CodecManager()
         else:
             # default to AIM tokeniser for back compatability
             self.c_fc = nn.Linear(in_size, 4 * config.n_embd, bias=config.bias)
@@ -287,8 +284,6 @@ class Encoder(nn.Module):
     def forward(self, x):
         if self.tokeniser == "affine":
             return self.c_fc(x)
-        elif self.tokeniser == "aion":
-            return self.codec_manager.encode(x)
         else: # assume AIM
             x = self.c_fc(x)
             x = new_gelu(x)
@@ -304,9 +299,6 @@ class Decoder(nn.Module):
         self.tokeniser = config.tokeniser
         if self.tokeniser == "affine":
             self.c_fc = nn.Linear(config.n_embd, out_size, bias=config.bias)
-        elif self.tokeniser == "aion":
-            from aion import CodecManager
-            self.codec_manager = CodecManager()
         else:
             # default to AIM tokeniser for back compatability
             self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
@@ -315,8 +307,6 @@ class Decoder(nn.Module):
     def forward(self, x):
         if self.tokeniser == "affine":
             return self.c_fc(x)
-        elif self.tokeniser == "aion":
-            return self.codec_manager.decode(x)
         else: # assume AIM
             x = self.c_fc(x)
             x = new_gelu(x)
