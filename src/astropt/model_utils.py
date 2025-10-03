@@ -68,7 +68,18 @@ def load_astropt(
             keys_to_update.append((k, new_key))
     for old_key, new_key in keys_to_update:
         state_dict[new_key] = state_dict.pop(old_key)
-    model.load_state_dict(state_dict)
+    try:
+        model.load_state_dict(state_dict)
+    except RuntimeError as err:
+        print(err)
+        print("Assuming we are loading a version of AstroPT < 3.0, so altering state dict key names to fit...")
+        state_dict["encoders.images.c_fc.weight"] = state_dict.pop("transformer.wte.images.c_fc.weight")
+        state_dict["encoders.images.c_proj.weight"] = state_dict.pop("transformer.wte.images.c_proj.weight")
+        state_dict["decoders.images.c_fc.weight"] = state_dict.pop("lm_head.images.c_fc.weight")
+        state_dict["decoders.images.c_proj.weight"] = state_dict.pop("lm_head.images.c_proj.weight")
+        state_dict["embedders.images.wpe.weight"] = state_dict.pop("transformer.wpe.images.wpe.weight")
+        model.load_state_dict(state_dict)
+
 
     dir_info = f"/{path}" if path else ""
     print(f"model loaded successfully from {repo_id}{dir_info}")
