@@ -291,6 +291,7 @@ if __name__ == "__main__":
         dropout=dropout,
         modalities=modalities,
         attn_type=attn_type,
+        tokeniser=tokeniser,
     )
 
     if init_from == "scratch":
