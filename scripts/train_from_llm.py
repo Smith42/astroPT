@@ -411,11 +411,12 @@ if __name__ == "__main__":
     print(f"Reserved model memory: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
 
     # For DDP with LLM backbone, ensure all components are on the correct device
-    if ddp and hasattr(model, "llm") and model.llm is not None:
+    if ddp and hasattr(model, "llm") and model.llm is not None and not use_qlora:
         # The .to(device) call above should handle this, but let's be explicit
         model.llm.to(device)
-        for module in [model.encoders, model.decoders, model.embedders]:
-            module.to(device)
+
+    for module in [model.encoders, model.decoders, model.embedders]:
+        module.to(device)
 
     # initialize a GradScaler. If enabled=False scaler is a no-op
     scaler = torch.amp.GradScaler(enabled=(dtype == "float16"))
@@ -450,7 +451,12 @@ if __name__ == "__main__":
         if len(modalities) == 1:
             model = DDP(model, device_ids=[ddp_local_rank])
         else:
-            model = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=True)
+            model = DDP(
+                model, 
+                device_ids=[ddp_local_rank], 
+                find_unused_parameters=True, 
+                gradient_as_bucket_view=True
+            )
 
     # helps estimate an arbitrarily accurate loss over either split using many batches
     @torch.no_grad()

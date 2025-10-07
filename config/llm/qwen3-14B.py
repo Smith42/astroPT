@@ -12,15 +12,15 @@ use_qlora = True
 tokeniser = "affine"
 
 learning_rate = 1e-4  # max learning rate
-min_lr = learning_rate #/ 10
+min_lr = learning_rate / 10
 
 init_from = "scratch"
 batch_size = 32
-gradient_accumulation_steps = 1
+gradient_accumulation_steps = 4
 num_workers = 64
 
-max_iters = 60000 # less than in a full run
-lr_decay_iters = 55000 * 1.1
+max_iters = 30000 # less than in a full run
+lr_decay_iters = 27000 * 1.1
 stream_hf_dataset = False  # stream the galaxies from huggingface
 
 # eval stuff
@@ -29,6 +29,6 @@ checkpoint_interval = 1000
 eval_iters = 100
 log_interval = 10
 log_via_wandb = True
-out_dir = "logs/qwen30B"
+out_dir = "logs/qwen14B"
 
 wandb_project = "smollm"
