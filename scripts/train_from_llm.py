@@ -296,6 +296,7 @@ if __name__ == "__main__":
         ckpt_path = os.path.join(out_dir, "ckpt.pt")
         checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
         state_dict = checkpoint["model"]
+
         # fix the keys of the state dictionary :(
         # torch.compile adds _orig_mod. prefix to parameter names so we fix below
         unwanted_prefix = "_orig_mod."
@@ -306,7 +307,20 @@ if __name__ == "__main__":
                 keys_to_update.append((k, new_key))
         for old_key, new_key in keys_to_update:
             state_dict[new_key] = state_dict.pop(old_key)
-        model.load_state_dict(state_dict)
+
+        # Load strictly for non-QLoRA, non-strictly for QLoRA
+        if use_qlora:
+            missing, unexpected = model.load_state_dict(state_dict, strict=False)
+            
+            # Quantization-related key patterns
+            quant_patterns = ['quant', 'absmax', 'bitsandbytes']
+            non_quant = [k for k in unexpected if not any(p in k for p in quant_patterns)]
+            
+            if missing or non_quant:
+                raise RuntimeError(f"Unexpected loading error. Missing: {len(missing)}, Non-quant unexpected: {len(non_quant)}")
+        else:
+            model.load_state_dict(state_dict)
+
         iter_num = checkpoint["iter_num"]
         best_val_loss = checkpoint["best_val_loss"]
 
