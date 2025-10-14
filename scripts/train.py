@@ -95,12 +95,12 @@ if __name__ == "__main__":
     use_hf = True  # use the huggingface dataset version of our galz
     stream_hf_dataset = True  # stream the galaxies from huggingface
     # data
-    gradient_accumulation_steps = 5 * 8  # used to simulate larger batch sizes
-    batch_size = 16  # if gradient_accumulation_steps > 1, this is the micro-batch size
+    gradient_accumulation_steps = 5 # used to simulate larger batch sizes
+    batch_size = 8#16  # if gradient_accumulation_steps > 1, this is the micro-batch size
     spiral = True  # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     image_size = 256
-    num_workers = 32  # 64
+    num_workers = 16#32  # 64
     # astroPT model
     n_layer = 12
     n_head = 12
@@ -147,7 +147,7 @@ if __name__ == "__main__":
     # system
     device = "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
     dtype = "bfloat16"  # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
-    compile = True  # use PyTorch 2.0 to compile the model to be faster
+    compile = False  # use PyTorch 2.0 to compile the model to be faster
     log_via_wandb = False
     wandb_project = None
     # -----------------------------------------------------------------------------
@@ -239,24 +239,34 @@ if __name__ == "__main__":
         from datasets import load_dataset
 
         tds_hf = load_dataset(
-            "Smith42/galaxies",
+            "/scratch02/public/sao/msmith/data/galaxies/",
             revision="v2.0",
             split="train",
             streaming=(True if stream_hf_dataset else False),
         )
-        tds_hf = tds_hf.select_columns("image").map(
-            partial(process_galaxy_wrapper, func=tds.process_galaxy)
+        tds_hf = (
+            tds_hf
+            .select_columns("image_crop")
+            .rename_column("image_crop", "image")
+            .map(
+                partial(process_galaxy_wrapper, func=tds.process_galaxy)
+            )
         )
         tds_hf = tds_hf.remove_columns("image")
 
         vds_hf = load_dataset(
-            "Smith42/galaxies",
+            "/scratch02/public/sao/msmith/data/galaxies/",
             revision="v2.0",
             split="test",
             streaming=(True if stream_hf_dataset else False),
         )
-        vds_hf = vds_hf.select_columns("image").map(
-            partial(process_galaxy_wrapper, func=tds.process_galaxy)
+        vds_hf = (
+            vds_hf
+            .select_columns("image_crop")
+            .rename_column("image_crop", "image")
+            .map(
+                partial(process_galaxy_wrapper, func=tds.process_galaxy)
+            )
         )
         vds_hf = vds_hf.remove_columns("image")
 
