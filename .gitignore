@@ -183,3 +183,6 @@ __pycache__/
 *.pyc
 
 src/astropt/_version.py
+
+# checkpoints
+*.pt
