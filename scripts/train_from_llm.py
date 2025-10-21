@@ -296,7 +296,6 @@ if __name__ == "__main__":
         ckpt_path = os.path.join(out_dir, "ckpt.pt")
         checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
         state_dict = checkpoint["model"]
-
         # fix the keys of the state dictionary :(
         # torch.compile adds _orig_mod. prefix to parameter names so we fix below
         unwanted_prefix = "_orig_mod."

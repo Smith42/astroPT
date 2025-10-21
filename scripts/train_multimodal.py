@@ -150,6 +150,7 @@ if __name__ == "__main__":
     dtype = "bfloat16"  # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
     compile = True  # use PyTorch 2.0 to compile the model to be faster
     log_via_wandb = False
+    wandb_project = None
     # -----------------------------------------------------------------------------
     config_keys = [
         k

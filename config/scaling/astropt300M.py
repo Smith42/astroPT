@@ -10,7 +10,9 @@
 n_layer = 24
 n_head = 16
 n_embd = 1024
-block_size = 1024
+block_size = 256
+
+tokeniser="affine"
 
 # here we follow chinchilla
 learning_rate = 3e-4  # max learning rate
@@ -21,15 +23,20 @@ min_lr = learning_rate / 10
 # here we assume a world size of 8!
 init_from = "scratch"
 batch_size = 8
-gradient_accumulation_steps = 5 * 8
+gradient_accumulation_steps = 1 #5 * 8
+num_workers=16
 
 # this makes total number of tokens be 8.5B (one epoch of GZ DESI)
-max_iters = 30000
-lr_decay_iters = 27000 * 1.1
+max_iters = 60000
+lr_decay_iters = 55000 * 1.1
 
 # eval stuff
-eval_interval = 1000
-checkpoint_interval = 5000
+eval_interval = 100
+checkpoint_interval = 1000
 eval_iters = 200
-log_interval = 100
-out_dir = "logs/9B_tokens/astropt300m"
+log_interval = 50
+log_via_wandb = True
+out_dir = "logs/astropt300m"
+
+
+wandb_project = "smollm-hydra"

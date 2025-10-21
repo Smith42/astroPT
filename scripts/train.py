@@ -238,24 +238,34 @@ if __name__ == "__main__":
         from datasets import load_dataset
 
         tds_hf = load_dataset(
-            "Smith42/galaxies",
+            "/scratch02/public/sao/msmith/data/galaxies/",
             revision="v2.0",
             split="train",
             streaming=(True if stream_hf_dataset else False),
         )
-        tds_hf = tds_hf.select_columns("image").map(
-            partial(process_galaxy_wrapper, func=tds.process_galaxy)
+        tds_hf = (
+            tds_hf
+            .select_columns("image_crop")
+            .rename_column("image_crop", "image")
+            .map(
+                partial(process_galaxy_wrapper, func=tds.process_galaxy)
+            )
         )
         tds_hf = tds_hf.remove_columns("image")
 
         vds_hf = load_dataset(
-            "Smith42/galaxies",
+            "/scratch02/public/sao/msmith/data/galaxies/",
             revision="v2.0",
             split="test",
             streaming=(True if stream_hf_dataset else False),
         )
-        vds_hf = vds_hf.select_columns("image").map(
-            partial(process_galaxy_wrapper, func=tds.process_galaxy)
+        vds_hf = (
+            vds_hf
+            .select_columns("image_crop")
+            .rename_column("image_crop", "image")
+            .map(
+                partial(process_galaxy_wrapper, func=tds.process_galaxy)
+            )
         )
         vds_hf = vds_hf.remove_columns("image")
 
