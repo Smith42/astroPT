@@ -52,14 +52,6 @@ from astropt.model import GPT, GPTConfig, ModalityConfig, ModalityRegistry
 from astropt.local_datasets import GalaxyImageDataset
 
 
-def process_galaxy_wrapper(galdict, func):
-    patch_galaxy = func(np.array(galdict["image"]).swapaxes(0, 2))
-    return {
-        "images": patch_galaxy.to(torch.float),
-        "images_positions": torch.arange(0, len(patch_galaxy), dtype=torch.long),
-    }
-
-
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a 100M parameter model on DESI galaxy imagery
@@ -69,7 +61,7 @@ if __name__ == "__main__":
     log_interval = 100
     checkpoint_interval = 5000
     assert checkpoint_interval % eval_interval == 0
-    eval_iters = 100
+    eval_iters = 10#100
     eval_only = False  # if True, script exits right after the first eval
     always_save_checkpoint = (
         False  # if True, always save a checkpoint at each checkpoint_interval
@@ -93,12 +85,12 @@ if __name__ == "__main__":
     modalities = [
         ModalityConfig(
             name="images_aion",
-            input_size=0, # dummy var for now until I fix
+            input_size=10000, # dummy var for now until I fix
             patch_size=0, # dummy var for now until I fix
             loss_weight=1.0,
             embed_pos=True,
             pos_input_size=1,
-            vocab_size=4256, # bro how many ints does aion tokenise to?!
+            vocab_size=10000, # bro how many ints does aion tokenise to?!
         ),
     ]
     # Create modality registry
@@ -199,10 +191,10 @@ if __name__ == "__main__":
 
     codec_manager = CodecManager()
     def type_and_tokenise(gal):
-        typed_gal = LegacySurveyImage(gal["image"]["flux"].unsqueeze(0), bands=['DES-G', 'DES-R', 'DES-I', 'DES-Z'])
+        typed_gal = LegacySurveyImage(torch.tensor(gal["image"]["flux"]).unsqueeze(0), bands=['DES-G', 'DES-R', 'DES-I', 'DES-Z'])
         tokens = codec_manager.encode(typed_gal)["tok_image"].squeeze()
         return {
-            "images_aion": tokens,
+            "images_aion": tokens.long(),
             "images_aion_positions": torch.arange(len(tokens))
         }
 
@@ -214,7 +206,6 @@ if __name__ == "__main__":
         )
         .select_columns("legacysurvey_image")
         .rename_column("legacysurvey_image", "image")
-        .with_format("torch")
         .map(type_and_tokenise)
     )
     vds = (
@@ -225,7 +216,6 @@ if __name__ == "__main__":
         )
         .select_columns("legacysurvey_image")
         .rename_column("legacysurvey_image", "image")
-        .with_format("torch")
         .map(type_and_tokenise)
     )
 
@@ -383,45 +373,52 @@ if __name__ == "__main__":
             B = gid.process_modes(next(vdl), modality_registry, device)
             with ctx:
                 P, loss = model(B["X"], B["Y"])
-                if "images" in modality_registry.names():
-                    Yim = B["Y"]["images"].to(device)
-                    b, t, c = Yim.size()
-                    zero_block = torch.zeros((b, 1, c)).to(device)
-                    Yim = torch.cat((zero_block, Yim), dim=1)
-                    im_patch = modality_registry.get_config("images").patch_size
-                    Yim = einops.rearrange(
-                        Yim,
-                        "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
-                        p1=im_patch,
-                        p2=im_patch,
-                        h=image_size // im_patch,
-                        w=image_size // im_patch,
-                    )
-                    Pim = torch.cat((zero_block, P["images"]), dim=1)
-                    Pim = einops.rearrange(
-                        Pim,
-                        "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
-                        p1=im_patch,
-                        p2=im_patch,
-                        h=image_size // im_patch,
-                        w=image_size // im_patch,
-                    )
+                print(B["Y"]["images_aion"].to(device))
+                print(B["Y"]["images_aion"].shape())
+                Yim = codec_manager.decode(
+                    {"tok_image": B["Y"]["images_aion"].cpu()},
+                    LegacySurveyImage,
+                    bands=["DES-G", "DES-R", "DES-Z"],
+                )
+                print(Yim)
+                exit(0)
+                b, t, c = Yim.size()
+                zero_block = torch.zeros((b, 1, c)).to(device)
+                Yim = torch.cat((zero_block, Yim), dim=1)
+                im_patch = modality_registry.get_config("images").patch_size
+                Yim = einops.rearrange(
+                    Yim,
+                    "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
+                    p1=im_patch,
+                    p2=im_patch,
+                    h=image_size // im_patch,
+                    w=image_size // im_patch,
+                )
+                Pim = torch.cat((zero_block, P["images"]), dim=1)
+                Pim = einops.rearrange(
+                    Pim,
+                    "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
+                    p1=im_patch,
+                    p2=im_patch,
+                    h=image_size // im_patch,
+                    w=image_size // im_patch,
+                )
 
-                    for ax, p, y in zip(
-                        axs, Pim.to(float).cpu().numpy(), Yim.to(float).cpu().numpy()
-                    ):
-                        ax[0].imshow(np.clip(y, 0, 1))
-                        ax[1].imshow(np.clip(p, 0, 1))
-                        ax[0].axis("off")
-                        ax[1].axis("off")
+                for ax, p, y in zip(
+                    axs, Pim.to(float).cpu().numpy(), Yim.to(float).cpu().numpy()
+                ):
+                    ax[0].imshow(np.clip(y, 0, 1))
+                    ax[1].imshow(np.clip(p, 0, 1))
+                    ax[0].axis("off")
+                    ax[1].axis("off")
 
-                    if log_via_wandb:
-                        wandb.log(
-                            {
-                                "Y": wandb.Image(Yim.swapaxes(1, -1)),
-                                "P": wandb.Image(Pim.swapaxes(1, -1)),
-                            }
-                        )
+                if log_via_wandb:
+                    wandb.log(
+                        {
+                            "Y": wandb.Image(Yim.swapaxes(1, -1)),
+                            "P": wandb.Image(Pim.swapaxes(1, -1)),
+                        }
+                    )
 
             f.savefig(
                 os.path.join(out_dir, f"{iter_num:06d}_{split}.jpg"),

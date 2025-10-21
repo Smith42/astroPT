@@ -626,7 +626,6 @@ class GPT(nn.Module):
             if ii == 0 and len(self.modality_registry.names()) > 1:
                 seq_len = seq_len - 1
             hidden_state = x[:, current_idx : current_idx + seq_len]
-            print(hidden_state.shape)
             outputs[mod_name] = self.decoders[mod_name](hidden_state)
             current_idx += seq_len
 
@@ -662,13 +661,24 @@ class GPT(nn.Module):
                     # Extract attention mask for this modality
                     mod_mask = attention_mask[:, current_idx : current_idx + seq_len]
 
-                    unmasked_loss = F.huber_loss(pred, target, reduction="none")
+                    if "aion" in mod_name:
+                        unmasked_loss = F.cross_entropy(
+                            pred.reshape(-1, pogits.size(-1)),
+                            target.reshape(-1),
+                        )
+                    else:
+                        unmasked_loss = F.huber_loss(pred, target, reduction="none")
                     mask = mod_mask.unsqueeze(-1)
                     masked_loss = (unmasked_loss * mask).sum() / mask.sum()
                     loss += masked_loss * mod_config.loss_weight
                 else:
-                    print(pred.shape, target.shape)
-                    loss += F.huber_loss(pred, target) * mod_config.loss_weight
+                    if "aion" in mod_name:
+                        loss += F.cross_entropy(
+                            pred.reshape(-1, pred.size(-1)),
+                            target.reshape(-1),
+                        ) * mod_config.loss_weight
+                    else:
+                        loss += F.huber_loss(pred, target) * mod_config.loss_weight
                 current_idx += seq_len
             loss /= len(self.modality_registry.names())
         else:
