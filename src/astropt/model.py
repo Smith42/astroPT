@@ -321,8 +321,8 @@ class Embedder(nn.Module):
     def __init__(self, config, vocab_size=None):
         super().__init__()
         if vocab_size == None:
-            vocab_size = config.n_embd
-        self.wpe = nn.Embedding(config.block_size, vocab_size)
+            vocab_size = config.block_size
+        self.wpe = nn.Embedding(vocab_size, config.n_embd)
 
     def forward(self, pos):
         return self.wpe(pos)
@@ -422,7 +422,7 @@ class GPT(nn.Module):
             if mod_config.vocab_size > 0:
                 # for e.g. if you have a list of integers to process a la AION
                 # if we define a vocab size 
-                encoders[name] = Embedder(config, mod_config.vocab_size)
+                encoders[name] = Embedder(config, vocab_size=mod_config.vocab_size)
             else:
                 encoders[name] = Encoder(config, mod_config.input_size)
             if mod_config.embed_pos:
@@ -626,6 +626,7 @@ class GPT(nn.Module):
             if ii == 0 and len(self.modality_registry.names()) > 1:
                 seq_len = seq_len - 1
             hidden_state = x[:, current_idx : current_idx + seq_len]
+            print(hidden_state.shape)
             outputs[mod_name] = self.decoders[mod_name](hidden_state)
             current_idx += seq_len
 
@@ -666,6 +667,7 @@ class GPT(nn.Module):
                     masked_loss = (unmasked_loss * mask).sum() / mask.sum()
                     loss += masked_loss * mod_config.loss_weight
                 else:
+                    print(pred.shape, target.shape)
                     loss += F.huber_loss(pred, target) * mod_config.loss_weight
                 current_idx += seq_len
             loss /= len(self.modality_registry.names())

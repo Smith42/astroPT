@@ -98,7 +98,7 @@ if __name__ == "__main__":
             loss_weight=1.0,
             embed_pos=True,
             pos_input_size=1,
-            vocab_size=4096,
+            vocab_size=4256, # bro how many ints does aion tokenise to?!
         ),
     ]
     # Create modality registry
@@ -200,10 +200,10 @@ if __name__ == "__main__":
     codec_manager = CodecManager()
     def type_and_tokenise(gal):
         typed_gal = LegacySurveyImage(gal["image"]["flux"].unsqueeze(0), bands=['DES-G', 'DES-R', 'DES-I', 'DES-Z'])
-        tokens = codec_manager.encode(typed_gal)["tok_image"]
+        tokens = codec_manager.encode(typed_gal)["tok_image"].squeeze()
         return {
             "images_aion": tokens,
-            "images_aion_positions": torch.arange(tokens.shape[1])
+            "images_aion_positions": torch.arange(len(tokens))
         }
 
     tds = (
