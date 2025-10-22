@@ -68,8 +68,8 @@ if __name__ == "__main__":
     )
     init_from = "scratch"  # 'scratch' or 'resume'
     # data
-    gradient_accumulation_steps = 2#5 * 8  # used to simulate larger batch sizes
-    batch_size = 2#16  # if gradient_accumulation_steps > 1, this is the micro-batch size
+    gradient_accumulation_steps = 5# * 8  # used to simulate larger batch sizes
+    batch_size = 16  # if gradient_accumulation_steps > 1, this is the micro-batch size
     block_size = 1024
     image_size = 256
     num_workers = 0  # 64
@@ -121,8 +121,8 @@ if __name__ == "__main__":
     device = "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
     dtype = "bfloat16"  # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
     compile = True  # use PyTorch 2.0 to compile the model to be faster
-    log_via_wandb = False
-    wandb_project = None
+    log_via_wandb = True
+    wandb_project = "AIONMODE"
     # -----------------------------------------------------------------------------
     config_keys = [
         k
@@ -373,50 +373,41 @@ if __name__ == "__main__":
             B = gid.process_modes(next(vdl), modality_registry, device)
             with ctx:
                 P, loss = model(B["X"], B["Y"])
-                print(B["Y"]["images_aion"].to(device))
-                print(B["Y"]["images_aion"].shape())
+                Yim = torch.cat((
+                    torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
+                    B["Y"]["images_aion"].cpu(),
+                ), dim=1)
                 Yim = codec_manager.decode(
-                    {"tok_image": B["Y"]["images_aion"].cpu()},
+                    {"tok_image": Yim},
                     LegacySurveyImage,
                     bands=["DES-G", "DES-R", "DES-Z"],
                 )
-                print(Yim)
-                exit(0)
-                b, t, c = Yim.size()
-                zero_block = torch.zeros((b, 1, c)).to(device)
-                Yim = torch.cat((zero_block, Yim), dim=1)
-                im_patch = modality_registry.get_config("images").patch_size
-                Yim = einops.rearrange(
-                    Yim,
-                    "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
-                    p1=im_patch,
-                    p2=im_patch,
-                    h=image_size // im_patch,
-                    w=image_size // im_patch,
-                )
-                Pim = torch.cat((zero_block, P["images"]), dim=1)
-                Pim = einops.rearrange(
-                    Pim,
-                    "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
-                    p1=im_patch,
-                    p2=im_patch,
-                    h=image_size // im_patch,
-                    w=image_size // im_patch,
+                Pim = torch.cat((
+                    torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
+                    torch.argmax(P["images_aion"], dim=-1).cpu(),
+                ), dim=1)
+                Pim = codec_manager.decode(
+                    {"tok_image": Pim},
+                    LegacySurveyImage,
+                    bands=["DES-G", "DES-R", "DES-Z"],
                 )
 
+                clip_and_norm = lambda x: (torch.clamp(x, x.min(), x.quantile(0.98)) - x.min()) / (x.quantile(0.98) - x.min())
+
                 for ax, p, y in zip(
-                    axs, Pim.to(float).cpu().numpy(), Yim.to(float).cpu().numpy()
+                    axs, Pim.flux, Yim.flux,
                 ):
-                    ax[0].imshow(np.clip(y, 0, 1))
-                    ax[1].imshow(np.clip(p, 0, 1))
+                    ax[0].imshow(clip_and_norm(y.swapaxes(0, -1)))
+                    ax[1].imshow(clip_and_norm(p.swapaxes(0, -1)))
                     ax[0].axis("off")
                     ax[1].axis("off")
+
 
                 if log_via_wandb:
                     wandb.log(
                         {
-                            "Y": wandb.Image(Yim.swapaxes(1, -1)),
-                            "P": wandb.Image(Pim.swapaxes(1, -1)),
+                            "Y": wandb.Image(clip_and_norm(Yim.flux[0])),
+                            "P": wandb.Image(clip_and_norm(Pim.flux[0])),
                         }
                     )
 
