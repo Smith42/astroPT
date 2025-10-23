@@ -51,6 +51,31 @@ except ImportError:
 from astropt.model import GPT, GPTConfig, ModalityConfig, ModalityRegistry
 from astropt.local_datasets import GalaxyImageDataset
 
+def collate_and_tokenise(batch, image_codec):
+    """Batch tokenisation in main process"""
+    # Stack all fluxes into a single batch tensor
+    flux_batch = torch.stack([
+        torch.tensor(item["image"]["flux"]) 
+        for item in batch
+    ])
+    
+    # Create single batched LegacySurveyImage
+    batched_img = LegacySurveyImage(
+        flux=flux_batch,
+        bands=['DES-G', 'DES-R', 'DES-I', 'DES-Z']
+    )
+    
+    # Single encode call for entire batch
+    tokens = image_codec.encode(batched_img)
+    
+    batch_size = len(batch)
+    
+    return {
+        "images_aion": tokens.long(),
+        "images_aion_positions": torch.stack([
+            torch.arange(tokens.shape[1]) for _ in range(batch_size)
+        ])
+    }
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
@@ -208,12 +233,22 @@ if __name__ == "__main__":
         .rename_column("legacysurvey_image", "image")
     )
 
+    image_codec = ImageCodec.from_pretrained(
+        "polymathic-ai/aion-base",
+        modality=LegacySurveyImage
+    )
+    image_codec = image_codec.eval()
+    image_codec = image_codec
+
+    collate_fn = partial(collate_and_tokenise, image_codec=image_codec)
+
     train_loader = DataLoader(
             tds,
             batch_size=batch_size,
             num_workers=num_workers,
             pin_memory=True,
             persistent_workers=True if num_workers > 0 else False,
+            collate_fn=collate_fn,
     )
     val_loader = DataLoader(
             vds,
@@ -221,23 +256,10 @@ if __name__ == "__main__":
             num_workers=num_workers,
             pin_memory=True,
             persistent_workers=True if num_workers > 0 else False,
+            collate_fn=collate_fn,
     )
     tdl = iter(train_loader)
     vdl = iter(val_loader)
-    image_codec = ImageCodec.from_pretrained(
-        "polymathic-ai/aion-base",
-        modality=LegacySurveyImage
-    )
-    image_codec = image_codec.eval()
-    image_codec = image_codec.to('cuda')
-
-    def type_and_tokenise(gal):
-        typed_gal = LegacySurveyImage(torch.tensor(gal["image"]["flux"]), bands=['DES-G', 'DES-R', 'DES-I', 'DES-Z'])
-        tokens = image_codec.encode(typed_gal)["tok_image"].squeeze()
-        return {
-            "images_aion": tokens.long(),
-            "images_aion_positions": torch.arange(len(tokens))
-        }
 
 
     # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
@@ -383,7 +405,6 @@ if __name__ == "__main__":
                 ), dim=1)
                 Yim = image_codec.decode(
                     {"tok_image": Yim},
-                    LegacySurveyImage,
                     bands=["DES-G", "DES-R", "DES-Z"],
                 )
                 Pim = torch.cat((
@@ -392,7 +413,6 @@ if __name__ == "__main__":
                 ), dim=1)
                 Pim = image_codec.decode(
                     {"tok_image": Pim},
-                    LegacySurveyImage,
                     bands=["DES-G", "DES-R", "DES-Z"],
                 )
 
