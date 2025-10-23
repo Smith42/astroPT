@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
+from datasets import load_dataset 
 import torchvision
 import torchvision.transforms as T
 from torchvision.utils import save_image
@@ -34,11 +35,15 @@ class CFG:
     # --- Training Config ---
     epochs: int = 2000
     batch_size: int = 64
-    lr: float = 3e-4
+    lr: float = 3e-4 # Constant learning rate
     wd: float = 0.01
     
+    # --- Dataset Switch ---
+    # Set this to "car" or "galaxy" to choose the dataset
+    dataset_name: str = "galaxy" 
+    
     # --- Other Model/Data Params ---
-    img_size: int = 32
+    img_size: int = 32 # This MUST stay 32x32 for the JetFormerLite model
     in_ch: int = 3
     patch: int = 4
     n_tokens: int = (img_size // patch)**2
@@ -49,10 +54,12 @@ class CFG:
     # --- Stability & Checkpointing ---
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     grad_clip_val: float = 1.0
-    checkpoint_path: str = "checkpoint_cars_only.pt"       # Checkpoint for this experiment
-    samples_dir: str = "samples_cars_only"               # Sample directory for this experiment
-    loss_csv_path: str = "loss_log.csv"                  # Filename for the loss log
-    loss_plot_path: str = "loss_plot.png"                # Filename for the static loss plot
+    
+    # These paths are now set dynamically in the train() function
+    checkpoint_path: str = "" 
+    samples_dir: str = ""
+    loss_csv_path: str = ""
+    loss_plot_path: str = ""
     
     # --- Noise Curriculum ---
     noise_max: float = 0.1
@@ -96,12 +103,16 @@ def plot_loss_from_csv(csv_path, output_path):
     plt.close(fig)
 
 # ======================================================================================
-# Block 3: Data Loading for a Single Class
+# Block 3: Data Loading
 # ======================================================================================
+
 def get_car_dataloader(cfg):
     """Loads the CIFAR-10 dataset and filters it to only include the 'car' class."""
     print("Loading and filtering CIFAR-10 for 'car' class...")
-    transform = T.Compose([T.RandomHorizontalFlip(), T.ToTensor()])
+    transform = T.Compose([
+        T.RandomHorizontalFlip(),
+        T.ToTensor()
+    ])
     
     # Load the full training dataset
     full_dataset = torchvision.datasets.CIFAR10(root="./data", train=True, download=True, transform=transform)
@@ -120,6 +131,54 @@ def get_car_dataloader(cfg):
     # Create a DataLoader from the subset
     return DataLoader(car_subset, batch_size=cfg.batch_size, shuffle=True, num_workers=4, pin_memory=True)
 
+def get_galaxy_dataloader(cfg, folder="galaxy_pt"):
+    """
+    Loads preprocessed 32x32 CHW uint8 tensors from .pt shards and feeds the GPU fast.
+    Output: dict {"img": FloatTensor[B,3,32,32] in [0,1], "label": LongTensor[B]}
+    """
+    import os, glob, torch
+    from torch.utils.data import IterableDataset, DataLoader, get_worker_info
+
+    files = sorted(glob.glob(os.path.join(folder, "shard_*.pt")))
+    if not files:
+        raise FileNotFoundError(f"No shards found in {folder}. Run make_galaxy_pt_shards.py first.")
+
+    class PTShardStream(IterableDataset):
+        def __init__(self, files):
+            self.files = files
+
+        def __iter__(self):
+            info = get_worker_info()
+            # shard files across workers
+            if info is None:
+                my_files = self.files
+            else:
+                my_files = self.files[info.id::info.num_workers]
+
+            for f in my_files:
+                data = torch.load(f, map_location="cpu")  # {"images": uint8 [N,3,32,32]}
+                imgs_u8 = data["images"]                 # NCHW uint8
+                # yield per-sample; DataLoader will stack
+                for i in range(imgs_u8.size(0)):
+                    # convert to float [0,1] here; no PIL, no resize, no GPU stall
+                    yield {"img": imgs_u8[i].float().div_(255.0), "label": 0}
+
+    def _collate(batch):
+        imgs = torch.stack([b["img"] for b in batch], dim=0)  # [B,3,32,32] float
+        labels = torch.zeros(len(batch), dtype=torch.long)
+        return {"img": imgs, "label": labels}
+
+    # multiple workers safe (we shard files, not streams)
+    nw = min(8, max(2, (os.cpu_count() or 4) - 1))
+    return DataLoader(
+        PTShardStream(files),
+        batch_size=cfg.batch_size,
+        num_workers=nw,
+        pin_memory=True,
+        prefetch_factor=4,
+        persistent_workers=True,
+        collate_fn=_collate,
+    )
 # ======================================================================================
 # Block 4: Checkpointing Functions
 # ======================================================================================
@@ -458,7 +517,16 @@ def train():
     cfg = CFG()
     device = cfg.device
     print(f"Using device: {device}")
+    
+    # Dynamically set paths based on the dataset name in CFG
+    cfg.checkpoint_path = f"checkpoint_{cfg.dataset_name}.pt"
+    cfg.samples_dir = f"samples_{cfg.dataset_name}"
+    cfg.loss_csv_path = f"loss_log_{cfg.dataset_name}.csv"
+    cfg.loss_plot_path = f"loss_plot_{cfg.dataset_name}.png"
+    
     os.makedirs(cfg.samples_dir, exist_ok=True)
+    print(f"Running experiment: {cfg.dataset_name}")
+    print(f"Checkpoints will be saved to: {cfg.checkpoint_path}")
 
     # --- Model and Optimizer Setup ---
     model = JetFormerLite(cfg).to(device)
@@ -466,9 +534,19 @@ def train():
     start_epoch = load_checkpoint(model, opt, cfg)
 
     # --- Data Loading ---
-    # MODIFIED: Use the new function to get only car images
-    loader = get_car_dataloader(cfg)
-    steps_per_epoch = len(loader)
+    # Use the dataset_name from CFG to select the loader
+    if cfg.dataset_name == "car":
+        loader = get_car_dataloader(cfg)
+    elif cfg.dataset_name == "galaxy":
+        loader = get_galaxy_dataloader(cfg)
+    else:
+        raise ValueError(f"Unknown dataset in CFG: '{cfg.dataset_name}'")
+    
+    # We can't know the steps_per_epoch for a streaming dataset,
+    # so we'll just use a large number for the epoch_frac calculation.
+    # This is only for the noise curriculum, so it doesn't need to be exact.
+    # 5000 (car) / 64 = ~79. 1,000,000 (galaxy) / 64 = ~15625
+    steps_per_epoch = 15625 if cfg.dataset_name == "galaxy" else len(loader)
     
     print(f"Starting training from epoch {start_epoch} up to {cfg.epochs}...")
     # --- Main Training Loop ---
@@ -479,7 +557,14 @@ def train():
         # Accumulate losses to calculate an average for the epoch
         epoch_losses = []
         
-        for i, (img, _) in enumerate(pbar):
+        for i, batch in enumerate(pbar):
+            # The car loader returns (img, _), the galaxy loader returns {"img": ..., "label": ...}
+            # We standardize this here.
+            if isinstance(batch, dict):
+                img = batch["img"]
+            else:
+                img = batch[0]
+                
             current_step = ep * steps_per_epoch + i
             
             # Forward and backward pass
@@ -496,6 +581,7 @@ def train():
             
             # Update progress bar
             pbar.set_postfix(loss=f"{loss.item():.3f}", lr=f"{opt.param_groups[0]['lr']:.2e}")
+ 
         
         # --- End-of-Epoch Operations ---
         # 1. Calculate the average loss for the epoch
