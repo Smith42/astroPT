@@ -81,7 +81,7 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a 100M parameter model on DESI galaxy imagery
     # look at `config/astropt*.py` for a prod run example
-    out_dir = "logs/astropt0100M"
+    out_dir = "logs/astropt0100M-aion"
     eval_interval = 1000
     log_interval = 100
     checkpoint_interval = 5000
@@ -94,7 +94,7 @@ if __name__ == "__main__":
     init_from = "scratch"  # 'scratch' or 'resume'
     # data
     gradient_accumulation_steps = 5# * 8  # used to simulate larger batch sizes
-    batch_size = 16  # if gradient_accumulation_steps > 1, this is the micro-batch size
+    batch_size = 32  # if gradient_accumulation_steps > 1, this is the micro-batch size
     block_size = 1024
     image_size = 256
     num_workers = 16
@@ -124,7 +124,7 @@ if __name__ == "__main__":
     tokeniser = "affine"
     # adamw optimizer
     # we follow the same schedule here as Chinchilla
-    learning_rate = 6e-4  # max learning rate
+    learning_rate = 3e-4  # max learning rate
     max_iters = (
         30000  # total number of training iterations for one pass over our dataset
     )
@@ -404,7 +404,7 @@ if __name__ == "__main__":
                     B["Y"]["images_aion"].cpu(),
                 ), dim=1)
                 Yim = image_codec.decode(
-                    {"tok_image": Yim},
+                    Yim,
                     bands=["DES-G", "DES-R", "DES-Z"],
                 )
                 Pim = torch.cat((
@@ -412,7 +412,7 @@ if __name__ == "__main__":
                     torch.argmax(P["images_aion"], dim=-1).cpu(),
                 ), dim=1)
                 Pim = image_codec.decode(
-                    {"tok_image": Pim},
+                    Pim,
                     bands=["DES-G", "DES-R", "DES-Z"],
                 )
 
