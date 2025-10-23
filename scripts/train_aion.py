@@ -32,7 +32,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from datasets import load_dataset
-from aion.codecs import CodecManager
+from aion.codecs.image import ImageCodec
 from aion.modalities import LegacySurveyImage
 
 try:
@@ -61,7 +61,7 @@ if __name__ == "__main__":
     log_interval = 100
     checkpoint_interval = 5000
     assert checkpoint_interval % eval_interval == 0
-    eval_iters = 10#100
+    eval_iters = 100
     eval_only = False  # if True, script exits right after the first eval
     always_save_checkpoint = (
         False  # if True, always save a checkpoint at each checkpoint_interval
@@ -72,7 +72,7 @@ if __name__ == "__main__":
     batch_size = 16  # if gradient_accumulation_steps > 1, this is the micro-batch size
     block_size = 1024
     image_size = 256
-    num_workers = 0  # 64
+    num_workers = 16
     # astroPT model
     n_layer = 12
     n_head = 12
@@ -189,15 +189,6 @@ if __name__ == "__main__":
         else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
     )
 
-    codec_manager = CodecManager()
-    def type_and_tokenise(gal):
-        typed_gal = LegacySurveyImage(torch.tensor(gal["image"]["flux"]).unsqueeze(0), bands=['DES-G', 'DES-R', 'DES-I', 'DES-Z'])
-        tokens = codec_manager.encode(typed_gal)["tok_image"].squeeze()
-        return {
-            "images_aion": tokens.long(),
-            "images_aion_positions": torch.arange(len(tokens))
-        }
-
     tds = (
         load_dataset(
             "Smith42/legacysurvey_hsc_crossmatched",
@@ -206,7 +197,6 @@ if __name__ == "__main__":
         )
         .select_columns("legacysurvey_image")
         .rename_column("legacysurvey_image", "image")
-        .map(type_and_tokenise)
     )
     vds = (
         load_dataset(
@@ -216,25 +206,39 @@ if __name__ == "__main__":
         )
         .select_columns("legacysurvey_image")
         .rename_column("legacysurvey_image", "image")
-        .map(type_and_tokenise)
     )
 
-    tdl = iter(
-        DataLoader(
+    train_loader = DataLoader(
             tds,
             batch_size=batch_size,
             num_workers=num_workers,
-            pin_memory=False,
-        )
+            pin_memory=True,
+            persistent_workers=True if num_workers > 0 else False,
     )
-    vdl = iter(
-        DataLoader(
+    val_loader = DataLoader(
             vds,
             batch_size=batch_size,
             num_workers=num_workers,
-            pin_memory=False,
-        )
+            pin_memory=True,
+            persistent_workers=True if num_workers > 0 else False,
     )
+    tdl = iter(train_loader)
+    vdl = iter(val_loader)
+    image_codec = ImageCodec.from_pretrained(
+        "polymathic-ai/aion-base",
+        modality=LegacySurveyImage
+    )
+    image_codec = image_codec.eval()
+    image_codec = image_codec.to('cuda')
+
+    def type_and_tokenise(gal):
+        typed_gal = LegacySurveyImage(torch.tensor(gal["image"]["flux"]), bands=['DES-G', 'DES-R', 'DES-I', 'DES-Z'])
+        tokens = image_codec.encode(typed_gal)["tok_image"].squeeze()
+        return {
+            "images_aion": tokens.long(),
+            "images_aion_positions": torch.arange(len(tokens))
+        }
+
 
     # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
     iter_num = 0
@@ -377,7 +381,7 @@ if __name__ == "__main__":
                     torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
                     B["Y"]["images_aion"].cpu(),
                 ), dim=1)
-                Yim = codec_manager.decode(
+                Yim = image_codec.decode(
                     {"tok_image": Yim},
                     LegacySurveyImage,
                     bands=["DES-G", "DES-R", "DES-Z"],
@@ -386,13 +390,13 @@ if __name__ == "__main__":
                     torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
                     torch.argmax(P["images_aion"], dim=-1).cpu(),
                 ), dim=1)
-                Pim = codec_manager.decode(
+                Pim = image_codec.decode(
                     {"tok_image": Pim},
                     LegacySurveyImage,
                     bands=["DES-G", "DES-R", "DES-Z"],
                 )
 
-                clip_and_norm = lambda x: (torch.clamp(x, x.min(), x.quantile(0.98)) - x.min()) / (x.quantile(0.98) - x.min())
+                clip_and_norm = lambda x: (torch.clamp(x, x.min(), x.quantile(0.99)) - x.min()) / (x.quantile(0.99) - x.min())
 
                 for ax, p, y in zip(
                     axs, Pim.flux, Yim.flux,
@@ -406,8 +410,8 @@ if __name__ == "__main__":
                 if log_via_wandb:
                     wandb.log(
                         {
-                            "Y": wandb.Image(clip_and_norm(Yim.flux[0])),
-                            "P": wandb.Image(clip_and_norm(Pim.flux[0])),
+                            "Y": [wandb.Image(yy) for yy in clip_and_norm(Yim.flux)],
+                            "P": [wandb.Image(pp) for pp in clip_and_norm(Pim.flux)],
                         }
                     )
 
