@@ -219,7 +219,6 @@ if __name__ == "__main__":
             "Smith42/legacysurvey_hsc_crossmatched",
             split="train",
             streaming=True,
-            #cache_dir="/beegfs/general/mjsmith/HF_HOME/",
         )
         .select_columns("legacysurvey_image")
         .rename_column("legacysurvey_image", "image")
@@ -229,7 +228,6 @@ if __name__ == "__main__":
             "Smith42/legacysurvey_hsc_crossmatched",
             split="train",
             streaming=True,
-            #cache_dir="/beegfs/general/mjsmith/HF_HOME/",
         )
         .select_columns("legacysurvey_image")
         .rename_column("legacysurvey_image", "image")
@@ -265,7 +263,6 @@ if __name__ == "__main__":
     )
     tdl = infinite_dataloader(train_loader)
     vdl = infinite_dataloader(val_loader)
-
 
     # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
     iter_num = 0

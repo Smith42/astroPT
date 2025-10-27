@@ -39,6 +39,7 @@ Check out the `UniverseTBD <https://universetbd.org/>`_ Discord for updates:
    installation
    quickstart
    walkthrough
+   aion_tokeniser
    contributing
 ..
    model
