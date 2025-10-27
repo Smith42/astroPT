@@ -86,15 +86,15 @@ if __name__ == "__main__":
     log_interval = 100
     checkpoint_interval = 5000
     assert checkpoint_interval % eval_interval == 0
-    eval_iters = 100
+    eval_iters = 20
     eval_only = False  # if True, script exits right after the first eval
     always_save_checkpoint = (
         False  # if True, always save a checkpoint at each checkpoint_interval
     )
     init_from = "scratch"  # 'scratch' or 'resume'
     # data
-    gradient_accumulation_steps = 5# * 8  # used to simulate larger batch sizes
-    batch_size = 32  # if gradient_accumulation_steps > 1, this is the micro-batch size
+    gradient_accumulation_steps = 5 # * 8  # used to simulate larger batch sizes
+    batch_size = 16  # if gradient_accumulation_steps > 1, this is the micro-batch size
     block_size = 1024
     image_size = 256
     num_workers = 16
@@ -219,6 +219,7 @@ if __name__ == "__main__":
             "Smith42/legacysurvey_hsc_crossmatched",
             split="train",
             streaming=True,
+            #cache_dir="/beegfs/general/mjsmith/HF_HOME/",
         )
         .select_columns("legacysurvey_image")
         .rename_column("legacysurvey_image", "image")
@@ -228,6 +229,7 @@ if __name__ == "__main__":
             "Smith42/legacysurvey_hsc_crossmatched",
             split="train",
             streaming=True,
+            #cache_dir="/beegfs/general/mjsmith/HF_HOME/",
         )
         .select_columns("legacysurvey_image")
         .rename_column("legacysurvey_image", "image")
@@ -242,6 +244,9 @@ if __name__ == "__main__":
 
     collate_fn = partial(collate_and_tokenise, image_codec=image_codec)
 
+    def infinite_dataloader(dataloader):
+        while True:
+            yield from dataloader
     train_loader = DataLoader(
             tds,
             batch_size=batch_size,
@@ -258,8 +263,8 @@ if __name__ == "__main__":
             persistent_workers=True if num_workers > 0 else False,
             collate_fn=collate_fn,
     )
-    tdl = iter(train_loader)
-    vdl = iter(val_loader)
+    tdl = infinite_dataloader(train_loader)
+    vdl = infinite_dataloader(val_loader)
 
 
     # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
