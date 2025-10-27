@@ -2,7 +2,7 @@
 name = "astropt"
 description = "Transformer based foundation model for galaxy images (and general astronomy)"
 authors = [{ name = "Michael J. Smith", email = "mike@mjjsmith.com" }]
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.14"
 readme = "README.md"
 keywords = [
     "astropt",
