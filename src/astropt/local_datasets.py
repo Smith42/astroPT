@@ -235,7 +235,7 @@ class GalaxyImageDataset(Dataset):
                         raw_galaxy = h5_file['images'][idx].to(torch.bfloat16)
                     else:
                         raise NotImplementedError(
-                            f"File must be FITS or JPEG, it is instead {ext}."
+                            f"File must be FITS, JPEG, or HDF5. It is instead {ext}."
                         )
                     patch_galaxy = self.process_galaxy(raw_galaxy)
                     if torch.isnan(patch_galaxy).any():
