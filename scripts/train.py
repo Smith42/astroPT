@@ -453,8 +453,8 @@ if __name__ == "__main__":
                     if log_via_wandb:
                         wandb.log(
                             {
-                                "Y": wandb.Image(Yim.swapaxes(1, -1)),
-                                "P": wandb.Image(Pim.swapaxes(1, -1)),
+                                "Y": [wandb.Image(np.clip(yy.swapaxes(0, -1).cpu(), 0, 1)) for yy in Yim],
+                                "P": [wandb.Image(np.clip(pp.swapaxes(0, -1).cpu(), 0, 1)) for pp in Pim],
                             }
                         )
 
