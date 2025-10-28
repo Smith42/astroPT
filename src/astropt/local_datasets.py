@@ -228,6 +228,11 @@ class GalaxyImageDataset(Dataset):
                             raw_galaxy = torch.tensor(np.stack(raw_galaxy)).to(
                                 torch.bfloat16
                             )
+                    elif ext == 'hdf5':
+                        ## assuming the images are stored as a dataset which 
+                        ## can be accessed as file['images']
+                        h5_file = h5py.File(self.paths["images"], 'r')
+                        raw_galaxy = h5_file['images'][idx].to(torch.bfloat16)
                     else:
                         raise NotImplementedError(
                             f"File must be FITS or JPEG, it is instead {ext}."
