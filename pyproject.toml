@@ -51,6 +51,11 @@ dynamic = [
 Homepage = "https://github.com/smith42/astropt"
 Issues = "https://github.com/smith42/astropt/issues"
 
+[project.optional-dependencies]
+aion-tokenisers = [
+    "polymathic-aion>=0.0.2",
+]
+
 [tool.uv]
 package = true
 

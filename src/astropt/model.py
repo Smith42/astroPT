@@ -46,6 +46,7 @@ class ModalityConfig:
     pos_input_size: int
     patch_size: int
     embed_pos: bool
+    vocab_size: int = 0
     loss_weight: float = 1.0
 
 
@@ -317,9 +318,11 @@ class Decoder(nn.Module):
 class Embedder(nn.Module):
     """base module to move from embedding space to data space"""
 
-    def __init__(self, config):
+    def __init__(self, config, vocab_size=None):
         super().__init__()
-        self.wpe = nn.Embedding(config.block_size, config.n_embd)
+        if vocab_size == None:
+            vocab_size = config.block_size
+        self.wpe = nn.Embedding(vocab_size, config.n_embd)
 
     def forward(self, pos):
         return self.wpe(pos)
@@ -416,7 +419,12 @@ class GPT(nn.Module):
         decoders = {}
         embedders = {}
         for name, mod_config in self.modality_registry.modalities.items():
-            encoders[name] = Encoder(config, mod_config.input_size)
+            if mod_config.vocab_size > 0:
+                # for e.g. if you have a list of integers to process a la AION
+                # if we define a vocab size 
+                encoders[name] = Embedder(config, vocab_size=mod_config.vocab_size)
+            else:
+                encoders[name] = Encoder(config, mod_config.input_size)
             if mod_config.embed_pos:
                 embedders[name] = Embedder(config)
             else:
@@ -653,12 +661,24 @@ class GPT(nn.Module):
                     # Extract attention mask for this modality
                     mod_mask = attention_mask[:, current_idx : current_idx + seq_len]
 
-                    unmasked_loss = F.huber_loss(pred, target, reduction="none")
+                    if "aion" in mod_name:
+                        unmasked_loss = F.cross_entropy(
+                            pred.reshape(-1, pogits.size(-1)),
+                            target.reshape(-1),
+                        )
+                    else:
+                        unmasked_loss = F.huber_loss(pred, target, reduction="none")
                     mask = mod_mask.unsqueeze(-1)
                     masked_loss = (unmasked_loss * mask).sum() / mask.sum()
                     loss += masked_loss * mod_config.loss_weight
                 else:
-                    loss += F.huber_loss(pred, target) * mod_config.loss_weight
+                    if "aion" in mod_name:
+                        loss += F.cross_entropy(
+                            pred.reshape(-1, pred.size(-1)),
+                            target.reshape(-1),
+                        ) * mod_config.loss_weight
+                    else:
+                        loss += F.huber_loss(pred, target) * mod_config.loss_weight
                 current_idx += seq_len
             loss /= len(self.modality_registry.names())
         else:
