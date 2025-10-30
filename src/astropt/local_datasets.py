@@ -13,7 +13,7 @@ from astropy.io import fits
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset, IterableDataset
 from torchvision import io
-
+import h5py
 
 class GalaxyImageDataset(Dataset):
     def __init__(
