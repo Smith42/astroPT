@@ -33,7 +33,8 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from datasets import load_dataset
 from aion.codecs.image import ImageCodec
-from aion.modalities import LegacySurveyImage
+from aion.codecs.spectrum import SpectrumCodec
+from aion.modalities import LegacySurveyImage, DESISpectrum, HSCImage
 
 try:
     import wandb
@@ -51,18 +52,31 @@ except ImportError:
 from astropt.model import GPT, GPTConfig, ModalityConfig, ModalityRegistry
 from astropt.local_datasets import GalaxyImageDataset
 
-def collate_and_tokenise(batch, image_codec):
+def collate_and_tokenise(batch, image_codecs):
     """Batch tokenisation in main process"""
     # Stack all fluxes into a single batch tensor
+    # We want to randomly choose hsc or legacy image
+    if np.random.rand() < 0.5:
+        imstring = "legacysurvey"
+        codec = LegacySurveyImage
+        image_codec = image_codecs["LegacySurveyImage"]
+        bands = ['DES-G', 'DES-R', 'DES-I', 'DES-Z']
+    else:
+        imstring = "hsc"
+        codec = HSCImage
+        image_codec = image_codecs["HSCImage"]
+        bands = ['HSC-G', 'HSC-R', 'HSC-I', 'HSC-Z', 'HSC-Y']
+
+
     flux_batch = torch.stack([
-        torch.tensor(item["image"]["flux"]) 
+        torch.tensor(item[imstring + "_image"]["flux"]) 
         for item in batch
     ])
     
-    # Create single batched LegacySurveyImage
-    batched_img = LegacySurveyImage(
+    # Create single batched Image encoding
+    batched_img = codec(
         flux=flux_batch,
-        bands=['DES-G', 'DES-R', 'DES-I', 'DES-Z']
+        bands=bands
     )
     
     # Single encode call for entire batch
@@ -220,8 +234,7 @@ if __name__ == "__main__":
             split="train",
             streaming=True,
         )
-        .select_columns("legacysurvey_image")
-        .rename_column("legacysurvey_image", "image")
+        .select_columns(("legacysurvey_image", "hsc_image"))
     )
     vds = (
         load_dataset(
@@ -229,18 +242,21 @@ if __name__ == "__main__":
             split="train",
             streaming=True,
         )
-        .select_columns("legacysurvey_image")
-        .rename_column("legacysurvey_image", "image")
+        .select_columns(("legacysurvey_image", "hsc_image"))
     )
 
-    image_codec = ImageCodec.from_pretrained(
-        "polymathic-ai/aion-base",
-        modality=LegacySurveyImage
-    )
-    image_codec = image_codec.eval()
-    image_codec = image_codec
+    image_codecs = {
+        "LegacySurveyImage": ImageCodec.from_pretrained(
+            "polymathic-ai/aion-base",
+            modality=LegacySurveyImage
+        ).eval(),
+        "HSCImage": ImageCodec.from_pretrained(
+            "polymathic-ai/aion-base",
+            modality=HSCImage
+        ).eval(),
+    }
 
-    collate_fn = partial(collate_and_tokenise, image_codec=image_codec)
+    collate_fn = partial(collate_and_tokenise, image_codecs=image_codecs)
 
     def infinite_dataloader(dataloader):
         while True:
@@ -401,13 +417,19 @@ if __name__ == "__main__":
             B = gid.process_modes(next(vdl), modality_registry, device)
             with ctx:
                 P, loss = model(B["X"], B["Y"])
+                #if np.random.rand() < 0.5:
+                #    image_codec = image_codecs["HSCImage"]
+                #    bands = ["HSC-G", "HSC-R", "HSC-Z"] 
+                #else:
+                image_codec = image_codecs["LegacySurveyImage"]
+                bands = ["DES-G", "DES-R", "DES-Z"] 
                 Yim = torch.cat((
                     torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
                     B["Y"]["images_aion"].cpu(),
                 ), dim=1)
                 Yim = image_codec.decode(
                     Yim,
-                    bands=["DES-G", "DES-R", "DES-Z"],
+                    bands=bands,
                 )
                 Pim = torch.cat((
                     torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
@@ -415,7 +437,7 @@ if __name__ == "__main__":
                 ), dim=1)
                 Pim = image_codec.decode(
                     Pim,
-                    bands=["DES-G", "DES-R", "DES-Z"],
+                    bands=bands,
                 )
 
                 clip_and_norm = lambda x: (torch.clamp(x, x.min(), x.quantile(0.99)) - x.min()) / (x.quantile(0.99) - x.min())
