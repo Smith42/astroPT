@@ -53,6 +53,7 @@ Issues = "https://github.com/smith42/astropt/issues"
 
 [tool.uv]
 package = true
+required-environments = ["sys_platform == 'darwin' and platform_machine == 'arm64'"]
 
 [tool.ruff]
 extend-exclude = ["scripts", "src/astropt/_version.py"]
