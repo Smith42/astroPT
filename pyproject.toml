@@ -41,7 +41,7 @@ dependencies = [
     "accelerate>=1.8.1",
     "peft>=0.15.2",
     "hf-xet>=1.1.5",
-    "bitsandbytes>=0.47.0",
+    "bitsandbytes>=0.47.0; sys_platform != 'darwin'",
 ]
 dynamic = [
     "version",
