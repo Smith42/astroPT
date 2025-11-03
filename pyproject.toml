@@ -41,7 +41,7 @@ dependencies = [
     "accelerate>=1.8.1",
     "peft>=0.15.2",
     "hf-xet>=1.1.5",
-    "bitsandbytes>=0.47.0",
+    "bitsandbytes>=0.47.0; sys_platform != 'darwin'",
 ]
 dynamic = [
     "version",
@@ -58,7 +58,6 @@ aion-tokenisers = [
 
 [tool.uv]
 package = true
-required-environments = ["sys_platform == 'darwin' and platform_machine == 'arm64'"]
 
 [tool.ruff]
 extend-exclude = ["scripts", "src/astropt/_version.py"]
