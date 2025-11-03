@@ -73,6 +73,15 @@
       "contributions": [
         "bug"
       ]
+    },
+    {
+      "login": "ashodkh",
+      "name": "Ashod Khederlarian",
+      "avatar_url": "https://avatars.githubusercontent.com/u/81383507?v=4",
+      "profile": "https://github.com/ashodkh",
+      "contributions": [
+        "code"
+      ]
     }
   ],
   "contributorsPerLine": 7,
