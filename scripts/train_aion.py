@@ -442,21 +442,21 @@ if __name__ == "__main__":
             with ctx:
                 bands = ['DES-G', 'DES-R', 'DES-Z']
                 P, loss = model(B["X"], B["Y"])
-                Yim = torch.cat((
-                    torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
-                    B["Y"]["images_aion"].cpu(),
-                ), dim=1)
+                #Yim = torch.cat((
+                #    torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
+                #    B["Y"]["images_aion"].cpu(),
+                #), dim=1)
                 Yim = codecs["LegacySurveyImage"].decode(
-                    Yim,
+                    B["Y"]["images_aion"].cpu(),
                     bands=bands,
                 )
                 Pim = torch.cat((
-                    torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
+                    #torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
                     torch.argmax(P["images_aion"], dim=-1).cpu(),
                 ), dim=1)
                 Pim = codecs["LegacySurveyImage"].decode(
                     Pim,
-                    bands=bands,
+                #    bands=bands,
                 )
 
                 clip_and_norm = lambda x: (torch.clamp(x, x.min(), x.quantile(0.99)) - x.min()) / (x.quantile(0.99) - x.min())
