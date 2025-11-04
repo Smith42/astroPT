@@ -52,19 +52,19 @@ except ImportError:
 from astropt.model import GPT, GPTConfig, ModalityConfig, ModalityRegistry
 from astropt.local_datasets import GalaxyImageDataset
 
-def collate_and_tokenise(batch, image_codecs):
+def collate_and_tokenise(batch, codecs):
     """Batch tokenisation in main process"""
     # Stack all fluxes into a single batch tensor
     # We want to randomly choose hsc or legacy image
     if np.random.rand() < 0.5:
         imstring = "legacysurvey"
         codec = LegacySurveyImage
-        image_codec = image_codecs["LegacySurveyImage"]
+        codec = codecs["LegacySurveyImage"]
         bands = ['DES-G', 'DES-R', 'DES-I', 'DES-Z']
     else:
         imstring = "hsc"
         codec = HSCImage
-        image_codec = image_codecs["HSCImage"]
+        codec = codecs["HSCImage"]
         bands = ['HSC-G', 'HSC-R', 'HSC-I', 'HSC-Z', 'HSC-Y']
 
 
@@ -80,7 +80,7 @@ def collate_and_tokenise(batch, image_codecs):
     )
     
     # Single encode call for entire batch
-    tokens = image_codec.encode(batched_img)
+    tokens = codec.encode(batched_img)
     
     batch_size = len(batch)
     
@@ -245,7 +245,7 @@ if __name__ == "__main__":
         .select_columns(("legacysurvey_image", "hsc_image"))
     )
 
-    image_codecs = {
+    codecs = {
         "LegacySurveyImage": ImageCodec.from_pretrained(
             "polymathic-ai/aion-base",
             modality=LegacySurveyImage
@@ -254,9 +254,13 @@ if __name__ == "__main__":
             "polymathic-ai/aion-base",
             modality=HSCImage
         ).eval(),
+        "DESISpectrum": SpectrumCodec.from_pretrained(
+            "polymathic-ai/aion-base".
+            modality=DESISpectrum
+        ).eval()
     }
 
-    collate_fn = partial(collate_and_tokenise, image_codecs=image_codecs)
+    collate_fn = partial(collate_and_tokenise, codecs=codecs)
 
     def infinite_dataloader(dataloader):
         while True:
@@ -418,16 +422,16 @@ if __name__ == "__main__":
             with ctx:
                 P, loss = model(B["X"], B["Y"])
                 #if np.random.rand() < 0.5:
-                #    image_codec = image_codecs["HSCImage"]
+                #    codec = codecs["HSCImage"]
                 #    bands = ["HSC-G", "HSC-R", "HSC-Z"] 
                 #else:
-                image_codec = image_codecs["LegacySurveyImage"]
+                codec = codecs["LegacySurveyImage"]
                 bands = ["DES-G", "DES-R", "DES-Z"] 
                 Yim = torch.cat((
                     torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
                     B["Y"]["images_aion"].cpu(),
                 ), dim=1)
-                Yim = image_codec.decode(
+                Yim = codec.decode(
                     Yim,
                     bands=bands,
                 )
@@ -435,7 +439,7 @@ if __name__ == "__main__":
                     torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
                     torch.argmax(P["images_aion"], dim=-1).cpu(),
                 ), dim=1)
-                Pim = image_codec.decode(
+                Pim = codec.decode(
                     Pim,
                     bands=bands,
                 )
