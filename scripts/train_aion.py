@@ -216,21 +216,21 @@ if __name__ == "__main__":
 
     tds = (
         load_dataset(
-            "Smith42/legacysurvey_hsc_crossmatched",
+            "Smith42/desi_hsc_crossmatched",
             split="train",
             streaming=True,
         )
-        .select_columns("legacysurvey_image")
-        .rename_column("legacysurvey_image", "image")
+        .select_columns("spectrum")
+        #.rename_column("legacysurvey_image", "image")
     )
     vds = (
         load_dataset(
-            "Smith42/legacysurvey_hsc_crossmatched",
+            "Smith42/desi_hsc_crossmatched",
             split="train",
             streaming=True,
         )
-        .select_columns("legacysurvey_image")
-        .rename_column("legacysurvey_image", "image")
+        .select_columns("spectrum")
+        #.rename_column("legacysurvey_image", "image")
     )
 
     image_codec = ImageCodec.from_pretrained(
