@@ -19,6 +19,7 @@ $ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=1 --master_addr=123.456.123
 import math
 import os
 import time
+import random
 from contextlib import nullcontext
 from functools import partial
 
@@ -33,7 +34,8 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from datasets import load_dataset
 from aion.codecs.image import ImageCodec
-from aion.modalities import LegacySurveyImage
+from aion.codecs.spectrum import SpectrumCodec
+from aion.modalities import LegacySurveyImage, DESISpectrum, HSCImage
 
 try:
     import wandb
@@ -51,22 +53,40 @@ except ImportError:
 from astropt.model import GPT, GPTConfig, ModalityConfig, ModalityRegistry
 from astropt.local_datasets import GalaxyImageDataset
 
-def collate_and_tokenise(batch, image_codec):
+def collate_and_tokenise(batch, codecs):
     """Batch tokenisation in main process"""
     # Stack all fluxes into a single batch tensor
+    # We want to randomly choose hsc or legacy image
+    randnum = np.random.rand()
+    if randnum < 1.0:#0.5:
+        codecstring = "image"
+        codec = LegacySurveyImage
+        codec = codecs["LegacySurveyImage"]
+        bands = ['DES-G', 'DES-R', 'DES-I', 'DES-Z']
+    #elif randnum > 0.33 and randnum < 0.66:
+    #    codecstring = "hsc_imagery"
+    #    codec = HSCImage
+    #    codec = codecs["HSCImage"]
+    #    bands = ['HSC-G', 'HSC-R', 'HSC-I', 'HSC-Z', 'HSC-Y']
+    else:
+        codecstring = "spectrum"
+        codec = DESISpectrum
+        codec = codecs["DESISpectrum"]
+
+    print(codecstring)
     flux_batch = torch.stack([
-        torch.tensor(item["image"]["flux"]) 
+        torch.tensor(item[codecstring]["flux"]) 
         for item in batch
     ])
     
-    # Create single batched LegacySurveyImage
-    batched_img = LegacySurveyImage(
+    # Create single batched Image encoding
+    batched_img = codec(
         flux=flux_batch,
-        bands=['DES-G', 'DES-R', 'DES-I', 'DES-Z']
+        bands=bands
     )
     
     # Single encode call for entire batch
-    tokens = image_codec.encode(batched_img)
+    tokens = codec.encode(batched_img)
     
     batch_size = len(batch)
     
@@ -214,55 +234,56 @@ if __name__ == "__main__":
         else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
     )
 
-    tds = (
-        load_dataset(
-            "Smith42/desi_hsc_crossmatched",
-            split="train",
-            streaming=True,
-        )
-        .select_columns("spectrum")
-        #.rename_column("legacysurvey_image", "image")
-    )
-    vds = (
-        load_dataset(
-            "Smith42/desi_hsc_crossmatched",
-            split="train",
-            streaming=True,
-        )
-        .select_columns("spectrum")
-        #.rename_column("legacysurvey_image", "image")
-    )
+    dss = {
+        "DESISpectrum": (
+            load_dataset(
+                "Smith42/desi_hsc_crossmatched",
+                split="train",
+                streaming=True,
+            )
+            .select_columns(("spectrum",))
+        ),
+        "LegacySurveyImage": (
+            load_dataset(
+                "Smith42/legacysurvey_hsc_crossmatched",
+                split="train",
+                streaming=True,
+            )
+            .select_columns(("legacysurvey_image",))
+            .rename_column("legacysurvey_image", "image")
+        ),
+    }
 
-    image_codec = ImageCodec.from_pretrained(
-        "polymathic-ai/aion-base",
-        modality=LegacySurveyImage
-    )
-    image_codec = image_codec.eval()
-    image_codec = image_codec
+    codecs = {
+        "LegacySurveyImage": ImageCodec.from_pretrained(
+            "polymathic-ai/aion-base",
+            modality=LegacySurveyImage
+        ).eval(),
+        "HSCImage": ImageCodec.from_pretrained(
+            "polymathic-ai/aion-base",
+            modality=HSCImage
+        ).eval(),
+        "DESISpectrum": SpectrumCodec.from_pretrained(
+            "polymathic-ai/aion-base",
+            modality=DESISpectrum
+        ).eval()
+    }
 
-    collate_fn = partial(collate_and_tokenise, image_codec=image_codec)
+    collate_fn = partial(collate_and_tokenise, codecs=codecs)
 
     def infinite_dataloader(dataloader):
         while True:
             yield from dataloader
-    train_loader = DataLoader(
-            tds,
+    dls = {
+        key: infinite_dataloader(DataLoader(
+            dss[key],
             batch_size=batch_size,
             num_workers=num_workers,
             pin_memory=True,
             persistent_workers=True if num_workers > 0 else False,
             collate_fn=collate_fn,
-    )
-    val_loader = DataLoader(
-            vds,
-            batch_size=batch_size,
-            num_workers=num_workers,
-            pin_memory=True,
-            persistent_workers=True if num_workers > 0 else False,
-            collate_fn=collate_fn,
-    )
-    tdl = infinite_dataloader(train_loader)
-    vdl = infinite_dataloader(val_loader)
+        )) for key in dss
+    }
 
     # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
     iter_num = 0
@@ -378,10 +399,7 @@ if __name__ == "__main__":
     def estimate_loss():
         out = {}
         model.eval()
-        for dl, split in zip(
-            [tdl, vdl],
-            ["train", "val"],
-        ):
+        for split in dls.items():
             out[split] = {}
             losses = torch.zeros(eval_iters)
             for k in range(eval_iters):
@@ -396,26 +414,26 @@ if __name__ == "__main__":
     @torch.no_grad()
     def validate(iter_num, out_dir):
         model.eval()
-        for dl, split in zip([tdl, vdl], ["train", "val"]):
+        for split, dl in dls.items():
             f, axs = plt.subplots(8, 2, figsize=(3, 12), constrained_layout=True)
-            B = gid.process_modes(next(vdl), modality_registry, device)
+            B = gid.process_modes(next(dl), modality_registry, device)
             with ctx:
                 P, loss = model(B["X"], B["Y"])
                 Yim = torch.cat((
                     torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
                     B["Y"]["images_aion"].cpu(),
                 ), dim=1)
-                Yim = image_codec.decode(
+                Yim = codec.decode(
                     Yim,
-                    bands=["DES-G", "DES-R", "DES-Z"],
+                    bands=bands,
                 )
                 Pim = torch.cat((
                     torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
                     torch.argmax(P["images_aion"], dim=-1).cpu(),
                 ), dim=1)
-                Pim = image_codec.decode(
+                Pim = codec.decode(
                     Pim,
-                    bands=["DES-G", "DES-R", "DES-Z"],
+                    bands=bands,
                 )
 
                 clip_and_norm = lambda x: (torch.clamp(x, x.min(), x.quantile(0.99)) - x.min()) / (x.quantile(0.99) - x.min())
@@ -464,7 +482,9 @@ if __name__ == "__main__":
         print("starting training...")
     gid = GalaxyImageDataset()
     B = gid.process_modes(
-        next(tdl), modality_registry, device
+        next(dls[random.choice(list(dls.keys()))]), 
+        modality_registry, 
+        device
     )  # fetch the very first batch
     t0 = time.time()
     dts = []
@@ -585,7 +605,9 @@ if __name__ == "__main__":
                 logits, loss = model(B["X"], targets=B["Y"])
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
             B = gid.process_modes(
-                next(tdl), modality_registry, device
+                next(dls[random.choice(list(dls.keys()))]), 
+                modality_registry, 
+                device
             )  # fetch the very first batch
             # backward pass, with gradient scaling if training in fp16
             scaler.scale(loss).backward()
