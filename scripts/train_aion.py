@@ -55,38 +55,60 @@ from astropt.local_datasets import GalaxyImageDataset
 
 def collate_and_tokenise(batch, codecs):
     """Batch tokenisation in main process"""
+    available_keys = list(batch[0].keys())
+
     # Stack all fluxes into a single batch tensor
-    # We want to randomly choose hsc or legacy image
-    randnum = np.random.rand()
-    if randnum < 1.0:#0.5:
+    if "image" in available_keys:
         codecstring = "image"
-        codec = LegacySurveyImage
+        modality_class = LegacySurveyImage
         codec = codecs["LegacySurveyImage"]
         bands = ['DES-G', 'DES-R', 'DES-I', 'DES-Z']
+
+        flux_batch = torch.stack([
+            torch.tensor(item[codecstring]["flux"]) 
+            for item in batch
+        ])
+
+        batched_modality = modality_class(
+            flux=flux_batch,
+            bands=bands
+        )
     #elif randnum > 0.33 and randnum < 0.66:
     #    codecstring = "hsc_imagery"
     #    codec = HSCImage
     #    codec = codecs["HSCImage"]
     #    bands = ['HSC-G', 'HSC-R', 'HSC-I', 'HSC-Z', 'HSC-Y']
-    else:
+    elif "spectrum" in available_keys:
         codecstring = "spectrum"
-        codec = DESISpectrum
+        modality_class = DESISpectrum
         codec = codecs["DESISpectrum"]
 
-    print(codecstring)
-    flux_batch = torch.stack([
-        torch.tensor(item[codecstring]["flux"]) 
-        for item in batch
-    ])
-    
-    # Create single batched Image encoding
-    batched_img = codec(
-        flux=flux_batch,
-        bands=bands
-    )
+        flux_batch = torch.stack([
+            torch.tensor(item[codecstring]["flux"]) 
+            for item in batch
+        ])
+        ivar_batch = torch.stack([
+            torch.tensor(item[codecstring]["ivar"]) 
+            for item in batch
+        ])
+        mask_batch = torch.stack([
+            torch.tensor(item[codecstring]["mask"]) 
+            for item in batch
+        ])
+        lambda_batch = torch.stack([
+            torch.tensor(item[codecstring]["lambda"]) 
+            for item in batch
+        ])
+
+        batched_modality = modality_class(
+            flux=flux_batch,
+            ivar=ivar_batch,
+            mask=mask_batch,
+            wavelength=lambda_batch,
+        )
     
     # Single encode call for entire batch
-    tokens = codec.encode(batched_img)
+    tokens = codec.encode(batched_modality)
     
     batch_size = len(batch)
     
@@ -418,12 +440,13 @@ if __name__ == "__main__":
             f, axs = plt.subplots(8, 2, figsize=(3, 12), constrained_layout=True)
             B = gid.process_modes(next(dl), modality_registry, device)
             with ctx:
+                bands = ['DES-G', 'DES-R', 'DES-Z']
                 P, loss = model(B["X"], B["Y"])
                 Yim = torch.cat((
                     torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
                     B["Y"]["images_aion"].cpu(),
                 ), dim=1)
-                Yim = codec.decode(
+                Yim = codecs["LegacySurveyImage"].decode(
                     Yim,
                     bands=bands,
                 )
@@ -431,7 +454,7 @@ if __name__ == "__main__":
                     torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
                     torch.argmax(P["images_aion"], dim=-1).cpu(),
                 ), dim=1)
-                Pim = codec.decode(
+                Pim = codecs["LegacySurveyImage"].decode(
                     Pim,
                     bands=bands,
                 )
