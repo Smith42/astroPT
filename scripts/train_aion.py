@@ -166,7 +166,7 @@ if __name__ == "__main__":
     tokeniser = "affine"
     # adamw optimizer
     # we follow the same schedule here as Chinchilla
-    learning_rate = 3e-4  # max learning rate
+    learning_rate = 3e-5  # max learning rate
     max_iters = (
         30000  # total number of training iterations for one pass over our dataset
     )
@@ -257,23 +257,44 @@ if __name__ == "__main__":
     )
 
     dss = {
-        "DESISpectrum": (
-            load_dataset(
-                "Smith42/desi_hsc_crossmatched",
-                split="train",
-                streaming=True,
-            )
-            .select_columns(("spectrum",))
-        ),
-        "LegacySurveyImage": (
-            load_dataset(
-                "Smith42/legacysurvey_hsc_crossmatched",
-                split="train",
-                streaming=True,
-            )
-            .select_columns(("legacysurvey_image",))
-            .rename_column("legacysurvey_image", "image")
-        ),
+        "train": {
+            "DESISpectrum": (
+                load_dataset(
+                    "Smith42/desi_hsc_crossmatched",
+                    split="train",
+                    streaming=True,
+                )
+                .select_columns(("spectrum",))
+            ),
+            "LegacySurveyImage": (
+                load_dataset(
+                    "Smith42/legacysurvey_hsc_crossmatched",
+                    split="train",
+                    streaming=True,
+                )
+                .select_columns(("legacysurvey_image",))
+                .rename_column("legacysurvey_image", "image")
+            ),
+        },
+        "val": {
+            "DESISpectrum": (
+                load_dataset(
+                    "Smith42/desi_hsc_crossmatched",
+                    split="train",
+                    streaming=True,
+                )
+                .select_columns(("spectrum",))
+            ),
+            "LegacySurveyImage": (
+                load_dataset(
+                    "Smith42/legacysurvey_hsc_crossmatched",
+                    split="train",
+                    streaming=True,
+                )
+                .select_columns(("legacysurvey_image",))
+                .rename_column("legacysurvey_image", "image")
+            ),
+        }
     }
 
     codecs = {
@@ -296,16 +317,18 @@ if __name__ == "__main__":
     def infinite_dataloader(dataloader):
         while True:
             yield from dataloader
-    dls = {
-        key: infinite_dataloader(DataLoader(
-            dss[key],
-            batch_size=batch_size,
-            num_workers=num_workers,
-            pin_memory=True,
-            persistent_workers=True if num_workers > 0 else False,
-            collate_fn=collate_fn,
-        )) for key in dss
-    }
+    dls = {}
+    for split in ["train", "val"]:
+        dls[split] = {}
+        for key in dss[split]:
+            dls[split][key] = infinite_dataloader(DataLoader(
+                dss[split][key],
+                batch_size=batch_size,
+                num_workers=num_workers,
+                pin_memory=True,
+                persistent_workers=True if num_workers > 0 else False,
+                collate_fn=collate_fn,
+            ))
 
     # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
     iter_num = 0
@@ -421,12 +444,15 @@ if __name__ == "__main__":
     def estimate_loss():
         out = {}
         model.eval()
-        for split in dls.keys():
+        gid = GalaxyImageDataset()
+        for split in ["train", "val"]:
             out[split] = {}
             losses = torch.zeros(eval_iters)
             for k in range(eval_iters):
+                # sample randomly from available modalities
+                modality_key = random.choice(list(dls[split].keys()))
                 B = gid.process_modes(
-                    next(dls[random.choice(list(dls.keys()))]), 
+                    next(dls[split][modality_key]),
                     modality_registry, 
                     device
                 )
@@ -442,8 +468,9 @@ if __name__ == "__main__":
         model.eval()
         for split, dl in dls.items():
             f, axs = plt.subplots(8, 2, figsize=(3, 12), constrained_layout=True)
+            modality_key = random.choice(list(dls[split].keys()))
             B = gid.process_modes(
-                next(dls[random.choice(list(dls.keys()))]), 
+                next(dls[split][modality_key]), 
                 modality_registry, 
                 device
             )
@@ -513,8 +540,9 @@ if __name__ == "__main__":
     if master_process:
         print("starting training...")
     gid = GalaxyImageDataset()
+    first_modality = random.choice(list(dls["train"].keys()))
     B = gid.process_modes(
-        next(dls[random.choice(list(dls.keys()))]), 
+        next(dls["train"][first_modality]), 
         modality_registry, 
         device
     )  # fetch the very first batch
@@ -542,55 +570,53 @@ if __name__ == "__main__":
             validate(iter_num, out_dir)
             losses = estimate_loss()
             modality_keys = losses.keys()
-            #val_loss = np.mean(list(losses["val"].values()))
-            val_loss = np.mean(list(losses["LegacySurveyImage"].values()))
+            val_loss = np.mean(list(losses["val"].values()))
             print(
-                #f"iter {iter_num}:\ntrain loss:\n{losses['train']}\nval loss:\n{losses['val']}"
-                f"iter {iter_num}:\ntrain loss:\n{losses['DESISpectrum']}\nval loss:\n{losses['LegacySurveyImage']}"
+                f"iter {iter_num}:\ntrain loss:\n{losses['train']}\nval loss:\n{losses['val']}"
             )
             with open(os.path.join(out_dir, "loss.txt"), "a") as fi:
                 if fi.tell() == 0:  # check if a new file and write header if so
                     train_head_str = ",".join(
-                        map(lambda x: str(x) + "_train", losses["DESISpectrum"].keys())
+                        map(lambda x: str(x) + "_train", losses["train"].keys())
                     )
                     valid_head_str = ",".join(
-                        map(lambda x: str(x) + "_valid", losses["LegacySurveyImage"].keys())
+                        map(lambda x: str(x) + "_valid", losses["val"].keys())
                     )
                     fi.write(f"iter_num,{train_head_str},{valid_head_str},lr,mfu\n")
                 train_loss_str = ",".join(
-                    map(lambda x: str(x.item()), losses["DESISpectrum"].values())
+                    map(lambda x: str(x.item()), losses["train"].values())
                 )
                 valid_loss_str = ",".join(
-                    map(lambda x: str(x.item()), losses["LegacySurveyImage"].values())
+                    map(lambda x: str(x.item()), losses["val"].values())
                 )
                 fi.write(
                     f"{iter_num},{train_loss_str},{valid_loss_str},{lr},{running_mfu * 100}\n"
                 )
             if log_via_wandb:
-                wandb.log({"valloss": losses["LegacySurveyImage"]}, step=iter_num)
+                wandb.log({"valloss": losses["val"]}, step=iter_num)
             if iter_num != 0:
                 loss_df = pd.read_csv(os.path.join(out_dir, "loss.txt"))
                 f, axs = plt.subplots(
                     1,
-                    len(losses["DESISpectrum"]) + 1,
+                    len(losses["train"]) + 1,
                     figsize=(12, 4),
                     constrained_layout=True,
                 )
                 axs.ravel()[0].set_title("mean")
                 axs.ravel()[0].plot(
                     loss_df["iter_num"],
-                    loss_df.filter(like="DESISpectrum").mean(axis=1),
-                    label="DESISpectrum",
+                    loss_df.filter(like="train").mean(axis=1),
+                    label="train",
                 )
                 axs.ravel()[0].plot(
                     loss_df["iter_num"],
-                    loss_df.filter(like="LegacySurveyImage").mean(axis=1),
-                    label="LegacySurveyImage",
+                    loss_df.filter(like="valid").mean(axis=1),
+                    label="valid",
                 )
                 for ax, train_loss, valid_loss in zip(
                     axs.ravel()[1:],
-                    loss_df.filter(like="DESISpectrum"),
-                    loss_df.filter(like="LegacySurveyImage"),
+                    loss_df.filter(like="train"),
+                    loss_df.filter(like="valid"),
                 ):
                     ax.set_title(train_loss)
                     ax.plot(loss_df["iter_num"], loss_df[train_loss], label="train")
@@ -639,8 +665,10 @@ if __name__ == "__main__":
             with ctx:
                 logits, loss = model(B["X"], targets=B["Y"])
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
+            # Randomly sample from available training modalities
+            train_modality = random.choice(list(dls["train"].keys()))
             B = gid.process_modes(
-                next(dls[random.choice(list(dls.keys()))]), 
+                next(dls["train"][train_modality]),
                 modality_registry, 
                 device
             )  # fetch the very first batch
