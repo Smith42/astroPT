@@ -421,11 +421,15 @@ if __name__ == "__main__":
     def estimate_loss():
         out = {}
         model.eval()
-        for split in dls.items():
+        for split in dls.keys():
             out[split] = {}
             losses = torch.zeros(eval_iters)
             for k in range(eval_iters):
-                B = gid.process_modes(next(dl), modality_registry, device)
+                B = gid.process_modes(
+                    next(dls[random.choice(list(dls.keys()))]), 
+                    modality_registry, 
+                    device
+                )
                 with ctx:
                     logits, loss = model(B["X"], targets=B["Y"])
                 losses[k] = loss.item()
@@ -438,52 +442,57 @@ if __name__ == "__main__":
         model.eval()
         for split, dl in dls.items():
             f, axs = plt.subplots(8, 2, figsize=(3, 12), constrained_layout=True)
-            B = gid.process_modes(next(dl), modality_registry, device)
-            with ctx:
-                bands = ['DES-G', 'DES-R', 'DES-Z']
-                P, loss = model(B["X"], B["Y"])
-                #Yim = torch.cat((
-                #    torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
-                #    B["Y"]["images_aion"].cpu(),
-                #), dim=1)
-                Yim = codecs["LegacySurveyImage"].decode(
-                    B["Y"]["images_aion"].cpu(),
-                    bands=bands,
-                )
-                Pim = torch.cat((
-                    #torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
-                    torch.argmax(P["images_aion"], dim=-1).cpu(),
-                ), dim=1)
-                Pim = codecs["LegacySurveyImage"].decode(
-                    Pim,
-                #    bands=bands,
-                )
-
-                clip_and_norm = lambda x: (torch.clamp(x, x.min(), x.quantile(0.99)) - x.min()) / (x.quantile(0.99) - x.min())
-
-                for ax, p, y in zip(
-                    axs, Pim.flux, Yim.flux,
-                ):
-                    ax[0].imshow(clip_and_norm(y.swapaxes(0, -1)))
-                    ax[1].imshow(clip_and_norm(p.swapaxes(0, -1)))
-                    ax[0].axis("off")
-                    ax[1].axis("off")
-
-
-                if log_via_wandb:
-                    wandb.log(
-                        {
-                            "Y": [wandb.Image(yy) for yy in clip_and_norm(Yim.flux)],
-                            "P": [wandb.Image(pp) for pp in clip_and_norm(Pim.flux)],
-                        }
-                    )
-
-            f.savefig(
-                os.path.join(out_dir, f"{iter_num:06d}_{split}.jpg"),
-                bbox_inches="tight",
-                pad_inches=0,
+            B = gid.process_modes(
+                next(dls[random.choice(list(dls.keys()))]), 
+                modality_registry, 
+                device
             )
-            plt.close(f)
+            #with ctx:
+            #    bands = ['DES-G', 'DES-R', 'DES-Z']
+            #    P, loss = model(B["X"], B["Y"])
+            #    #Yim = torch.cat((
+            #    #    torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
+            #    #    B["Y"]["images_aion"].cpu(),
+            #    #), dim=1)
+            #    print(B["Y"]["images_aion"].shape)
+            #    Yim = codecs["LegacySurveyImage"].decode(
+            #        B["Y"]["images_aion"].cpu(),
+            #        bands=bands,
+            #    )
+            #    Pim = torch.cat((
+            #        #torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
+            #        torch.argmax(P["images_aion"], dim=-1).cpu(),
+            #    ), dim=1)
+            #    Pim = codecs["LegacySurveyImage"].decode(
+            #        Pim,
+            #        bands=bands,
+            #    )
+
+            #    clip_and_norm = lambda x: (torch.clamp(x, x.min(), x.quantile(0.99)) - x.min()) / (x.quantile(0.99) - x.min())
+
+            #    for ax, p, y in zip(
+            #        axs, Pim.flux, Yim.flux,
+            #    ):
+            #        ax[0].imshow(clip_and_norm(y.swapaxes(0, -1)))
+            #        ax[1].imshow(clip_and_norm(p.swapaxes(0, -1)))
+            #        ax[0].axis("off")
+            #        ax[1].axis("off")
+
+
+            #    if log_via_wandb:
+            #        wandb.log(
+            #            {
+            #                "Y": [wandb.Image(yy) for yy in clip_and_norm(Yim.flux)],
+            #                "P": [wandb.Image(pp) for pp in clip_and_norm(Pim.flux)],
+            #            }
+            #        )
+
+            #f.savefig(
+            #    os.path.join(out_dir, f"{iter_num:06d}_{split}.jpg"),
+            #    bbox_inches="tight",
+            #    pad_inches=0,
+            #)
+            #plt.close(f)
         model.train()
 
     # learning rate decay scheduler (cosine with warmup)
@@ -532,53 +541,56 @@ if __name__ == "__main__":
         if iter_num % eval_interval == 0 and master_process:
             validate(iter_num, out_dir)
             losses = estimate_loss()
-            val_loss = np.mean(list(losses["val"].values()))
+            modality_keys = losses.keys()
+            #val_loss = np.mean(list(losses["val"].values()))
+            val_loss = np.mean(list(losses["LegacySurveyImage"].values()))
             print(
-                f"iter {iter_num}:\ntrain loss:\n{losses['train']}\nval loss:\n{losses['val']}"
+                #f"iter {iter_num}:\ntrain loss:\n{losses['train']}\nval loss:\n{losses['val']}"
+                f"iter {iter_num}:\ntrain loss:\n{losses['DESISpectrum']}\nval loss:\n{losses['LegacySurveyImage']}"
             )
             with open(os.path.join(out_dir, "loss.txt"), "a") as fi:
                 if fi.tell() == 0:  # check if a new file and write header if so
                     train_head_str = ",".join(
-                        map(lambda x: str(x) + "_train", losses["train"].keys())
+                        map(lambda x: str(x) + "_train", losses["DESISpectrum"].keys())
                     )
                     valid_head_str = ",".join(
-                        map(lambda x: str(x) + "_valid", losses["val"].keys())
+                        map(lambda x: str(x) + "_valid", losses["LegacySurveyImage"].keys())
                     )
                     fi.write(f"iter_num,{train_head_str},{valid_head_str},lr,mfu\n")
                 train_loss_str = ",".join(
-                    map(lambda x: str(x.item()), losses["train"].values())
+                    map(lambda x: str(x.item()), losses["DESISpectrum"].values())
                 )
                 valid_loss_str = ",".join(
-                    map(lambda x: str(x.item()), losses["val"].values())
+                    map(lambda x: str(x.item()), losses["LegacySurveyImage"].values())
                 )
                 fi.write(
                     f"{iter_num},{train_loss_str},{valid_loss_str},{lr},{running_mfu * 100}\n"
                 )
             if log_via_wandb:
-                wandb.log({"valloss": losses["val"]}, step=iter_num)
+                wandb.log({"valloss": losses["LegacySurveyImage"]}, step=iter_num)
             if iter_num != 0:
                 loss_df = pd.read_csv(os.path.join(out_dir, "loss.txt"))
                 f, axs = plt.subplots(
                     1,
-                    len(losses["train"]) + 1,
+                    len(losses["DESISpectrum"]) + 1,
                     figsize=(12, 4),
                     constrained_layout=True,
                 )
                 axs.ravel()[0].set_title("mean")
                 axs.ravel()[0].plot(
                     loss_df["iter_num"],
-                    loss_df.filter(like="train").mean(axis=1),
-                    label="train",
+                    loss_df.filter(like="DESISpectrum").mean(axis=1),
+                    label="DESISpectrum",
                 )
                 axs.ravel()[0].plot(
                     loss_df["iter_num"],
-                    loss_df.filter(like="valid").mean(axis=1),
-                    label="valid",
+                    loss_df.filter(like="LegacySurveyImage").mean(axis=1),
+                    label="LegacySurveyImage",
                 )
                 for ax, train_loss, valid_loss in zip(
                     axs.ravel()[1:],
-                    loss_df.filter(like="train"),
-                    loss_df.filter(like="valid"),
+                    loss_df.filter(like="DESISpectrum"),
+                    loss_df.filter(like="LegacySurveyImage"),
                 ):
                     ax.set_title(train_loss)
                     ax.plot(loss_df["iter_num"], loss_df[train_loss], label="train")
