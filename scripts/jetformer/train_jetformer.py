@@ -9,8 +9,7 @@ from typing import Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Subset
-from datasets import load_dataset 
+from torch.utils.data import DataLoader, Subset, TensorDataset
 import torchvision
 import torchvision.transforms as T
 from torchvision.utils import save_image
@@ -69,33 +68,51 @@ class CFG:
 # Block 2: Loss Logging and Plotting Utilities
 # ======================================================================================
 
-def append_loss_to_csv(epoch, avg_loss, filename):
-    """Appends the epoch and average loss to a CSV file."""
+def append_losses_to_csv(epoch, train_loss, val_loss, filename):
+    """Appends the epoch, average train loss, and optional val loss to a CSV file."""
     # Check if the file exists to write headers
     file_exists = os.path.isfile(filename)
     with open(filename, 'a', newline='') as csvfile:
         writer = csv.writer(csvfile)
         # Write header only if the file is new
         if not file_exists:
-            writer.writerow(['epoch', 'loss'])
-        # Write the data
-        writer.writerow([epoch, avg_loss])
+            writer.writerow(['epoch', 'train_loss', 'val_loss']) 
+        
+        # Write the data. csv.writer handles None as an empty field.
+        writer.writerow([epoch, train_loss, val_loss]) 
 
 def plot_loss_from_csv(csv_path, output_path):
-    """Reads a CSV file and saves a plot of the loss curve."""
+    """Reads a CSV file and saves a plot of the train and validation loss curves."""
     # Prevent error if the file doesn't exist yet
     if not os.path.isfile(csv_path):
         return
     
-    # Read the data using pandas
-    df = pd.read_csv(csv_path)
+    # Read the data using pandas. 
+    # Empty val_loss fields will be read as NaN.
+    df = pd.read_csv(csv_path) 
     
     # Create the plot
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(df['epoch'], df['loss'])
-    ax.set_title('Training Loss per Epoch')
+    
+    # Plot training loss (all epochs)
+    ax.plot(df['epoch'], df['train_loss'], label='Train Loss', color='blue')
+    
+
+    # 1. Create a new DataFrame containing only rows where 'val_loss' is NOT NaN
+    df_val = df.dropna(subset=['val_loss'])
+    
+    # 2. Plot the filtered data. 
+    # This will plot just the valid points (e.g., 5, 10, 15...)
+    # and connect them with a dashed line.
+    if not df_val.empty: # Only plot if we have at least one validation point
+        ax.plot(df_val['epoch'], df_val['val_loss'], 
+                label='Validation Loss', color='orange', 
+                linestyle='--', marker='o') 
+    
+    ax.set_title('Training and Validation Loss per Epoch') 
     ax.set_xlabel('Epoch')
     ax.set_ylabel('Average Loss')
+    ax.legend() 
     ax.grid(True)
     
     # Save the plot and close the figure to free memory
@@ -486,28 +503,85 @@ class JetFormerLite(nn.Module):
         return loss
 
     @torch.no_grad()
-    def sample(self, n: int = 16):
+    def sample(self, n: int = 16, x_real_batch: torch.Tensor = None): 
         self.eval()
         B = n; N = self.cfg.n_tokens; device = next(self.parameters()).device
-        tokens = torch.zeros(B, N, self.cfg.d_token, device=device)
-        print("Generating tokens autoregressively...")
         
-        for t in tqdm(range(N - 1), leave=False):
-            h_in = self.in_proj(tokens) + self.pos
-            h_out = self.gpt(h_in)
-            logits_pi, mu, log_sigma = self.head(h_out[:, t:t+1])
-            pi = F.softmax(logits_pi.squeeze(1), dim=-1)
-            comp_idx = torch.multinomial(pi, 1)
-            gather_idx = comp_idx[:, :, None].expand(-1, 1, self.cfg.d_token)
-            sel_mu = mu.squeeze(1).gather(1, gather_idx).squeeze(1)
-            sel_sigma = log_sigma.squeeze(1).gather(1, gather_idx).squeeze(1).exp()
-            y = sel_mu + torch.randn_like(sel_mu) * sel_sigma
-            tokens[:, t+1] = y
+        # Check if we are doing reconstruction or unconditional generation
+        if x_real_batch is None:
+            # This is the ORIGINAL unconditional generation path
+            tokens = torch.zeros(B, N, self.cfg.d_token, device=device)
+            print("Generating tokens autoregressively (unconditional)...")
             
-        z = depatchify(tokens, C=self.cfg.in_ch, H=self.cfg.img_size, W=self.cfg.img_size, patch_size=self.cfg.patch)
-        x, _ = self.flow(z, reverse=True)
-        x = x.clamp(0, 1)
-        return x
+            for t in tqdm(range(N - 1), leave=False):
+                h_in = self.in_proj(tokens) + self.pos
+                h_out = self.gpt(h_in)
+                logits_pi, mu, log_sigma = self.head(h_out[:, t:t+1])
+                pi = F.softmax(logits_pi.squeeze(1), dim=-1)
+                comp_idx = torch.multinomial(pi, 1)
+                gather_idx = comp_idx[:, :, None].expand(-1, 1, self.cfg.d_token)
+                sel_mu = mu.squeeze(1).gather(1, gather_idx).squeeze(1)
+                sel_sigma = log_sigma.squeeze(1).gather(1, gather_idx).squeeze(1).exp()
+                y = sel_mu + torch.randn_like(sel_mu) * sel_sigma
+                tokens[:, t+1] = y
+                
+            z = depatchify(tokens, C=self.cfg.in_ch, H=self.cfg.img_size, W=self.cfg.img_size, patch_size=self.cfg.patch)
+            x, _ = self.flow(z, reverse=True)
+            x = x.clamp(0, 1)
+            return x
+        
+        else:
+            # This is the RECONSTRUCTION path
+            print("Reconstructing real images for side-by-side comparison...")
+            
+            # We'll use n//2 real images and n//2 predicted images to make n total
+            n_pairs = n // 2 
+            # Get first n/2 images from the provided batch and move to device
+            x_real = x_real_batch[:n_pairs].to(device) 
+
+            # Define C, H, and W from the model's configuration
+            C = self.cfg.in_ch
+            H = self.cfg.img_size
+            W = self.cfg.img_size
+
+            
+            # 1. Pass real images through the flow to get latent z
+            z_real, _ = self.flow(x_real, reverse=False)
+            
+            # 2. Patchify to get the real tokens
+            tokens_real = patchify(z_real, self.cfg.patch)
+            
+            # 3. Get the model's predictions (teacher-forced)
+            # We pass the *entire* real token sequence and get predictions for what *should* come next
+            h_in = self.in_proj(tokens_real) + self.pos
+            h_out = self.gpt(h_in)
+            
+            # 4. Get GMM parameters for tokens 1...N-1
+            logits_pi, mu, log_sigma = self.head(h_out[:, :-1])
+            
+            # 5. Create the "predicted" token sequence
+            tokens_pred = torch.zeros_like(tokens_real)
+            tokens_pred[:, 0] = tokens_real[:, 0] # Copy first token (it's not predicted)
+            
+            # 6. Get deterministic 'mu' from most likely GMM component
+            # This is the model's "best guess" for each token, given the *real* preceding token
+            best_comp_idx = torch.argmax(logits_pi, dim=-1, keepdim=True) # Shape: [B, N-1, 1]
+            gather_idx = best_comp_idx.unsqueeze(-1).expand(-1, -1, -1, self.cfg.d_token)
+            sel_mu = torch.gather(mu, 2, gather_idx).squeeze(2) # Shape: [B, N-1, D_token]
+            tokens_pred[:, 1:] = sel_mu # Fill in the predicted tokens
+            
+            # 7. Depatchify and invert flow for predicted images
+            z_pred = depatchify(tokens_pred, C=self.cfg.in_ch, H=self.cfg.img_size, W=self.cfg.img_size, patch_size=self.cfg.patch)
+            x_pred, _ = self.flow(z_pred, reverse=True)
+            x_pred = x_pred.clamp(0, 1) # This is the final reconstructed image batch
+            
+            # 8. Interleave real and predicted images for side-by-side saving
+            # We stack [x_real, x_pred] and then reshape
+            # The saved grid will look like: [x_real[0], x_pred[0], x_real[1], x_pred[1], ...]
+            combined = torch.stack([x_real, x_pred], dim=1) # Shape [n_pairs, 2, C, H, W]
+            combined = combined.view(n, C, H, W) # Shape [n, C, H, W]
+            
+            return combined
 
 # ======================================================================================
 # Block 6: Main Training Loop
@@ -581,29 +655,91 @@ def train():
             
             # Update progress bar
             pbar.set_postfix(loss=f"{loss.item():.3f}", lr=f"{opt.param_groups[0]['lr']:.2e}")
- 
         
         # --- End-of-Epoch Operations ---
-        # 1. Calculate the average loss for the epoch
-        avg_loss = sum(epoch_losses) / len(epoch_losses)
-        print(f"Epoch {ep+1} finished. Average Loss: {avg_loss:.3f}")
+        # Calculate the average loss for the epoch
+        avg_train_loss = sum(epoch_losses) / len(epoch_losses) if epoch_losses else 0
+        print(f"Epoch {ep+1} finished. Average Train Loss: {avg_train_loss:.3f}")
 
-        # 2. Log the average loss to the CSV file
-        append_loss_to_csv(ep + 1, avg_loss, cfg.loss_csv_path)
-
-        # 3. Update the static plot of the loss curve
-        plot_loss_from_csv(cfg.loss_csv_path, cfg.loss_plot_path)
-
-        # 4. Save a checkpoint
+        # Save a checkpoint
         save_checkpoint(ep, model, opt, cfg)
         
-        # 5. Generate and save sample images every 5 epochs
+        # Initialize avg_val_loss to None
+        avg_val_loss = None
+        
+        # Generate samples and RUN VALIDATION every 5 epochs
         if (ep + 1) % 5 == 0:
-            print(f"--- Generating samples for epoch {ep+1} ---")
-            fake_images = model.sample(n=16)
-            sample_path = os.path.join(cfg.samples_dir, f"epoch_{ep+1:03d}.png")
-            save_image(fake_images, sample_path, nrow=4)
-            print(f"Samples saved to {sample_path}")
+            print(f"--- Running Validation & Sampling for epoch {ep+1} ---")
+            
+            # Run validation on the entire test set
+            model.eval() # Set model to evaluation mode
+            test_shard_path = os.path.join("galaxy_pt", "shard_0000_test.pt")
+            val_losses = []
+            test_images_f32 = None # To store loaded test images
+            try:
+                # 1. Load the full test shard data
+                test_data = torch.load(test_shard_path, map_location='cpu')
+                test_images_u8 = test_data["images"]
+                test_images_f32 = test_images_u8.float().div_(255.0) # [N, C, H, W]
+                
+                # 2. Create a DataLoader for the test set
+                test_dataset = TensorDataset(test_images_f32)
+                test_loader = DataLoader(test_dataset, batch_size=cfg.batch_size, shuffle=False)
+                
+                print(f"Running validation on {len(test_dataset)} test images...")
+                val_pbar = tqdm(test_loader, desc="Validation", leave=False)
+                
+                with torch.no_grad(): # Disable gradient calculation
+                    for val_batch in val_pbar:
+                        val_img = val_batch[0].to(device)
+                        # Run model forward pass, epoch_frac=1.0 means no noise
+                        val_loss = model(val_img, epoch_frac=1.0) 
+                        val_losses.append(val_loss.item())
+                
+                # 3. Calculate average validation loss
+                if val_losses:
+                    avg_val_loss = sum(val_losses) / len(val_losses)
+                    print(f"Validation finished. Average Validation Loss: {avg_val_loss:.3f}")
+                
+            except FileNotFoundError:
+                print(f"WARNING: Test shard '{test_shard_path}' not found. Skipping validation.")
+            except Exception as e:
+                print(f"WARNING: Error during validation: {e}. Skipping validation.")
+            
+            model.train() # Set model back to training mode
+            # --- END OF VALIDATION CODE ---
+
+            # Use the test data we already loaded for sampling
+            test_batch = None
+            if test_images_f32 is not None:
+                try:
+                    # Get 16 random indices from the loaded test images
+                    num_images_in_shard = test_images_f32.size(0)
+                    random_indices = torch.randperm(num_images_in_shard)[:16]
+                    
+                    # Select the 16 random images
+                    test_batch = test_images_f32[random_indices]
+
+                except Exception as e:
+                    print(f"WARNING: Error selecting random samples: {e}. Skipping sample generation.")
+            else:
+                 print("WARNING: test_images_f32 not loaded (validation may have failed). Skipping sample generation.")
+            # --- END OF MODIFICATION ---
+
+            # Only proceed if we successfully loaded the test_batch
+            if test_batch is not None:
+                # This part is UNCHANGED as requested
+                fake_images = model.sample(n=32, x_real_batch=test_batch)
+                sample_path = os.path.join(cfg.samples_dir, f"epoch_{ep+1:03d}.png")
+                save_image(fake_images, sample_path, nrow=2)
+                print(f"Samples saved to {sample_path}")
+
+        # Log the average losses to the CSV file
+        #    avg_val_loss is either None (if not epoch 5) or the calculated value
+        append_losses_to_csv(ep + 1, avg_train_loss, avg_val_loss, cfg.loss_csv_path)
+
+        # Update the static plot of the loss curve
+        plot_loss_from_csv(cfg.loss_csv_path, cfg.loss_plot_path)
 
     print("Training finished.")
 
