@@ -27,9 +27,9 @@ import matplotlib.pyplot as plt
 @dataclass
 class CFG:
     # --- Heavier Transformer Config ---
-    d_model: int = 512
-    n_heads: int = 16
-    n_layers: int = 8
+    d_model: int = 1536
+    n_heads: int = 24
+    n_layers: int = 16
     
     # --- Training Config ---
     epochs: int = 2000
