@@ -8,11 +8,12 @@
 [![PyPI Downloads](https://static.pepy.tech/badge/astropt)](https://pepy.tech/projects/astropt) 
 [![docs](https://app.readthedocs.org/projects/astropt/badge/)](https://astropt.readthedocs.io/)
 [![License: AGPL-v3](https://img.shields.io/badge/License-AGPLv3-green.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
-[![All Contributors](https://img.shields.io/badge/all_contributors-5-orange.svg?style=flat-square)](#contributors-)
+[![All Contributors](https://img.shields.io/badge/all_contributors-6-orange.svg?style=flat-square)](#contributors-)
 
 [![ICML](https://img.shields.io/badge/AI4Science@ICML-2024---?logo=https%3A%2F%2Fneurips.cc%2Fstatic%2Fcore%2Fimg%2FNeurIPS-logo.svg&labelColor=68448B&color=b3b3b3)](https://openreview.net/forum?id=aOLuuLxqav)
 [![arXiv](https://img.shields.io/badge/arXiv-2405.14930---?logo=arXiv&labelColor=b31b1b&color=grey)](https://arxiv.org/abs/2405.14930)
 [![arXiv](https://img.shields.io/badge/arXiv-2503.15312---?logo=arXiv&labelColor=b31b1b&color=grey)](https://arxiv.org/abs/2503.15312)
+[![arXiv](https://img.shields.io/badge/arXiv-2509.19453---?logo=arXiv&labelColor=b31b1b&color=grey)](https://arxiv.org/abs/2509.19453)
 
 [![Model on HF](https://huggingface.co/datasets/huggingface/badges/resolve/main/model-on-hf-sm.svg)](https://huggingface.co/Smith42/astroPT_v2.0)
 [![Dataset on HF](https://huggingface.co/datasets/huggingface/badges/resolve/main/dataset-on-hf-sm.svg)](https://huggingface.co/datasets/Smith42/galaxies)
@@ -124,6 +125,7 @@ And finally `scripts/finetune.py` has an example LoRA finetune routine.
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/mhuertascompany"><img src="https://avatars.githubusercontent.com/u/22987973?v=4?s=100" width="100px;" alt="mhuertascompany"/><br /><sub><b>mhuertascompany</b></sub></a><br /><a href="#ideas-mhuertascompany" title="Ideas, Planning, & Feedback">🤔</a> <a href="#content-mhuertascompany" title="Content">🖋</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/msiudek"><img src="https://avatars.githubusercontent.com/u/53626980?v=4?s=100" width="100px;" alt="Malgorzata Siudek"/><br /><sub><b>Malgorzata Siudek</b></sub></a><br /><a href="#ideas-msiudek" title="Ideas, Planning, & Feedback">🤔</a> <a href="#content-msiudek" title="Content">🖋</a> <a href="https://github.com/Smith42/astroPT/commits?author=msiudek" title="Code">💻</a> <a href="#data-msiudek" title="Data">🔣</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/gimarso"><img src="https://avatars.githubusercontent.com/u/52239656?v=4?s=100" width="100px;" alt="gimarso"/><br /><sub><b>gimarso</b></sub></a><br /><a href="#ideas-gimarso" title="Ideas, Planning, & Feedback">🤔</a> <a href="https://github.com/Smith42/astroPT/commits?author=gimarso" title="Code">💻</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/victoralonsorodriguez"><img src="https://avatars.githubusercontent.com/u/69580371?v=4?s=100" width="100px;" alt="Víctor Alonso"/><br /><sub><b>Víctor Alonso</b></sub></a><br /><a href="https://github.com/Smith42/astroPT/issues?q=author%3Avictoralonsorodriguez" title="Bug reports">🐛</a></td>
     </tr>
   </tbody>
   <tfoot>
