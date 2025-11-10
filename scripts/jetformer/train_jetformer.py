@@ -27,26 +27,52 @@ import matplotlib.pyplot as plt
 @dataclass
 class CFG:
     # --- Heavier Transformer Config ---
+    # This is the config you provided. It's very large.
     d_model: int = 1536
     n_heads: int = 24
     n_layers: int = 16
     
     # --- Training Config ---
-    epochs: int = 2000
-    batch_size: int = 64
+    epochs: int = 200
+    
+    ## NEW: BATCH SIZE ADJUSTMENT
+    # The original 64 is impossible for 256x256 images with this model size.
+    # 4 is a very small, safe starting point.
+    # You may OOM (Out of Memory) even with 4. If you do, set this to 1
+    # and consider using gradient accumulation (not implemented here).
+    # If you have a very powerful GPU (A100 80GB), you *might* be able to increase this.
+    batch_size: int = 4 
+    
     lr: float = 3e-4 # Constant learning rate
     wd: float = 0.01
     
     # --- Dataset Switch ---
-    # Set this to "car" or "galaxy" to choose the dataset
+    ## NEW: Removed "car" option. This script is now only for the galaxy dataset.
     dataset_name: str = "galaxy" 
     
     # --- Other Model/Data Params ---
-    img_size: int = 32 # This MUST stay 32x32 for the JetFormerLite model
+    ## NEW: IMAGE SIZE
+    # Changed from 32 to 256. This is the main change.
+    img_size: int = 256 
     in_ch: int = 3
-    patch: int = 4
+    
+    ## NEW: PATCH SIZE
+    # Changed from 4 to 16.
+    # A 4x4 patch on a 256x256 image would create (256/4)^2 = 64*64 = 4096 tokens.
+    # This is too long for a Transformer.
+    # A 16x16 patch creates (256/16)^2 = 16*16 = 256 tokens. This is standard
+    # practice (like ViT-Base) and much more manageable.
+    patch: int = 16
+    
+    ## NEW: N_TOKENS (Auto-calculated)
+    # This will now be (256 // 16)**2 = 256
     n_tokens: int = (img_size // patch)**2
+    
+    ## NEW: D_TOKEN (Auto-calculated)
+    # This is the dimension of a single flattened patch.
+    # It will now be 3 * 16 * 16 = 768
     d_token: int = in_ch * patch * patch
+    
     gmm_K: int = 4
     flow_steps: int = 4
     
@@ -123,42 +149,31 @@ def plot_loss_from_csv(csv_path, output_path):
 # Block 3: Data Loading
 # ======================================================================================
 
-def get_car_dataloader(cfg):
-    """Loads the CIFAR-10 dataset and filters it to only include the 'car' class."""
-    print("Loading and filtering CIFAR-10 for 'car' class...")
-    transform = T.Compose([
-        T.RandomHorizontalFlip(),
-        T.ToTensor()
-    ])
-    
-    # Load the full training dataset
-    full_dataset = torchvision.datasets.CIFAR10(root="./data", train=True, download=True, transform=transform)
-    
-    # The 'car' class is at index 1 in CIFAR-10
-    car_class_index = 1
-    
-    # Find the indices of all images that belong to the car class
-    car_indices = [i for i, (_, label) in enumerate(full_dataset) if label == car_class_index]
-    
-    # Create a Subset of the original dataset using only the car indices
-    car_subset = Subset(full_dataset, car_indices)
-    
-    print(f"Found {len(car_subset)} images of cars.")
-    
-    # Create a DataLoader from the subset
-    return DataLoader(car_subset, batch_size=cfg.batch_size, shuffle=True, num_workers=4, pin_memory=True)
 
-def get_galaxy_dataloader(cfg, folder="galaxy_pt"):
+def get_galaxy_dataloader(cfg, folder="galaxy_pt_256x256"):
     """
-    Loads preprocessed 32x32 CHW uint8 tensors from .pt shards and feeds the GPU fast.
-    Output: dict {"img": FloatTensor[B,3,32,32] in [0,1], "label": LongTensor[B]}
+    Loads preprocessed 256x256 CHW uint8 tensors from .pt shards.
+    
+    ## NEW: ASSUMPTION
+    This function assumes the folder "galaxy_pt" contains .pt shards
+    (e.g., "shard_0000.pt", "shard_0001.pt", etc.) where each shard
+    is a dictionary:
+    {"images": torch.Tensor[N, 3, 256, 256]}
+    
+    The tensors should be of type uint8.
+    This function does NO resizing. It streams the data as-is.
+    
+    Output: dict {"img": FloatTensor[B, 3, 256, 256] in [0,1], "label": LongTensor[B]}
     """
     import os, glob, torch
     from torch.utils.data import IterableDataset, DataLoader, get_worker_info
 
     files = sorted(glob.glob(os.path.join(folder, "shard_*.pt")))
     if not files:
-        raise FileNotFoundError(f"No shards found in {folder}. Run make_galaxy_pt_shards.py first.")
+        raise FileNotFoundError(f"No shards found in {folder}. Make sure your 256x256 shards are in this folder.")
+    
+    ## NEW: Added print statement for clarity
+    print(f"Found {len(files)} data shards in '{folder}'.")
 
     class PTShardStream(IterableDataset):
         def __init__(self, files):
@@ -173,15 +188,21 @@ def get_galaxy_dataloader(cfg, folder="galaxy_pt"):
                 my_files = self.files[info.id::info.num_workers]
 
             for f in my_files:
-                data = torch.load(f, map_location="cpu")  # {"images": uint8 [N,3,32,32]}
-                imgs_u8 = data["images"]                 # NCHW uint8
+                data = torch.load(f, map_location="cpu")  # {"images": uint8 [N, 3, 256, 256]}
+                imgs_u8 = data["images"]
+                
+                ## NEW: Sanity check for image size
+                if imgs_u8.ndim != 4 or imgs_u8.shape[1] != 3 or imgs_u8.shape[2] != 256 or imgs_u8.shape[3] != 256:
+                    print(f"WARNING: Shard {f} has unexpected shape {imgs_u8.shape}. Expected [N, 3, 256, 256].")
+                    continue # Skip this shard
+                    
                 # yield per-sample; DataLoader will stack
                 for i in range(imgs_u8.size(0)):
-                    # convert to float [0,1] here; no PIL, no resize, no GPU stall
+                    # convert to float [0,1] here
                     yield {"img": imgs_u8[i].float().div_(255.0), "label": 0}
 
     def _collate(batch):
-        imgs = torch.stack([b["img"] for b in batch], dim=0)  # [B,3,32,32] float
+        imgs = torch.stack([b["img"] for b in batch], dim=0)  # [B, 3, 256, 256] float
         labels = torch.zeros(len(batch), dtype=torch.long)
         return {"img": imgs, "label": labels}
 
@@ -227,7 +248,7 @@ def uniform_dequantize(x: torch.Tensor) -> torch.Tensor:
     """
     return (x + torch.rand_like(x) / 256.0).clamp(0.0, 1.0)
 
-def patchify(x: torch.Tensor, patch_size: int = 4) -> torch.Tensor:
+def patchify(x: torch.Tensor, patch_size: int = 16) -> torch.Tensor:
     """
     Converts a batch of images into a sequence of flattened patches (tokens).
     It slices the image into a grid and then flattens each patch.
@@ -244,7 +265,7 @@ def patchify(x: torch.Tensor, patch_size: int = 4) -> torch.Tensor:
     x = x.contiguous().permute(0, 2, 3, 1, 4, 5).reshape(B, -1, C * patch_size * patch_size)
     return x
 
-def depatchify(tokens: torch.Tensor, C: int = 3, H: int = 32, W: int = 32, patch_size: int = 4) -> torch.Tensor:
+def depatchify(tokens: torch.Tensor, C: int = 3, H: int = 256, W: int = 256, patch_size: int = 16) -> torch.Tensor:
     """
     The exact inverse of the 'patchify' function.
     Converts a sequence of tokens back into an image format.
@@ -592,14 +613,24 @@ def train():
     device = cfg.device
     print(f"Using device: {device}")
     
-    # Dynamically set paths based on the dataset name in CFG
-    cfg.checkpoint_path = f"checkpoint_{cfg.dataset_name}.pt"
-    cfg.samples_dir = f"samples_{cfg.dataset_name}"
-    cfg.loss_csv_path = f"loss_log_{cfg.dataset_name}.csv"
-    cfg.loss_plot_path = f"loss_plot_{cfg.dataset_name}.png"
+    ## NEW: Printing key config changes
+    print(f"--- CONFIGURATION ---")
+    print(f"  Image Size: {cfg.img_size}x{cfg.img_size}")
+    print(f"  Patch Size: {cfg.patch}x{cfg.patch}")
+    print(f"  Batch Size: {cfg.batch_size}")
+    print(f"  Num Tokens: {cfg.n_tokens}")
+    print(f"  Token Dim:  {cfg.d_token}")
+    print(f"  Model Dim:  {cfg.d_model}")
+    print(f"---------------------")
+    
+    # Dynamically set paths based on the dataset name
+    cfg.checkpoint_path = f"checkpoint_{cfg.dataset_name}_256.pt"
+    cfg.samples_dir = f"samples_{cfg.dataset_name}_256"
+    cfg.loss_csv_path = f"loss_log_{cfg.dataset_name}_256.csv"
+    cfg.loss_plot_path = f"loss_plot_{cfg.dataset_name}_256.png"
     
     os.makedirs(cfg.samples_dir, exist_ok=True)
-    print(f"Running experiment: {cfg.dataset_name}")
+    print(f"Running experiment: {cfg.dataset_name} (256x256)")
     print(f"Checkpoints will be saved to: {cfg.checkpoint_path}")
 
     # --- Model and Optimizer Setup ---
@@ -608,19 +639,15 @@ def train():
     start_epoch = load_checkpoint(model, opt, cfg)
 
     # --- Data Loading ---
-    # Use the dataset_name from CFG to select the loader
-    if cfg.dataset_name == "car":
-        loader = get_car_dataloader(cfg)
-    elif cfg.dataset_name == "galaxy":
-        loader = get_galaxy_dataloader(cfg)
-    else:
-        raise ValueError(f"Unknown dataset in CFG: '{cfg.dataset_name}'")
+    ## NEW: Simplified data loading. Removed 'car' option.
+    print("Loading 256x256 galaxy data shards...")
+    loader = get_galaxy_dataloader(cfg)
     
-    # We can't know the steps_per_epoch for a streaming dataset,
-    # so we'll just use a large number for the epoch_frac calculation.
-    # This is only for the noise curriculum, so it doesn't need to be exact.
-    # 5000 (car) / 64 = ~79. 1,000,000 (galaxy) / 64 = ~15625
-    steps_per_epoch = 15625 if cfg.dataset_name == "galaxy" else len(loader)
+    ## NEW: Simplified steps_per_epoch calculation
+    # We can't know the exact steps for a streaming dataset.
+    # 1,000,000 (example) / 4 (batch_size) = 250,000
+    # Let's use a large fixed number for the noise curriculum.
+    steps_per_epoch = 250000 
     
     print(f"Starting training from epoch {start_epoch} up to {cfg.epochs}...")
     # --- Main Training Loop ---
@@ -628,16 +655,12 @@ def train():
         model.train()
         pbar = tqdm(loader, desc=f"Epoch {ep+1}/{cfg.epochs}")
         
-        # Accumulate losses to calculate an average for the epoch
         epoch_losses = []
         
         for i, batch in enumerate(pbar):
-            # The car loader returns (img, _), the galaxy loader returns {"img": ..., "label": ...}
-            # We standardize this here.
-            if isinstance(batch, dict):
-                img = batch["img"]
-            else:
-                img = batch[0]
+            ## NEW: Simplified batch handling.
+            # We know it's always a dict from get_galaxy_dataloader
+            img = batch["img"]
                 
             current_step = ep * steps_per_epoch + i
             
@@ -650,40 +673,63 @@ def train():
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_val)
             opt.step()
             
-            # Add batch loss to the list
             epoch_losses.append(loss.item())
             
             # Update progress bar
             pbar.set_postfix(loss=f"{loss.item():.3f}", lr=f"{opt.param_groups[0]['lr']:.2e}")
         
         # --- End-of-Epoch Operations ---
-        # Calculate the average loss for the epoch
         avg_train_loss = sum(epoch_losses) / len(epoch_losses) if epoch_losses else 0
         print(f"Epoch {ep+1} finished. Average Train Loss: {avg_train_loss:.3f}")
 
-        # Save a checkpoint
         save_checkpoint(ep, model, opt, cfg)
         
-        # Initialize avg_val_loss to None
         avg_val_loss = None
         
-        # Generate samples and RUN VALIDATION every 5 epochs
-        if (ep + 1) % 5 == 0:
+        # Generate samples and RUN VALIDATION every 2 epochs
+        if (ep + 1) % 2 == 0:
             print(f"--- Running Validation & Sampling for epoch {ep+1} ---")
             
-            # Run validation on the entire test set
             model.eval() # Set model to evaluation mode
-            test_shard_path = os.path.join("galaxy_pt", "shard_0000_test.pt")
+            
+            ## NEW: Load ALL test shards (not just one)
+            import glob
+            test_shard_pattern = os.path.join("galaxy_pt_256x256_test", "shard_*_test.pt")
+            test_shard_files = sorted(glob.glob(test_shard_pattern))
+            
+            if not test_shard_files:
+                print(f"WARNING: No test shards found matching pattern '{test_shard_pattern}'. Skipping validation.")
+            else:
+                print(f"Found {len(test_shard_files)} test shard(s): {[os.path.basename(f) for f in test_shard_files]}")
+            
             val_losses = []
             test_images_f32 = None # To store loaded test images
             try:
-                # 1. Load the full test shard data
-                test_data = torch.load(test_shard_path, map_location='cpu')
-                test_images_u8 = test_data["images"]
-                test_images_f32 = test_images_u8.float().div_(255.0) # [N, C, H, W]
+                # 1. Load and concatenate all test shard data
+                all_test_images = []
+                for test_shard_path in test_shard_files:
+                    print(f"Loading test shard: {test_shard_path}")
+                    test_data = torch.load(test_shard_path, map_location='cpu')
+                    test_images_u8 = test_data["images"]
+                    
+                    ## NEW: Test shard sanity check
+                    if test_images_u8.ndim != 4 or test_images_u8.shape[1] != 3 or test_images_u8.shape[2] != 256 or test_images_u8.shape[3] != 256:
+                        print(f"WARNING: Test shard {test_shard_path} has unexpected shape {test_images_u8.shape}. Expected [N, 3, 256, 256]. Skipping this shard.")
+                        continue
+                    
+                    all_test_images.append(test_images_u8.float().div_(255.0))
+                
+                if not all_test_images:
+                    raise ValueError("No valid test shards found.")
+                
+                # Concatenate all test images
+                test_images_f32 = torch.cat(all_test_images, dim=0) # [Total_N, C, H, W]
+                print(f"Loaded {test_images_f32.size(0)} total test images from {len(all_test_images)} shard(s)")
                 
                 # 2. Create a DataLoader for the test set
                 test_dataset = TensorDataset(test_images_f32)
+                # Use a larger batch size for validation if possible, but we'll stick
+                # to the training batch size to be safe.
                 test_loader = DataLoader(test_dataset, batch_size=cfg.batch_size, shuffle=False)
                 
                 print(f"Running validation on {len(test_dataset)} test images...")
@@ -692,7 +738,7 @@ def train():
                 with torch.no_grad(): # Disable gradient calculation
                     for val_batch in val_pbar:
                         val_img = val_batch[0].to(device)
-                        # Run model forward pass, epoch_frac=1.0 means no noise
+                        # epoch_frac=1.0 means no noise
                         val_loss = model(val_img, epoch_frac=1.0) 
                         val_losses.append(val_loss.item())
                 
@@ -713,29 +759,27 @@ def train():
             test_batch = None
             if test_images_f32 is not None:
                 try:
-                    # Get 16 random indices from the loaded test images
                     num_images_in_shard = test_images_f32.size(0)
-                    random_indices = torch.randperm(num_images_in_shard)[:16]
-                    
-                    # Select the 16 random images
+                    # Select 16 random indices
+                    random_indices = torch.randperm(num_images_in_shard)[:16] 
                     test_batch = test_images_f32[random_indices]
-
                 except Exception as e:
                     print(f"WARNING: Error selecting random samples: {e}. Skipping sample generation.")
             else:
-                 print("WARNING: test_images_f32 not loaded (validation may have failed). Skipping sample generation.")
-            # --- END OF MODIFICATION ---
+                 print("WARNING: test_images_f32 not loaded. Skipping sample generation.")
 
             # Only proceed if we successfully loaded the test_batch
             if test_batch is not None:
-                # This part is UNCHANGED as requested
+                # This will sample 16 real images and 16 reconstructions
                 fake_images = model.sample(n=32, x_real_batch=test_batch)
                 sample_path = os.path.join(cfg.samples_dir, f"epoch_{ep+1:03d}.png")
+                
+                ## NEW: Saving 256x256 images will be large.
+                # nrow=2 creates a (16, 2) grid.
                 save_image(fake_images, sample_path, nrow=2)
                 print(f"Samples saved to {sample_path}")
 
         # Log the average losses to the CSV file
-        #    avg_val_loss is either None (if not epoch 5) or the calculated value
         append_losses_to_csv(ep + 1, avg_train_loss, avg_val_loss, cfg.loss_csv_path)
 
         # Update the static plot of the loss curve
