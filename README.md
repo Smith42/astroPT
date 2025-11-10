@@ -128,6 +128,9 @@ And finally `scripts/finetune.py` has an example LoRA finetune routine.
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/victoralonsorodriguez"><img src="https://avatars.githubusercontent.com/u/69580371?v=4?s=100" width="100px;" alt="Víctor Alonso"/><br /><sub><b>Víctor Alonso</b></sub></a><br /><a href="https://github.com/Smith42/astroPT/issues?q=author%3Avictoralonsorodriguez" title="Bug reports">🐛</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/ashodkh"><img src="https://avatars.githubusercontent.com/u/81383507?v=4?s=100" width="100px;" alt="Ashod Khederlarian"/><br /><sub><b>Ashod Khederlarian</b></sub></a><br /><a href="https://github.com/Smith42/astroPT/commits?author=ashodkh" title="Code">💻</a></td>
     </tr>
+    <tr>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/sogolsnj"><img src="https://avatars.githubusercontent.com/u/88580847?v=4?s=100" width="100px;" alt="SogolSanjaripour"/><br /><sub><b>SogolSanjaripour</b></sub></a><br /><a href="https://github.com/Smith42/astroPT/commits?author=sogolsnj" title="Code">💻</a> <a href="#ideas-sogolsnj" title="Ideas, Planning, & Feedback">🤔</a></td>
+    </tr>
   </tbody>
   <tfoot>
     <tr>
