@@ -81,6 +81,7 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a 100M parameter model on DESI galaxy imagery
     # look at `config/astropt*.py` for a prod run example
+    tokeniser= "aim"
     out_dir = "logs/astropt0100M"
     eval_interval = 1000
     log_interval = 100
@@ -128,7 +129,7 @@ if __name__ == "__main__":
     # we follow the same schedule here as Chinchilla
     learning_rate = 6e-4  # max learning rate
     max_iters = (
-        30000  # total number of training iterations for one pass over our dataset
+        50000  # total number of training iterations for one pass over our dataset
     )
     weight_decay = 1e-1
     beta1 = 0.9
@@ -301,6 +302,7 @@ if __name__ == "__main__":
         dropout=dropout,
         modalities=modalities,
         attn_type=attn_type,
+        tokeniser=tokeniser,
     )
 
     if init_from == "scratch":
