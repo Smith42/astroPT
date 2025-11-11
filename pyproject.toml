@@ -41,7 +41,7 @@ dependencies = [
     "accelerate>=1.8.1",
     "peft>=0.15.2",
     "hf-xet>=1.1.5",
-    "bitsandbytes>=0.47.0",
+    "bitsandbytes>=0.47.0; sys_platform != 'darwin'",
 ]
 dynamic = [
     "version",
@@ -50,6 +50,11 @@ dynamic = [
 [project.urls]
 Homepage = "https://github.com/smith42/astropt"
 Issues = "https://github.com/smith42/astropt/issues"
+
+[project.optional-dependencies]
+aion-tokenisers = [
+    "polymathic-aion>=0.0.2",
+]
 
 [tool.uv]
 package = true

@@ -13,7 +13,7 @@ from astropy.io import fits
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset, IterableDataset
 from torchvision import io
-
+import h5py
 
 class GalaxyImageDataset(Dataset):
     def __init__(
@@ -228,9 +228,14 @@ class GalaxyImageDataset(Dataset):
                             raw_galaxy = torch.tensor(np.stack(raw_galaxy)).to(
                                 torch.bfloat16
                             )
+                    elif ext == 'hdf5':
+                        ## assuming the images are stored as a dataset which 
+                        ## can be accessed as file['images']
+                        h5_file = h5py.File(self.paths["images"], 'r')
+                        raw_galaxy = h5_file['images'][idx].to(torch.bfloat16)
                     else:
                         raise NotImplementedError(
-                            f"File must be FITS or JPEG, it is instead {ext}."
+                            f"File must be FITS, JPEG, or HDF5. It is instead {ext}."
                         )
                     patch_galaxy = self.process_galaxy(raw_galaxy)
                     if torch.isnan(patch_galaxy).any():

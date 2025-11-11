@@ -31,6 +31,9 @@ from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torchvision import transforms
+from datasets import load_dataset
+from aion.codecs.image import ImageCodec
+from aion.modalities import LegacySurveyImage
 
 try:
     import wandb
@@ -45,63 +48,56 @@ try:
 except ImportError:
     log_emissions = False
 
-from astropt.local_datasets import GalaxyImageDataset
 from astropt.model import GPT, GPTConfig, ModalityConfig, ModalityRegistry
+from astropt.local_datasets import GalaxyImageDataset
 
-
-def normalise(x, use_hf=False):
-    # HF is in numpy format. Need to change that here if so:
-    if use_hf:
-        x = torch.from_numpy(x).to(torch.float32)
-    std, mean = torch.std_mean(x, dim=1, keepdim=True)
-    x_norm = (x - mean) / (std + 1e-8)
-    return x_norm.to(torch.float16)
-
-
-def data_transforms(use_hf):
-    norm = partial(normalise, use_hf=use_hf)
-    transform = transforms.Compose(
-        [
-            # transforms.Lambda(lambda x: x/255.),
-            transforms.Lambda(norm),
-        ]
+def collate_and_tokenise(batch, image_codec):
+    """Batch tokenisation in main process"""
+    # Stack all fluxes into a single batch tensor
+    flux_batch = torch.stack([
+        torch.tensor(item["image"]["flux"]) 
+        for item in batch
+    ])
+    
+    # Create single batched LegacySurveyImage
+    batched_img = LegacySurveyImage(
+        flux=flux_batch,
+        bands=['DES-G', 'DES-R', 'DES-I', 'DES-Z']
     )
-    return transform
-
-
-def process_galaxy_wrapper(galdict, func):
-    patch_galaxy = func(np.array(galdict["image"]).swapaxes(0, 2))
+    
+    # Single encode call for entire batch
+    tokens = image_codec.encode(batched_img)
+    
+    batch_size = len(batch)
+    
     return {
-        "images": patch_galaxy.to(torch.float),
-        "images_positions": torch.arange(0, len(patch_galaxy), dtype=torch.long),
+        "images_aion": tokens.long(),
+        "images_aion_positions": torch.stack([
+            torch.arange(tokens.shape[1]) for _ in range(batch_size)
+        ])
     }
-
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a 100M parameter model on DESI galaxy imagery
     # look at `config/astropt*.py` for a prod run example
-    tokeniser= "aim"
-    out_dir = "logs/astropt0100M"
+    out_dir = "logs/astropt0100M-aion"
     eval_interval = 1000
     log_interval = 100
     checkpoint_interval = 5000
     assert checkpoint_interval % eval_interval == 0
-    eval_iters = 100
+    eval_iters = 20
     eval_only = False  # if True, script exits right after the first eval
     always_save_checkpoint = (
         False  # if True, always save a checkpoint at each checkpoint_interval
     )
     init_from = "scratch"  # 'scratch' or 'resume'
-    use_hf = True  # use the huggingface dataset version of our galz
-    stream_hf_dataset = True  # stream the galaxies from huggingface
     # data
-    gradient_accumulation_steps = 5 # used to simulate larger batch sizes
-    batch_size = 8#16  # if gradient_accumulation_steps > 1, this is the micro-batch size
-    spiral = True  # do we want to process the galaxy patches in spiral order?
+    gradient_accumulation_steps = 5 # * 8  # used to simulate larger batch sizes
+    batch_size = 16  # if gradient_accumulation_steps > 1, this is the micro-batch size
     block_size = 1024
     image_size = 256
-    num_workers = 16#32  # 64
+    num_workers = 16
     # astroPT model
     n_layer = 12
     n_head = 12
@@ -113,23 +109,24 @@ if __name__ == "__main__":
     # Define modalities configuration
     modalities = [
         ModalityConfig(
-            name="images",
-            input_size=16 * 16 * n_chan,
-            patch_size=16,
+            name="images_aion",
+            input_size=10000, # dummy var for now until I fix
+            patch_size=0, # dummy var for now until I fix
             loss_weight=1.0,
             embed_pos=True,
             pos_input_size=1,
+            vocab_size=10000, # bro how many ints does aion tokenise to?!
         ),
     ]
     # Create modality registry
     modality_registry = ModalityRegistry(modalities)
     # Choose tokenisers from "affine" and "aim"
-    tokeniser = "aim"
+    tokeniser = "affine"
     # adamw optimizer
     # we follow the same schedule here as Chinchilla
-    learning_rate = 6e-4  # max learning rate
+    learning_rate = 3e-4  # max learning rate
     max_iters = (
-        50000  # total number of training iterations for one pass over our dataset
+        30000  # total number of training iterations for one pass over our dataset
     )
     weight_decay = 1e-1
     beta1 = 0.9
@@ -148,9 +145,9 @@ if __name__ == "__main__":
     # system
     device = "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
     dtype = "bfloat16"  # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
-    compile = False  # use PyTorch 2.0 to compile the model to be faster
-    log_via_wandb = False
-    wandb_project = None
+    compile = True  # use PyTorch 2.0 to compile the model to be faster
+    log_via_wandb = True
+    wandb_project = "AIONMODE"
     # -----------------------------------------------------------------------------
     config_keys = [
         k
@@ -217,76 +214,55 @@ if __name__ == "__main__":
         else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
     )
 
-    # dataset init
-    transforms = {"images": data_transforms(use_hf)}
-    # training dataset and dataloader
-    tpaths = None if use_hf else "./data/train.txt"
-    tds = GalaxyImageDataset(
-        paths={"images": tpaths},
-        spiral=spiral,
-        transform=transforms,
-        modality_registry=modality_registry,
-    )
-    # validation dataset and dataloader
-    vpaths = None if use_hf else "./data/tests.txt"
-    vds = GalaxyImageDataset(
-        paths={"images": vpaths},
-        spiral=spiral,
-        transform=transforms,
-        modality_registry=modality_registry,
-    )
-
-    if use_hf:
-        from datasets import load_dataset
-
-        tds_hf = load_dataset(
-            "/scratch02/public/sao/msmith/data/galaxies/",
-            revision="v2.0",
+    tds = (
+        load_dataset(
+            "Smith42/legacysurvey_hsc_crossmatched",
             split="train",
-            streaming=(True if stream_hf_dataset else False),
+            streaming=True,
         )
-        tds_hf = (
-            tds_hf
-            .select_columns("image_crop")
-            .rename_column("image_crop", "image")
-            .map(
-                partial(process_galaxy_wrapper, func=tds.process_galaxy)
-            )
+        .select_columns("legacysurvey_image")
+        .rename_column("legacysurvey_image", "image")
+    )
+    vds = (
+        load_dataset(
+            "Smith42/legacysurvey_hsc_crossmatched",
+            split="train",
+            streaming=True,
         )
-        tds_hf = tds_hf.remove_columns("image")
+        .select_columns("legacysurvey_image")
+        .rename_column("legacysurvey_image", "image")
+    )
 
-        vds_hf = load_dataset(
-            "/scratch02/public/sao/msmith/data/galaxies/",
-            revision="v2.0",
-            split="test",
-            streaming=(True if stream_hf_dataset else False),
-        )
-        vds_hf = (
-            vds_hf
-            .select_columns("image_crop")
-            .rename_column("image_crop", "image")
-            .map(
-                partial(process_galaxy_wrapper, func=tds.process_galaxy)
-            )
-        )
-        vds_hf = vds_hf.remove_columns("image")
+    image_codec = ImageCodec.from_pretrained(
+        "polymathic-ai/aion-base",
+        modality=LegacySurveyImage
+    )
+    image_codec = image_codec.eval()
+    image_codec = image_codec
 
-    tdl = iter(
-        DataLoader(
-            tds_hf if use_hf else tds,
+    collate_fn = partial(collate_and_tokenise, image_codec=image_codec)
+
+    def infinite_dataloader(dataloader):
+        while True:
+            yield from dataloader
+    train_loader = DataLoader(
+            tds,
             batch_size=batch_size,
             num_workers=num_workers,
             pin_memory=True,
-        )
+            persistent_workers=True if num_workers > 0 else False,
+            collate_fn=collate_fn,
     )
-    vdl = iter(
-        DataLoader(
-            vds_hf if use_hf else vds,
+    val_loader = DataLoader(
+            vds,
             batch_size=batch_size,
             num_workers=num_workers,
             pin_memory=True,
-        )
+            persistent_workers=True if num_workers > 0 else False,
+            collate_fn=collate_fn,
     )
+    tdl = infinite_dataloader(train_loader)
+    vdl = infinite_dataloader(val_loader)
 
     # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
     iter_num = 0
@@ -302,7 +278,6 @@ if __name__ == "__main__":
         dropout=dropout,
         modalities=modalities,
         attn_type=attn_type,
-        tokeniser=tokeniser,
     )
 
     if init_from == "scratch":
@@ -410,7 +385,7 @@ if __name__ == "__main__":
             out[split] = {}
             losses = torch.zeros(eval_iters)
             for k in range(eval_iters):
-                B = tds.process_modes(next(dl), modality_registry, device)
+                B = gid.process_modes(next(dl), modality_registry, device)
                 with ctx:
                     logits, loss = model(B["X"], targets=B["Y"])
                 losses[k] = loss.item()
@@ -423,52 +398,44 @@ if __name__ == "__main__":
         model.eval()
         for dl, split in zip([tdl, vdl], ["train", "val"]):
             f, axs = plt.subplots(8, 2, figsize=(3, 12), constrained_layout=True)
-            B = vds.process_modes(next(vdl), modality_registry, device)
+            B = gid.process_modes(next(vdl), modality_registry, device)
             with ctx:
                 P, loss = model(B["X"], B["Y"])
-                if "images" in modality_registry.names():
-                    Yim = B["Y"]["images"].to(device)
-                    b, t, c = Yim.size()
-                    zero_block = torch.zeros((b, 1, c)).to(device)
-                    Yim = torch.cat((zero_block, Yim), dim=1)
-                    if spiral:
-                        Yim = torch.stack([vds.antispiralise(yy) for yy in Yim])
-                    im_patch = modality_registry.get_config("images").patch_size
-                    Yim = einops.rearrange(
-                        Yim,
-                        "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
-                        p1=im_patch,
-                        p2=im_patch,
-                        h=image_size // im_patch,
-                        w=image_size // im_patch,
-                    )
-                    Pim = torch.cat((zero_block, P["images"]), dim=1)
-                    if spiral:
-                        Pim = torch.stack([vds.antispiralise(pp) for pp in Pim])
-                    Pim = einops.rearrange(
-                        Pim,
-                        "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
-                        p1=im_patch,
-                        p2=im_patch,
-                        h=image_size // im_patch,
-                        w=image_size // im_patch,
-                    )
+                Yim = torch.cat((
+                    torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
+                    B["Y"]["images_aion"].cpu(),
+                ), dim=1)
+                Yim = image_codec.decode(
+                    Yim,
+                    bands=["DES-G", "DES-R", "DES-Z"],
+                )
+                Pim = torch.cat((
+                    torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
+                    torch.argmax(P["images_aion"], dim=-1).cpu(),
+                ), dim=1)
+                Pim = image_codec.decode(
+                    Pim,
+                    bands=["DES-G", "DES-R", "DES-Z"],
+                )
 
-                    for ax, p, y in zip(
-                        axs, Pim.to(float).cpu().numpy(), Yim.to(float).cpu().numpy()
-                    ):
-                        ax[0].imshow(np.clip(y, 0, 1))
-                        ax[1].imshow(np.clip(p, 0, 1))
-                        ax[0].axis("off")
-                        ax[1].axis("off")
+                clip_and_norm = lambda x: (torch.clamp(x, x.min(), x.quantile(0.99)) - x.min()) / (x.quantile(0.99) - x.min())
 
-                    if log_via_wandb:
-                        wandb.log(
-                            {
-                                "Y": [wandb.Image(np.clip(yy.swapaxes(0, -1).cpu(), 0, 1)) for yy in Yim],
-                                "P": [wandb.Image(np.clip(pp.swapaxes(0, -1).cpu(), 0, 1)) for pp in Pim],
-                            }
-                        )
+                for ax, p, y in zip(
+                    axs, Pim.flux, Yim.flux,
+                ):
+                    ax[0].imshow(clip_and_norm(y.swapaxes(0, -1)))
+                    ax[1].imshow(clip_and_norm(p.swapaxes(0, -1)))
+                    ax[0].axis("off")
+                    ax[1].axis("off")
+
+
+                if log_via_wandb:
+                    wandb.log(
+                        {
+                            "Y": [wandb.Image(yy) for yy in clip_and_norm(Yim.flux)],
+                            "P": [wandb.Image(pp) for pp in clip_and_norm(Pim.flux)],
+                        }
+                    )
 
             f.savefig(
                 os.path.join(out_dir, f"{iter_num:06d}_{split}.jpg"),
@@ -495,7 +462,8 @@ if __name__ == "__main__":
     # training loop
     if master_process:
         print("starting training...")
-    B = tds.process_modes(
+    gid = GalaxyImageDataset()
+    B = gid.process_modes(
         next(tdl), modality_registry, device
     )  # fetch the very first batch
     t0 = time.time()
@@ -616,7 +584,7 @@ if __name__ == "__main__":
             with ctx:
                 logits, loss = model(B["X"], targets=B["Y"])
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
-            B = tds.process_modes(
+            B = gid.process_modes(
                 next(tdl), modality_registry, device
             )  # fetch the very first batch
             # backward pass, with gradient scaling if training in fp16
