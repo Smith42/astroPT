@@ -15,7 +15,7 @@ import torchvision.transforms as T
 from torchvision.utils import save_image
 from tqdm import tqdm
 
-# NEW: Configure matplotlib to use a non-interactive backend
+
 # This must be done BEFORE importing pyplot
 import matplotlib
 matplotlib.use('Agg')
@@ -35,42 +35,30 @@ class CFG:
     # --- Training Config ---
     epochs: int = 200
     
-    ## NEW: BATCH SIZE ADJUSTMENT
-    # The original 64 is impossible for 256x256 images with this model size.
-    # 4 is a very small, safe starting point.
-    # You may OOM (Out of Memory) even with 4. If you do, set this to 1
-    # and consider using gradient accumulation (not implemented here).
-    # If you have a very powerful GPU (A100 80GB), you *might* be able to increase this.
     batch_size: int = 4 
     
     lr: float = 3e-4 # Constant learning rate
     wd: float = 0.01
     
     # --- Dataset Switch ---
-    ## NEW: Removed "car" option. This script is now only for the galaxy dataset.
     dataset_name: str = "galaxy" 
     
     # --- Other Model/Data Params ---
-    ## NEW: IMAGE SIZE
-    # Changed from 32 to 256. This is the main change.
     img_size: int = 256 
     in_ch: int = 3
     
-    ## NEW: PATCH SIZE
-    # Changed from 4 to 16.
-    # A 4x4 patch on a 256x256 image would create (256/4)^2 = 64*64 = 4096 tokens.
-    # This is too long for a Transformer.
+
     # A 16x16 patch creates (256/16)^2 = 16*16 = 256 tokens. This is standard
     # practice (like ViT-Base) and much more manageable.
     patch: int = 16
     
-    ## NEW: N_TOKENS (Auto-calculated)
-    # This will now be (256 // 16)**2 = 256
+
+    # This will be (256 // 16)**2 = 256
     n_tokens: int = (img_size // patch)**2
     
-    ## NEW: D_TOKEN (Auto-calculated)
+
     # This is the dimension of a single flattened patch.
-    # It will now be 3 * 16 * 16 = 768
+    # It will be 3 * 16 * 16 = 768
     d_token: int = in_ch * patch * patch
     
     gmm_K: int = 4
@@ -154,8 +142,7 @@ def get_galaxy_dataloader(cfg, folder="galaxy_pt_256x256"):
     """
     Loads preprocessed 256x256 CHW uint8 tensors from .pt shards.
     
-    ## NEW: ASSUMPTION
-    This function assumes the folder "galaxy_pt" contains .pt shards
+    This function assumes the folder "galaxy_pt_256x256" contains .pt shards
     (e.g., "shard_0000.pt", "shard_0001.pt", etc.) where each shard
     is a dictionary:
     {"images": torch.Tensor[N, 3, 256, 256]}
@@ -191,7 +178,7 @@ def get_galaxy_dataloader(cfg, folder="galaxy_pt_256x256"):
                 data = torch.load(f, map_location="cpu")  # {"images": uint8 [N, 3, 256, 256]}
                 imgs_u8 = data["images"]
                 
-                ## NEW: Sanity check for image size
+                # sanity check for image size
                 if imgs_u8.ndim != 4 or imgs_u8.shape[1] != 3 or imgs_u8.shape[2] != 256 or imgs_u8.shape[3] != 256:
                     print(f"WARNING: Shard {f} has unexpected shape {imgs_u8.shape}. Expected [N, 3, 256, 256].")
                     continue # Skip this shard
@@ -613,7 +600,7 @@ def train():
     device = cfg.device
     print(f"Using device: {device}")
     
-    ## NEW: Printing key config changes
+    # Printing key config changes
     print(f"--- CONFIGURATION ---")
     print(f"  Image Size: {cfg.img_size}x{cfg.img_size}")
     print(f"  Patch Size: {cfg.patch}x{cfg.patch}")
@@ -639,11 +626,10 @@ def train():
     start_epoch = load_checkpoint(model, opt, cfg)
 
     # --- Data Loading ---
-    ## NEW: Simplified data loading. Removed 'car' option.
     print("Loading 256x256 galaxy data shards...")
     loader = get_galaxy_dataloader(cfg)
     
-    ## NEW: Simplified steps_per_epoch calculation
+
     # We can't know the exact steps for a streaming dataset.
     # 1,000,000 (example) / 4 (batch_size) = 250,000
     # Let's use a large fixed number for the noise curriculum.
@@ -658,8 +644,7 @@ def train():
         epoch_losses = []
         
         for i, batch in enumerate(pbar):
-            ## NEW: Simplified batch handling.
-            # We know it's always a dict from get_galaxy_dataloader
+
             img = batch["img"]
                 
             current_step = ep * steps_per_epoch + i
@@ -692,7 +677,7 @@ def train():
             
             model.eval() # Set model to evaluation mode
             
-            ## NEW: Load ALL test shards (not just one)
+            #: Load ALL test shards
             import glob
             test_shard_pattern = os.path.join("galaxy_pt_256x256_test", "shard_*_test.pt")
             test_shard_files = sorted(glob.glob(test_shard_pattern))
@@ -712,7 +697,7 @@ def train():
                     test_data = torch.load(test_shard_path, map_location='cpu')
                     test_images_u8 = test_data["images"]
                     
-                    ## NEW: Test shard sanity check
+                    # Test shard sanity check
                     if test_images_u8.ndim != 4 or test_images_u8.shape[1] != 3 or test_images_u8.shape[2] != 256 or test_images_u8.shape[3] != 256:
                         print(f"WARNING: Test shard {test_shard_path} has unexpected shape {test_images_u8.shape}. Expected [N, 3, 256, 256]. Skipping this shard.")
                         continue
@@ -774,7 +759,6 @@ def train():
                 fake_images = model.sample(n=32, x_real_batch=test_batch)
                 sample_path = os.path.join(cfg.samples_dir, f"epoch_{ep+1:03d}.png")
                 
-                ## NEW: Saving 256x256 images will be large.
                 # nrow=2 creates a (16, 2) grid.
                 save_image(fake_images, sample_path, nrow=2)
                 print(f"Samples saved to {sample_path}")
