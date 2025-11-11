@@ -64,6 +64,15 @@
         "ideas",
         "code"
       ]
+    },
+    {
+      "login": "victoralonsorodriguez",
+      "name": "Víctor Alonso",
+      "avatar_url": "https://avatars.githubusercontent.com/u/69580371?v=4",
+      "profile": "https://github.com/victoralonsorodriguez",
+      "contributions": [
+        "bug"
+      ]
     }
   ],
   "contributorsPerLine": 7,
