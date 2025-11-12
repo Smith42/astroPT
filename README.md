@@ -33,6 +33,8 @@ Check out the [UniverseTBD](https://universetbd.org/) Discord for updates:
 
 Read the docs here: [astropt.readthedocs.io](https://astropt.readthedocs.io)
 
+There is some [deep lore about our logo](https://doi.org/10.4000/12m9y)
+
 # How does AstroPT work?
 
 AstroPT is an autoregressive transformer under the hood.
