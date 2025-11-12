@@ -152,12 +152,12 @@ if __name__ == "__main__":
     modalities = [
         ModalityConfig(
             name="images_aion",
-            input_size=10000, # dummy var for now until I fix
+            input_size=1024, # dummy var for now until I fix
             patch_size=0, # dummy var for now until I fix
             loss_weight=1.0,
             embed_pos=True,
             pos_input_size=1,
-            vocab_size=10000, # bro how many ints does aion tokenise to?!
+            vocab_size=1024, # bro how many ints does aion tokenise to?!
         ),
     ]
     # Create modality registry
@@ -266,15 +266,15 @@ if __name__ == "__main__":
                 )
                 .select_columns(("spectrum",))
             ),
-            "LegacySurveyImage": (
-                load_dataset(
-                    "Smith42/legacysurvey_hsc_crossmatched",
-                    split="train",
-                    streaming=True,
-                )
-                .select_columns(("legacysurvey_image",))
-                .rename_column("legacysurvey_image", "image")
-            ),
+            #"LegacySurveyImage": (
+            #    load_dataset(
+            #        "Smith42/legacysurvey_hsc_crossmatched",
+            #        split="train",
+            #        streaming=True,
+            #    )
+            #    .select_columns(("legacysurvey_image",))
+            #    .rename_column("legacysurvey_image", "image")
+            #),
         },
         "val": {
             "DESISpectrum": (
@@ -285,27 +285,27 @@ if __name__ == "__main__":
                 )
                 .select_columns(("spectrum",))
             ),
-            "LegacySurveyImage": (
-                load_dataset(
-                    "Smith42/legacysurvey_hsc_crossmatched",
-                    split="train",
-                    streaming=True,
-                )
-                .select_columns(("legacysurvey_image",))
-                .rename_column("legacysurvey_image", "image")
-            ),
+            #"LegacySurveyImage": (
+            #    load_dataset(
+            #        "Smith42/legacysurvey_hsc_crossmatched",
+            #        split="train",
+            #        streaming=True,
+            #    )
+            #    .select_columns(("legacysurvey_image",))
+            #    .rename_column("legacysurvey_image", "image")
+            #),
         }
     }
 
     codecs = {
-        "LegacySurveyImage": ImageCodec.from_pretrained(
-            "polymathic-ai/aion-base",
-            modality=LegacySurveyImage
-        ).eval(),
-        "HSCImage": ImageCodec.from_pretrained(
-            "polymathic-ai/aion-base",
-            modality=HSCImage
-        ).eval(),
+        #"LegacySurveyImage": ImageCodec.from_pretrained(
+        #    "polymathic-ai/aion-base",
+        #    modality=LegacySurveyImage
+        #).eval(),
+        #"HSCImage": ImageCodec.from_pretrained(
+        #    "polymathic-ai/aion-base",
+        #    modality=HSCImage
+        #).eval(),
         "DESISpectrum": SpectrumCodec.from_pretrained(
             "polymathic-ai/aion-base",
             modality=DESISpectrum
@@ -474,52 +474,51 @@ if __name__ == "__main__":
                 modality_registry, 
                 device
             )
-            #with ctx:
-            #    bands = ['DES-G', 'DES-R', 'DES-Z']
-            #    P, loss = model(B["X"], B["Y"])
-            #    #Yim = torch.cat((
-            #    #    torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
-            #    #    B["Y"]["images_aion"].cpu(),
-            #    #), dim=1)
-            #    print(B["Y"]["images_aion"].shape)
-            #    Yim = codecs["LegacySurveyImage"].decode(
-            #        B["Y"]["images_aion"].cpu(),
-            #        bands=bands,
-            #    )
-            #    Pim = torch.cat((
-            #        #torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
-            #        torch.argmax(P["images_aion"], dim=-1).cpu(),
-            #    ), dim=1)
-            #    Pim = codecs["LegacySurveyImage"].decode(
-            #        Pim,
-            #        bands=bands,
-            #    )
+            with ctx:
+                P, loss = model(B["X"], B["Y"])
+                Yim = torch.cat((
+                    torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
+                    B["Y"]["images_aion"].cpu(),
+                ), dim=1)
+                Yim = codecs["DESISpectrum"].decode(
+                    B["Y"]["images_aion"].cpu(),
+                )
+                Pim = torch.cat((
+                    #torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
+                    torch.argmax(P["images_aion"], dim=-1).cpu(),
+                ), dim=1)
+                Pim = codecs["DESISpectrum"].decode(
+                    Pim,
+                )
 
-            #    clip_and_norm = lambda x: (torch.clamp(x, x.min(), x.quantile(0.99)) - x.min()) / (x.quantile(0.99) - x.min())
+                #clip_and_norm = lambda x: (torch.clamp(x, x.min(), x.quantile(0.99)) - x.min()) / (x.quantile(0.99) - x.min())
 
-            #    for ax, p, y in zip(
-            #        axs, Pim.flux, Yim.flux,
-            #    ):
-            #        ax[0].imshow(clip_and_norm(y.swapaxes(0, -1)))
-            #        ax[1].imshow(clip_and_norm(p.swapaxes(0, -1)))
-            #        ax[0].axis("off")
-            #        ax[1].axis("off")
+                for ax, p, y in zip(
+                    axs, Pim.flux, Yim.flux,
+                ):
+                    #ax[0].imshow(clip_and_norm(y.swapaxes(0, -1)))
+                    #ax[1].imshow(clip_and_norm(p.swapaxes(0, -1)))
+                    ax[0].plot(y)
+                    ax[1].plot(p)
+                    ax[0].axis("off")
+                    ax[1].axis("off")
 
 
-            #    if log_via_wandb:
-            #        wandb.log(
-            #            {
-            #                "Y": [wandb.Image(yy) for yy in clip_and_norm(Yim.flux)],
-            #                "P": [wandb.Image(pp) for pp in clip_and_norm(Pim.flux)],
-            #            }
-            #        )
+                if log_via_wandb:
+                    wandb.log(
+                        {
+                            "spec": wandb.Image(f),
+                            #"Y": [wandb.Image(yy) for yy in clip_and_norm(Yim.flux)],
+                            #"P": [wandb.Image(pp) for pp in clip_and_norm(Pim.flux)],
+                        }
+                    )
 
-            #f.savefig(
-            #    os.path.join(out_dir, f"{iter_num:06d}_{split}.jpg"),
-            #    bbox_inches="tight",
-            #    pad_inches=0,
-            #)
-            #plt.close(f)
+            f.savefig(
+                os.path.join(out_dir, f"{iter_num:06d}_{split}.jpg"),
+                bbox_inches="tight",
+                pad_inches=0,
+            )
+            plt.close(f)
         model.train()
 
     # learning rate decay scheduler (cosine with warmup)
