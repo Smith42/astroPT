@@ -56,12 +56,13 @@ from astropt.local_datasets import GalaxyImageDataset
 def collate_and_tokenise(batch, codecs):
     """Batch tokenisation in main process"""
     available_keys = list(batch[0].keys())
+    modalities_dict = {}
 
     # Stack all fluxes into a single batch tensor
     if "image" in available_keys:
         codecstring = "image"
-        modality_class = LegacySurveyImage
-        codec = codecs["LegacySurveyImage"]
+        modality_class = HSCImage
+        codec = codecs["HSCImage"]
         bands = ['DES-G', 'DES-R', 'DES-I', 'DES-Z']
 
         flux_batch = torch.stack([
@@ -73,12 +74,17 @@ def collate_and_tokenise(batch, codecs):
             flux=flux_batch,
             bands=bands
         )
-    #elif randnum > 0.33 and randnum < 0.66:
-    #    codecstring = "hsc_imagery"
-    #    codec = HSCImage
-    #    codec = codecs["HSCImage"]
-    #    bands = ['HSC-G', 'HSC-R', 'HSC-I', 'HSC-Z', 'HSC-Y']
-    elif "spectrum" in available_keys:
+
+        tokens = codec.encode(batched_modality)
+        batch_size = len(batch)
+        modalities_dict.update({
+            f"{codecstring}_aion": tokens.long(),
+            f"{codecstring}_aion_positions": torch.stack([
+                torch.arange(tokens.shape[1]) for _ in range(batch_size)
+            ])
+        })
+
+    if "spectrum" in available_keys:
         codecstring = "spectrum"
         modality_class = DESISpectrum
         codec = codecs["DESISpectrum"]
@@ -106,18 +112,18 @@ def collate_and_tokenise(batch, codecs):
             mask=mask_batch,
             wavelength=lambda_batch,
         )
+
+        tokens = codec.encode(batched_modality)
+        batch_size = len(batch)
+        modalities_dict.update({
+            f"{codecstring}_aion": tokens.long(),
+            f"{codecstring}_aion_positions": torch.stack([
+                torch.arange(tokens.shape[1]) for _ in range(batch_size)
+            ])
+        })
     
-    # Single encode call for entire batch
-    tokens = codec.encode(batched_modality)
     
-    batch_size = len(batch)
-    
-    return {
-        "images_aion": tokens.long(),
-        "images_aion_positions": torch.stack([
-            torch.arange(tokens.shape[1]) for _ in range(batch_size)
-        ])
-    }
+    return modalities_dict
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
@@ -151,13 +157,22 @@ if __name__ == "__main__":
     # Define modalities configuration
     modalities = [
         ModalityConfig(
-            name="images_aion",
+            name="spectrum_aion",
             input_size=1024, # dummy var for now until I fix
             patch_size=0, # dummy var for now until I fix
             loss_weight=1.0,
             embed_pos=True,
             pos_input_size=1,
-            vocab_size=1024, # bro how many ints does aion tokenise to?!
+            vocab_size=1024, # 1024 integers for spectra, 8096 for imagery
+        ),
+        ModalityConfig(
+            name="image_aion",
+            input_size=8096, # dummy var for now until I fix
+            patch_size=0, # dummy var for now until I fix
+            loss_weight=1.0,
+            embed_pos=True,
+            pos_input_size=1,
+            vocab_size=8096, # 1024 integers for spectra, 8096 for imagery
         ),
     ]
     # Create modality registry
@@ -264,7 +279,7 @@ if __name__ == "__main__":
                     split="train",
                     streaming=True,
                 )
-                .select_columns(("spectrum",))
+                .select_columns(("spectrum", "image"))
             ),
             #"LegacySurveyImage": (
             #    load_dataset(
@@ -283,7 +298,7 @@ if __name__ == "__main__":
                     split="train",
                     streaming=True,
                 )
-                .select_columns(("spectrum",))
+                .select_columns(("spectrum", "image"))
             ),
             #"LegacySurveyImage": (
             #    load_dataset(
@@ -298,14 +313,14 @@ if __name__ == "__main__":
     }
 
     codecs = {
-        #"LegacySurveyImage": ImageCodec.from_pretrained(
-        #    "polymathic-ai/aion-base",
-        #    modality=LegacySurveyImage
-        #).eval(),
-        #"HSCImage": ImageCodec.from_pretrained(
-        #    "polymathic-ai/aion-base",
-        #    modality=HSCImage
-        #).eval(),
+        "LegacySurveyImage": ImageCodec.from_pretrained(
+            "polymathic-ai/aion-base",
+            modality=HSCImage
+        ).eval(),
+        "HSCImage": ImageCodec.from_pretrained(
+            "polymathic-ai/aion-base",
+            modality=HSCImage
+        ).eval(),
         "DESISpectrum": SpectrumCodec.from_pretrained(
             "polymathic-ai/aion-base",
             modality=DESISpectrum
@@ -476,42 +491,57 @@ if __name__ == "__main__":
             )
             with ctx:
                 P, loss = model(B["X"], B["Y"])
-                Yim = torch.cat((
-                    torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
-                    B["Y"]["images_aion"].cpu(),
+
+                Ysp = torch.cat((
+                    torch.zeros(B["Y"]["spectrum_aion"].shape[0], 1), 
+                    B["Y"]["spectrum_aion"].cpu(),
                 ), dim=1)
-                Yim = codecs["DESISpectrum"].decode(
-                    B["Y"]["images_aion"].cpu(),
+                Ysp = codecs["DESISpectrum"].decode(
+                    B["Y"]["spectrum_aion"].cpu(),
                 )
-                Pim = torch.cat((
-                    #torch.zeros(B["Y"]["images_aion"].shape[0], 1), 
-                    torch.argmax(P["images_aion"], dim=-1).cpu(),
+                Psp = torch.cat((
+                    #torch.zeros(B["Y"]["spectrum_aion"].shape[0], 1), 
+                    torch.argmax(P["spectrum_aion"], dim=-1).cpu(),
                 ), dim=1)
-                Pim = codecs["DESISpectrum"].decode(
-                    Pim,
+                Psp = codecs["DESISpectrum"].decode(
+                    Psp,
                 )
 
-                #clip_and_norm = lambda x: (torch.clamp(x, x.min(), x.quantile(0.99)) - x.min()) / (x.quantile(0.99) - x.min())
+                #Yim = torch.cat((
+                #    torch.zeros(B["Y"]["image_aion"].shape[0], 1), 
+                #    B["Y"]["image_aion"].cpu(),
+                #), dim=1)
+                #Yim = codecs["LegacySurveyImage"].decode(
+                #    Yim,
+                #    #B["Y"]["image_aion"].cpu(),
+                #)
+                #Pim = torch.cat((
+                #    #torch.zeros(B["Y"]["image_aion"].shape[0], 1), 
+                #    torch.argmax(P["image_aion"], dim=-1).cpu(),
+                #), dim=1)
+                #Pim = codecs["LegacySurveyImage"].decode(
+                #    Pim,
+                #)
 
                 for ax, p, y in zip(
                     axs, Pim.flux, Yim.flux,
                 ):
-                    #ax[0].imshow(clip_and_norm(y.swapaxes(0, -1)))
-                    #ax[1].imshow(clip_and_norm(p.swapaxes(0, -1)))
                     ax[0].plot(y)
                     ax[1].plot(p)
                     ax[0].axis("off")
                     ax[1].axis("off")
 
-
                 if log_via_wandb:
                     wandb.log(
                         {
                             "spec": wandb.Image(f),
-                            #"Y": [wandb.Image(yy) for yy in clip_and_norm(Yim.flux)],
-                            #"P": [wandb.Image(pp) for pp in clip_and_norm(Pim.flux)],
+                            "Y": [wandb.Image(yy) for yy in clip_and_norm(Yim.flux)],
+                            "P": [wandb.Image(pp) for pp in clip_and_norm(Pim.flux)],
                         }
                     )
+
+
+                clip_and_norm = lambda x: (torch.clamp(x, x.min(), x.quantile(0.99)) - x.min()) / (x.quantile(0.99) - x.min())
 
             f.savefig(
                 os.path.join(out_dir, f"{iter_num:06d}_{split}.jpg"),
