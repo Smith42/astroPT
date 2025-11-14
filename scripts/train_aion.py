@@ -507,6 +507,14 @@ if __name__ == "__main__":
                     Psp,
                 )
 
+                for ax, p, y in zip(
+                    axs, Psp.flux, Ysp.flux,
+                ):
+                    ax[0].plot(y)
+                    ax[1].plot(p)
+                    ax[0].axis("off")
+                    ax[1].axis("off")
+
                 #Yim = torch.cat((
                 #    torch.zeros(B["Y"]["image_aion"].shape[0], 1), 
                 #    B["Y"]["image_aion"].cpu(),
@@ -523,20 +531,20 @@ if __name__ == "__main__":
                 #    Pim,
                 #)
 
-                for ax, p, y in zip(
-                    axs, Pim.flux, Yim.flux,
-                ):
-                    ax[0].plot(y)
-                    ax[1].plot(p)
-                    ax[0].axis("off")
-                    ax[1].axis("off")
+                #for ax, p, y in zip(
+                #    axs, Pim.flux, Yim.flux,
+                #):
+                #    ax[0].plot(y)
+                #    ax[1].plot(p)
+                #    ax[0].axis("off")
+                #    ax[1].axis("off")
 
                 if log_via_wandb:
                     wandb.log(
                         {
                             "spec": wandb.Image(f),
-                            "Y": [wandb.Image(yy) for yy in clip_and_norm(Yim.flux)],
-                            "P": [wandb.Image(pp) for pp in clip_and_norm(Pim.flux)],
+                            #"Y": [wandb.Image(yy) for yy in clip_and_norm(Yim.flux)],
+                            #"P": [wandb.Image(pp) for pp in clip_and_norm(Pim.flux)],
                         }
                     )
 
