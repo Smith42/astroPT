@@ -34,13 +34,11 @@ from torchvision import transforms
 
 try:
     import wandb
-
     log_via_wandb = True
 except ImportError:
     log_via_wandb = False
 try:
     from codecarbon import EmissionsTracker
-
     log_emissions = False
 except ImportError:
     log_emissions = False
@@ -59,6 +57,7 @@ def normalise(x, use_hf=False):
 
 
 def data_transforms(use_hf):
+
     norm = partial(normalise, use_hf=use_hf)
     transform = transforms.Compose(
         [
@@ -70,6 +69,7 @@ def data_transforms(use_hf):
 
 
 def process_galaxy_wrapper(galdict, func):
+    """Wrapper for processing galaxy images from HF dataset."""
     patch_galaxy = func(np.array(galdict["image"]).swapaxes(0, 2))
     return {
         "images": patch_galaxy.to(torch.float),
