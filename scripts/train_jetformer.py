@@ -1,19 +1,14 @@
 """
-This training script can be run both on a single gpu in debug mode,
-and also in a larger training run with distributed data parallel (ddp).
+Training script for AstroPT with Jetformer tokenization.
 
-To run on a single GPU, example:
-$ python train.py --batch_size=32 --compile=False
+This script extends the standard AstroPT training to support Jetformer's
+continuous tokenization approach using normalizing flows and GMM outputs.
 
-To run with DDP on 4 gpus on 1 node, example:
-$ torchrun --standalone --nproc_per_node=4 train.py
+To run on a single GPU:
+$ python train_jetformer.py --batch_size=32 --compile=False
 
-To run with DDP on 4 gpus across 2 nodes, example:
-- Run on the first (master) node with example IP 123.456.123.456:
-$ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=0 --master_addr=123.456.123.456 --master_port=1234 train.py
-- Run on the worker node:
-$ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=1 --master_addr=123.456.123.456 --master_port=1234 train.py
-(If your cluster does not have Infiniband interconnect prepend NCCL_IB_DISABLE=1)
+To run with DDP on 4 gpus on 1 node:
+$ torchrun --standalone --nproc_per_node=4 train_jetformer.py
 """
 
 import math
@@ -48,7 +43,7 @@ from astropt.model import GPT, GPTConfig, ModalityConfig, ModalityRegistry
 
 
 def normalise(x, use_hf=False):
-    # HF is in numpy format. Need to change that here if so:
+    """Normalize images to zero mean, unit variance."""
     if use_hf:
         x = torch.from_numpy(x).to(torch.float32)
     std, mean = torch.std_mean(x, dim=1, keepdim=True)
@@ -57,7 +52,7 @@ def normalise(x, use_hf=False):
 
 
 def data_transforms(use_hf):
-
+    """Data transformation pipeline."""
     norm = partial(normalise, use_hf=use_hf)
     transform = transforms.Compose(
         [
@@ -79,19 +74,17 @@ def process_galaxy_wrapper(galdict, func):
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
-    # default config values designed to test run a 100M parameter model on DESI galaxy imagery
-    # look at `config/astropt*.py` for a prod run example
-    tokeniser= "aim"
-    out_dir = "logs/astropt0100M"
+    # Configuration for Jetformer Training
+    # -----------------------------------------------------------------------------
+    tokeniser = "jetformer"
+    out_dir = "logs/astropt_jetformer_100M"
     eval_interval = 1000
     log_interval = 100
     checkpoint_interval = 5000
     assert checkpoint_interval % eval_interval == 0
     eval_iters = 100
-    eval_only = False  # if True, script exits right after the first eval
-    always_save_checkpoint = (
-        False  # if True, always save a checkpoint at each checkpoint_interval
-    )
+    eval_only = False
+    always_save_checkpoint = False
     init_from = "scratch"  # 'scratch' or 'resume'
     use_hf = True  # use the huggingface dataset version of our galz
     stream_hf_dataset = True  # stream the galaxies from huggingface
@@ -101,7 +94,7 @@ if __name__ == "__main__":
     spiral = True  # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     image_size = 256
-    num_workers = 16#32  # 64
+    num_workers = 16
     # astroPT model
     n_layer = 12
     n_head = 12
@@ -114,7 +107,7 @@ if __name__ == "__main__":
     modalities = [
         ModalityConfig(
             name="images",
-            input_size=16 * 16 * n_chan,
+            input_size=16 * 16 * n_chan,  # Will be overridden by Jetformer
             patch_size=16,
             loss_weight=1.0,
             embed_pos=True,
@@ -123,10 +116,12 @@ if __name__ == "__main__":
     ]
     # Create modality registry
     modality_registry = ModalityRegistry(modalities)
-    # Choose tokenisers from "affine" and "aim"
-    tokeniser = "aim"
-    # adamw optimizer
-    # we follow the same schedule here as Chinchilla
+    # Jetformer-specific hyperparameters
+    jetformer_flow_steps = 4  # Number of coupling layers in normalizing flow
+    jetformer_gmm_K = 4  # Number of Gaussian components in mixture
+    jetformer_noise_max = 0.1  # Maximum noise for curriculum
+    jetformer_noise_min = 0.0  # Minimum noise for curriculum
+    # Optimiser configuration
     learning_rate = 6e-4  # max learning rate
     max_iters = (
         50000  # total number of training iterations for one pass over our dataset
@@ -153,8 +148,7 @@ if __name__ == "__main__":
     wandb_project = None
     # -----------------------------------------------------------------------------
     config_keys = [
-        k
-        for k, v in globals().items()
+        k for k, v in globals().items()
         if not k.startswith("_") and isinstance(v, (int, float, bool, str))
     ]
     exec(
@@ -192,7 +186,7 @@ if __name__ == "__main__":
     )
     if master_process:
         if log_via_wandb:
-            print("wandb detected, gonna log to that")
+            print("Logging to wandb enabled")
         if log_emissions:
             print("codecarbon detected, will log emissions")
         print(f"tokens per iteration will be: {tokens_per_iter:,}")
@@ -217,9 +211,9 @@ if __name__ == "__main__":
         else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
     )
 
-    # dataset init
     transforms = {"images": data_transforms(use_hf)}
-    # training dataset and dataloader
+    
+    # Training dataset
     tpaths = None if use_hf else "./data/train.txt"
     tds = GalaxyImageDataset(
         paths={"images": tpaths},
@@ -303,12 +297,15 @@ if __name__ == "__main__":
         modalities=modalities,
         attn_type=attn_type,
         tokeniser=tokeniser,
+        jetformer_flow_steps=jetformer_flow_steps,
+        jetformer_gmm_K=jetformer_gmm_K,
+        jetformer_noise_max=jetformer_noise_max,
     )
 
     if init_from == "scratch":
         # init a new model from scratch
         if master_process:
-            print("initializing a new model from scratch")
+            print("initializing a new model from scratch with Jetformer tokenization")
         gptconf = GPTConfig(**model_args)
         model = GPT(gptconf, modality_registry, master_process=master_process)
     if init_from == "resume":
@@ -342,7 +339,7 @@ if __name__ == "__main__":
     if log_via_wandb and master_process:
         if wandb_project is None:
             wandb.init(
-                project=f"AstroPT-{model.get_num_params() / 1e6:06.1f}M",
+                project=f"AstroPT-Jetformer-{model.get_num_params() / 1e6:06.1f}M",
                 config=config,
             )
         else:
@@ -352,7 +349,7 @@ if __name__ == "__main__":
             )
     # write config and important information to log file
     with open(f"{out_dir}/hparams.txt", "w") as fi:
-        fi.write(f"AstroPT-{model.get_num_params() / 1e6:06.1f}M\n")
+        fi.write(f"AstroPT-Jetformer-{model.get_num_params() / 1e6:06.1f}M\n")
         fi.write(f"time: {int(time.time())}\n")
         for k, v in config.items():
             fi.write(f"{k}: {v}\n")
@@ -594,7 +591,7 @@ if __name__ == "__main__":
                         print(f"saving checkpoint to {out_dir}")
                     if always_save_checkpoint:
                         torch.save(
-                            checkpoint, os.path.join(out_dir, f"{iter_num:06d}_ckpt.pt")
+                            os.path.join(out_dir, f"{iter_num:06d}_ckpt.pt")
                         )
                     else:
                         torch.save(checkpoint, os.path.join(out_dir, "ckpt.pt"))
