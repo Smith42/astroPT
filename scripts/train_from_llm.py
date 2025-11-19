@@ -103,7 +103,7 @@ def stringify(input_text, modality_infos):
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a 4B LLM backbone AstroPT model on DESI galaxy imagery
-    out_dir = "logs/smollm3B"
+    out_dir = "logs/smollm-0135M"
     eval_interval = 500
     log_interval = 50
     checkpoint_interval = 1000
@@ -119,7 +119,7 @@ if __name__ == "__main__":
         True  # check for RAM leaks and reset dataloader if we reach > 80% RAM used
     )
     # data
-    gradient_accumulation_steps = 5  # * 8  # used to simulate larger batch sizes
+    gradient_accumulation_steps = 5 * 2 # * 8  # used to simulate larger batch sizes
     batch_size = 32  # if gradient_accumulation_steps > 1, this is the micro-batch size
     spiral = True  # do we want to process the galaxy patches in spiral order?
     block_size = 1024
@@ -128,9 +128,9 @@ if __name__ == "__main__":
     n_chan = 3  # 3 imagery bands: r, i, z for jpeg, 1 imagery band for FITS
     # Define modalities configuration
     # fmt: off
-    galaxy_params = [
-        "smooth-or-featured_smooth_fraction", "disk-edge-on_yes_fraction", "has-spiral-arms_yes_fraction", "bar_strong_fraction", "bulge-size_dominant_fraction", "how-rounded_cigar-shaped_fraction", "edge-on-bulge_boxy_fraction", "spiral-winding_tight_fraction", "merging_merger_fraction", "mag_u", "mag_g", "mag_r", "mag_i", "mag_z", "u_minus_r", "elpetro_absmag_r", "est_petro_th50_kpc", "petro_ba50", "petro_ba90", "elpetro_ba", "elpetro_phi", "sersic_n", "sersic_ba", "sersic_phi", "elpetro_mass_log", "redshift", "fibre_sfr_median", "fibre_ssfr_median", "total_sfr_median", "total_ssfr_median",
-    ]
+    #galaxy_params = [
+    #    "smooth-or-featured_smooth_fraction", "disk-edge-on_yes_fraction", "has-spiral-arms_yes_fraction", "bar_strong_fraction", "bulge-size_dominant_fraction", "how-rounded_cigar-shaped_fraction", "edge-on-bulge_boxy_fraction", "spiral-winding_tight_fraction", "merging_merger_fraction", "mag_u", "mag_g", "mag_r", "mag_i", "mag_z", "u_minus_r", "elpetro_absmag_r", "est_petro_th50_kpc", "petro_ba50", "petro_ba90", "elpetro_ba", "elpetro_phi", "sersic_n", "sersic_ba", "sersic_phi", "elpetro_mass_log", "redshift", "fibre_sfr_median", "fibre_ssfr_median", "total_sfr_median", "total_ssfr_median",
+    #]
     # fmt: on
     modalities = [
         ModalityConfig(
@@ -141,32 +141,33 @@ if __name__ == "__main__":
             embed_pos=True,
             pos_input_size=1,
         ),
-        *[
-            ModalityConfig(
-                name=param,
-                input_size=1,
-                patch_size=1,
-                loss_weight=0.005,  # less than the stable image training
-                embed_pos=True,
-                pos_input_size=1,
-            )
-            for param in galaxy_params
-        ],
+    #    *[
+    #        ModalityConfig(
+    #            name=param,
+    #            input_size=1,
+    #            patch_size=1,
+    #            loss_weight=0.005,  # less than the stable image training
+    #            embed_pos=True,
+    #            pos_input_size=1,
+    #        )
+    #        for param in galaxy_params
+    #    ],
     ]
     # Create modality registry
     modality_registry = ModalityRegistry(modalities)
     # Which backbone and LoRA rank do we use?
-    llm_model_name = "HuggingFaceTB/SmolLM3-3B"  # or "HuggingFaceTB/SmolLM3-3B-Base"
-    lora_r = 32
+    llm_model_name = "HuggingFaceTB/SmolLM2-135M-Instruct"  # or "HuggingFaceTB/SmolLM3-3B-Base"
+    lora_r = 64
     lora_alpha = 32
     use_qlora = False
     # Choose tokenisers from "affine" and "aim"
     tokeniser = "affine"
     # adamw optimizer
     # we follow the same schedule here as Chinchilla
-    learning_rate = 6e-4  # max learning rate
+    learning_rate = 2e-3  # max learning rate 
+    # ^(10x full finetuning according to Thinky Lab's "LoRA without regret")
     max_iters = (
-        12000  # total number of training iterations for one pass over our dataset
+        30000  # total number of training iterations for one pass over our dataset
     )
     weight_decay = 1e-1
     beta1 = 0.9
@@ -174,11 +175,11 @@ if __name__ == "__main__":
     grad_clip = 1.0  # clip gradients at this value, or disable if == 0.0
     # learning rate decay settings
     decay_lr = True  # whether to decay the learning rate
-    warmup_iters = 1000  # how many steps to warm up for
-    lr_decay_iters = 10000 * 1.1  # should be ~= max_iters per Chinchilla
+    warmup_iters = 2000  # how many steps to warm up for
+    lr_decay_iters = 27000 * 1.1  # should be ~= max_iters per Chinchilla
     min_lr = (
         learning_rate / 10
-    )  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
+    )  # static lr according to Thinky Lab's "LoRA without regret"
     # DDP settings
     backend = "nccl"  # 'nccl', 'gloo', etc.
     # system
@@ -319,7 +320,7 @@ if __name__ == "__main__":
     if not stream_hf_dataset:
         galaxies_train = galaxies_train.to_iterable_dataset(num_shards=num_workers)
     galaxies_train = (galaxies_train
-        .select_columns(["image"] + galaxy_params)
+        .select_columns(["image"])# + galaxy_params)
         .shuffle(seed=None, buffer_size=1000)
     )
     galaxies_train = itertools.cycle(galaxies_train)
@@ -332,7 +333,7 @@ if __name__ == "__main__":
     if not stream_hf_dataset:
         galaxies_test = galaxies_test.to_iterable_dataset(num_shards=num_workers)
     galaxies_test = (galaxies_test
-        .select_columns(["image"] + galaxy_params)
+        .select_columns(["image"])# + galaxy_params)
         .shuffle(seed=None, buffer_size=1000)
     )
     galaxies_test = itertools.cycle(galaxies_test)
@@ -348,6 +349,7 @@ if __name__ == "__main__":
             special_token_ids=unwrapped_model.special_token_ids,
             transforms=transforms,
             random_order=True,
+            apply_chat_template=False,
         )
         vds = LLMModalityDataset(
             hf_dataset=galaxies_test,
@@ -356,6 +358,7 @@ if __name__ == "__main__":
             special_token_ids=unwrapped_model.special_token_ids,
             transforms=transforms,
             random_order=True,
+            apply_chat_template=False,
         )
         tdl = iter(
             DataLoader(
@@ -561,7 +564,7 @@ if __name__ == "__main__":
                         ax[1].axis("off")
 
                     if log_via_wandb:
-                        mmn = lambda x: 255 * (x - x.min()) / (x.max() - x.min())
+                        mmn = lambda x: (255 * (x - x.min()) / (x.max() - x.min())).int()
                         wandb.log(
                             {
                                 "Y": [
