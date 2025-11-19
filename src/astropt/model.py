@@ -466,7 +466,7 @@ class GPT(nn.Module):
         else:
             self.llm = AutoModelForCausalLM.from_pretrained(
                 config.llm_model_name,
-                torch_dtype=torch.bfloat16,
+                dtype=torch.bfloat16,
             )
 
         self.config.n_embd = self.llm_config.hidden_size
