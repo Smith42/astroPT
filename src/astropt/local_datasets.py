@@ -13,7 +13,10 @@ from astropy.io import fits
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset, IterableDataset
 from torchvision import io
+from io import BytesIO
 import h5py
+
+from PIL import Image
 
 class GalaxyImageDataset(Dataset):
     def __init__(
@@ -632,7 +635,7 @@ class LLMModalityDataset(IterableDataset):
 
             if "image" in raw_sample:
                 galaxy = torch.from_numpy(
-                    np.array(raw_sample["image"]).swapaxes(0, 2)
+                    np.array(Image.open(BytesIO(raw_sample["image"]["bytes"]))).swapaxes(0, 2)
                 ).to(torch.float)
                 galaxy = self.process_galaxy(galaxy)
 
