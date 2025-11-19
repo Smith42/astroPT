@@ -910,7 +910,6 @@ class GPT(nn.Module):
             for mod_name in self.modality_registry.names():
                 try:
                     input_tensor = inputs[mod_name]
-                    print(input_tensor.shape)
                 except KeyError as err:
                     print(err)
                     continue
