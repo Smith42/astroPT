@@ -89,14 +89,12 @@ if __name__ == "__main__":
         for B in tqdm(dl):
             zs = model.generate_embeddings(B["X"])["images"].detach().float().numpy()
             zss.append(zs)
-            #yss.append(B["X"]["modality_infos"].detach().numpy())
-            print(B["X"]["modality_infos"])
-            mag_g_values = [info["data"][info["names"].index("mag_g")].item() for info in B["X"]["modality_infos"]]
+            mag_g_values = [rv["mag_g"] for rv in B["X"]["raw_values"]]
             yss.append(np.array(mag_g_values))
         zss = np.concatenate(zss, axis=0)
-        #yss = np.concatenate(yss, axis=0)
+        yss = np.concatenate(yss, axis=0)
         np.save("zss.npy", zss)
-        #np.save("yss.npy", yss)
+        np.save("yss.npy", yss)
     else:
         zss = np.load("zss.npy")
         yss = np.load("yss.npy")

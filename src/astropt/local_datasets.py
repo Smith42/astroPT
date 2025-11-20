@@ -619,6 +619,7 @@ class LLMModalityDataset(IterableDataset):
         """Get a single sample with sequence structure"""
         for raw_sample in self.dataset:
             sample_data = {}
+            raw_values = {}
             for key in raw_sample.keys():
                 if (
                     (key not in ["dr8_id", "image"])
@@ -626,6 +627,7 @@ class LLMModalityDataset(IterableDataset):
                     and (raw_sample[key] > -90)
                     and np.isfinite(raw_sample[key])
                 ):
+                    raw_values[key] = raw_sample[key]
                     # assume all other inputs that aren't image crop or dr8_id
                     # are parameters
                     sample_data[key] = torch.tensor([raw_sample[key]])
@@ -652,6 +654,7 @@ class LLMModalityDataset(IterableDataset):
                 "token_sequence": token_sequence,
                 "attention_mask": attention_mask,
                 "modality_info": modality_info,
+                "raw_values": raw_values,
             }
 
 
@@ -669,6 +672,7 @@ def llm_collate_fn(batch):
     token_sequences = [item["token_sequence"] for item in batch]
     attention_masks = [item["attention_mask"] for item in batch]
     modality_infos = [item["modality_info"] for item in batch]
+    raw_values = [item["raw_values"] for item in batch]
 
     # Pad sequences to same length
     padded_tokens = pad_sequence(token_sequences, batch_first=True, padding_value=0)
@@ -678,6 +682,7 @@ def llm_collate_fn(batch):
         "token_sequences": padded_tokens[:, :-1],
         "attention_masks": padded_attention[:, :-1],
         "modality_infos": modality_infos,
+        "raw_values": raw_values,
     }
     Y = {
         "token_sequences": padded_tokens[:, 1:],
