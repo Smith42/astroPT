@@ -48,7 +48,8 @@ if __name__ == "__main__":
             "mag_g": mag_g,
         }
 
-    model = load_astropt("Smith42/astroPT_v2.0", path="astropt/095M")
+    #model = load_astropt("Smith42/astroPT_v2.0", path="astropt/850M")
+    model = load_astropt("Smith42/astroPT_v3.0", path="astropt/smollm_0135M")
     galproc = GalaxyImageDataset(
         None,
         spiral=True,

@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from datasets import load_dataset
+from datasets import Image as ImageFeature
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, r2_score
@@ -41,20 +42,17 @@ if __name__ == "__main__":
         )
         return transform
 
-    model = load_astropt(repo_id="Smith42/astroPT_v3.0", path="astropt/smollm")
+    model = load_astropt(repo_id="Smith42/astroPT_v3.0", path="astropt/smollm_0135M")
 
     # load dataset: we select mag_g as it is easy for this example but there are many values in Smith42/galaxies v2.0, you can choose from any column in hf.co/datasets/Smith42/galaxies_metadata
     galaxies = (
-        load_dataset(
-            "Smith42/galaxies",
-            revision="v2.0",
-            streaming=True,
-            split="test",
-        )
-        .select_columns(("image", "smooth-or-featured_smooth_fraction"))
-        #.filter(lambda idx: idx["mag_g"] is not None)
-        #.shuffle(seed=None, buffer_size=1000)
-        .take(1000)
+        load_dataset("Smith42/galaxies", split="test", revision="v2.0", streaming=True)
+        .select_columns(("image", "mag_g"))
+        .filter(lambda idx: idx["mag_g"] is not None)
+        .with_format("torch")
+        .take(
+            1000
+        )  # use the first 1k examples of our dataset to shorten total inference time
     )
 
     transforms = {"images": data_transforms()}
@@ -67,6 +65,7 @@ if __name__ == "__main__":
         special_token_ids=unwrapped_model.special_token_ids,
         transforms=transforms,
         random_order=False,
+        apply_chat_template=False,
     )
     dl = iter(
         DataLoader(
@@ -74,7 +73,7 @@ if __name__ == "__main__":
             batch_size=16,
             num_workers=0,
             collate_fn=llm_collate_fn,
-            pin_memory=True,
+            #pin_memory=True,
         )
     )
 
@@ -90,12 +89,14 @@ if __name__ == "__main__":
         for B in tqdm(dl):
             zs = model.generate_embeddings(B["X"])["images"].detach().float().numpy()
             zss.append(zs)
-            mag_g_values = [info["data"][info["names"].index("smooth-or-featured_smooth_fraction")].item() for info in B["X"]["modality_infos"]]
+            #yss.append(B["X"]["modality_infos"].detach().numpy())
+            print(B["X"]["modality_infos"])
+            mag_g_values = [info["data"][info["names"].index("mag_g")].item() for info in B["X"]["modality_infos"]]
             yss.append(np.array(mag_g_values))
         zss = np.concatenate(zss, axis=0)
-        yss = np.concatenate(yss, axis=0)
+        #yss = np.concatenate(yss, axis=0)
         np.save("zss.npy", zss)
-        np.save("yss.npy", yss)
+        #np.save("yss.npy", yss)
     else:
         zss = np.load("zss.npy")
         yss = np.load("yss.npy")
