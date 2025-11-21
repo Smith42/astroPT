@@ -49,6 +49,7 @@ def load_astropt(
 
     checkpoint = torch.load(weights_path, weights_only=False, map_location="cpu")
     model_args = checkpoint["model_args"]
+    model_args["lora_target_all"] = False
     modality_registry = checkpoint["modality_registry"]
 
     config = GPTConfig(**model_args)

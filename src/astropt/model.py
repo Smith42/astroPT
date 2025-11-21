@@ -342,6 +342,7 @@ class GPTConfig:
     # LoRA params
     lora_r: int = 0  # rank, 0 disables LoRA
     lora_alpha: float = 2.0
+    lora_target_all: bool = True
     use_qlora: bool = False
     modalities: list[ModalityConfig] = None
     # LLM specific parameters
@@ -453,6 +454,7 @@ class GPT(nn.Module):
 
         if config.use_qlora:
             from transformers import BitsAndBytesConfig
+            from peft import prepare_model_for_kbit_training
             quant_config = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_quant_type="nf4",
@@ -462,7 +464,9 @@ class GPT(nn.Module):
             self.llm = AutoModelForCausalLM.from_pretrained(
                 config.llm_model_name,
                 quantization_config=quant_config,
+                device_map={"": torch.cuda.current_device()},
             )
+            self.llm = prepare_model_for_kbit_training(self.llm)
         else:
             self.llm = AutoModelForCausalLM.from_pretrained(
                 config.llm_model_name,
@@ -490,14 +494,14 @@ class GPT(nn.Module):
         }
 
         if hasattr(config, "lora_r") and config.lora_r > 0:
-            from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+            from peft import LoraConfig, get_peft_model
             if config.use_qlora:
                 self.llm = prepare_model_for_kbit_training(self.llm)
             lora_config = LoraConfig(
                 r=config.lora_r,
                 lora_alpha=config.lora_alpha,
                 use_rslora=True, # use rank stabilised lora https://huggingface.co/blog/damjan-k/rslora
-                target_modules="all-linear",
+                target_modules=("all-linear" if config.lora_target_all else ["q_proj", "v_proj"]),
                 task_type="CAUSAL_LM",
             )
             self.llm = get_peft_model(self.llm, lora_config)
