@@ -42,6 +42,41 @@ from astropt.local_datasets import GalaxyImageDataset
 from astropt.model import GPT, GPTConfig, ModalityConfig, ModalityRegistry
 
 
+def prepare_batch_for_jetformer(batch, tokeniser):
+    """Prepare batch for Jetformer: use raw images instead of patches.
+    
+    For Jetformer, replaces 'images' (patches) with 'images_raw' (raw images [B,C,H,W])
+    and adjusts positions accordingly.
+    
+    Args:
+        batch: Dictionary with 'images' (patches) and optionally 'images_raw' (raw images)
+        tokeniser: Tokeniser type ('jetformer' or other)
+    
+    Returns:
+        Modified batch with 'images' replaced by raw images for Jetformer
+    """
+    if tokeniser != "jetformer":
+        return batch
+    
+    if "images_raw" not in batch:
+        raise ValueError(
+            "Jetformer requires raw images. For HF datasets, this is handled automatically. "
+            "For local datasets, you need to modify GalaxyImageDataset to return raw images."
+        )
+    
+    # Replace patches with raw images
+    raw_images = batch["images_raw"]  # [B, C, H, W] from dataset
+    B, C, H, W = raw_images.shape
+    patch_size = 16  # Should match modality config
+    T = (H // patch_size) * (W // patch_size)
+    
+    batch["images"] = raw_images  # Replace patches with raw images
+    batch["images_positions"] = torch.arange(T, dtype=torch.long).unsqueeze(0).expand(B, T)
+    batch["images_is_raw"] = True
+    
+    return batch
+
+
 def normalise(x, use_hf=False):
     """Normalize images to zero mean, unit variance."""
     if use_hf:
@@ -63,13 +98,30 @@ def data_transforms(use_hf):
     return transform
 
 
-def process_galaxy_wrapper(galdict, func):
-    """Wrapper for processing galaxy images from HF dataset."""
-    patch_galaxy = func(np.array(galdict["image"]).swapaxes(0, 2))
-    return {
+def process_galaxy_wrapper(galdict, func, return_raw=False):
+    """Wrapper for processing galaxy images from HF dataset.
+    
+    Args:
+        galdict: Dictionary with "image" key containing image data
+        func: Function to process galaxy (process_galaxy)
+        return_raw: If True, also return raw image [C, H, W] for Jetformer
+    
+    Returns:
+        Dictionary with "images" (patches) and optionally "images_raw" (raw image)
+    """
+    raw_image = np.array(galdict["image"]).swapaxes(0, 2)  # [C, H, W]
+    patch_galaxy = func(raw_image)
+    result = {
         "images": patch_galaxy.to(torch.float),
         "images_positions": torch.arange(0, len(patch_galaxy), dtype=torch.long),
     }
+    if return_raw:
+        # Convert to [C, H, W] tensor and normalize to [0,1] if needed
+        raw_tensor = torch.from_numpy(raw_image).to(torch.float)
+        if raw_tensor.max() > 1.0:
+            raw_tensor = raw_tensor / 255.0
+        result["images_raw"] = raw_tensor
+    return result
 
 
 if __name__ == "__main__":
@@ -234,33 +286,37 @@ if __name__ == "__main__":
         from datasets import load_dataset
 
         tds_hf = load_dataset(
-            "/scratch02/public/sao/msmith/data/galaxies/",
-            revision="v2.0",
+            "Smith42/galaxies",
+            # revision="v2.0",
             split="train",
             streaming=(True if stream_hf_dataset else False),
         )
+        # For Jetformer, we need raw images, not just patches
+        return_raw = tokeniser == "jetformer"
         tds_hf = (
             tds_hf
             .select_columns("image_crop")
             .rename_column("image_crop", "image")
             .map(
-                partial(process_galaxy_wrapper, func=tds.process_galaxy)
+                partial(process_galaxy_wrapper, func=tds.process_galaxy, return_raw=return_raw)
             )
         )
         tds_hf = tds_hf.remove_columns("image")
 
         vds_hf = load_dataset(
-            "/scratch02/public/sao/msmith/data/galaxies/",
-            revision="v2.0",
+            "Smith42/galaxies",
+            # revision="v2.0",
             split="test",
             streaming=(True if stream_hf_dataset else False),
         )
+        # For Jetformer, we need raw images, not just patches
+        return_raw = tokeniser == "jetformer"
         vds_hf = (
             vds_hf
             .select_columns("image_crop")
             .rename_column("image_crop", "image")
             .map(
-                partial(process_galaxy_wrapper, func=tds.process_galaxy)
+                partial(process_galaxy_wrapper, func=tds.process_galaxy, return_raw=return_raw)
             )
         )
         vds_hf = vds_hf.remove_columns("image")
@@ -300,6 +356,8 @@ if __name__ == "__main__":
         jetformer_flow_steps=jetformer_flow_steps,
         jetformer_gmm_K=jetformer_gmm_K,
         jetformer_noise_max=jetformer_noise_max,
+        jetformer_noise_min=jetformer_noise_min,
+        img_size=image_size,  # Image size for Jetformer image-space flow
     )
 
     if init_from == "scratch":
@@ -407,7 +465,9 @@ if __name__ == "__main__":
             out[split] = {}
             losses = torch.zeros(eval_iters)
             for k in range(eval_iters):
-                B = tds.process_modes(next(dl), modality_registry, device)
+                batch_raw = next(dl)
+                batch_raw = prepare_batch_for_jetformer(batch_raw, tokeniser)
+                B = tds.process_modes(batch_raw, modality_registry, device)
                 with ctx:
                     logits, loss = model(B["X"], targets=B["Y"])
                 losses[k] = loss.item()
@@ -418,38 +478,61 @@ if __name__ == "__main__":
     @torch.no_grad()
     def validate(iter_num, out_dir):
         model.eval()
+        raw_model = model.module if ddp else model
         for dl, split in zip([tdl, vdl], ["train", "val"]):
             f, axs = plt.subplots(8, 2, figsize=(3, 12), constrained_layout=True)
-            B = vds.process_modes(next(vdl), modality_registry, device)
+            batch_raw = next(vdl)
+            batch_raw = prepare_batch_for_jetformer(batch_raw, tokeniser)
+            B = vds.process_modes(batch_raw, modality_registry, device)
             with ctx:
                 P, loss = model(B["X"], B["Y"])
                 if "images" in modality_registry.names():
-                    Yim = B["Y"]["images"].to(device)
-                    b, t, c = Yim.size()
-                    zero_block = torch.zeros((b, 1, c)).to(device)
-                    Yim = torch.cat((zero_block, Yim), dim=1)
-                    if spiral:
-                        Yim = torch.stack([vds.antispiralise(yy) for yy in Yim])
+                    # For Jetformer, B["Y"]["images"] is raw images [B,C,H,W]
+                    # For non-Jetformer, B["Y"]["images"] is patches [B,T,D]
                     im_patch = modality_registry.get_config("images").patch_size
-                    Yim = einops.rearrange(
-                        Yim,
-                        "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
-                        p1=im_patch,
-                        p2=im_patch,
-                        h=image_size // im_patch,
-                        w=image_size // im_patch,
+                    is_jetformer = (
+                        isinstance(raw_model, GPT)
+                        and raw_model.config.tokeniser == "jetformer"
                     )
-                    Pim = torch.cat((zero_block, P["images"]), dim=1)
-                    if spiral:
-                        Pim = torch.stack([vds.antispiralise(pp) for pp in Pim])
-                    Pim = einops.rearrange(
-                        Pim,
-                        "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
-                        p1=im_patch,
-                        p2=im_patch,
-                        h=image_size // im_patch,
-                        w=image_size // im_patch,
-                    )
+                    
+                    if is_jetformer:
+                        # Raw images [B,C,H,W] - convert directly to image format for visualization
+                        Yim_raw = B["Y"]["images"].to(device)  # [B,C,H,W]
+                        # Permute to [B,H,W,C] for visualization
+                        Yim = Yim_raw.permute(0, 2, 3, 1)  # [B,H,W,C]
+                        
+                        # Reconstruct images
+                        x_recon = raw_model.jetformer_reconstruct_images(B["Y"]["images"])
+                        # Permute to [B,H,W,C] for visualization
+                        Pim = x_recon.permute(0, 2, 3, 1)  # [B,H,W,C]
+                    else:
+                        # Non-Jetformer: patches already [B,T,D]
+                        Yim = B["Y"]["images"].to(device)
+                        b, t, c = Yim.size()
+                        zero_block = torch.zeros((b, 1, c)).to(device)
+                        Yim = torch.cat((zero_block, Yim), dim=1)
+                        if spiral:
+                            Yim = torch.stack([vds.antispiralise(yy) for yy in Yim])
+                        Yim = einops.rearrange(
+                            Yim,
+                            "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
+                            p1=im_patch,
+                            p2=im_patch,
+                            h=image_size // im_patch,
+                            w=image_size // im_patch,
+                        )
+                        
+                        Pim = torch.cat((zero_block, P["images"]), dim=1)
+                        if spiral:
+                            Pim = torch.stack([vds.antispiralise(pp) for pp in Pim])
+                        Pim = einops.rearrange(
+                            Pim,
+                            "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
+                            p1=im_patch,
+                            p2=im_patch,
+                            h=image_size // im_patch,
+                            w=image_size // im_patch,
+                        )
 
                     for ax, p, y in zip(
                         axs, Pim.to(float).cpu().numpy(), Yim.to(float).cpu().numpy()
@@ -492,9 +575,9 @@ if __name__ == "__main__":
     # training loop
     if master_process:
         print("starting training...")
-    B = tds.process_modes(
-        next(tdl), modality_registry, device
-    )  # fetch the very first batch
+    batch_raw = next(tdl)
+    batch_raw = prepare_batch_for_jetformer(batch_raw, tokeniser)
+    B = tds.process_modes(batch_raw, modality_registry, device)  # fetch the very first batch
     t0 = time.time()
     dts = []
     local_iter_num = 0  # number of iterations in the lifetime of this process
@@ -513,6 +596,11 @@ if __name__ == "__main__":
         lr = get_lr(iter_num) if decay_lr else learning_rate
         for param_group in optimizer.param_groups:
             param_group["lr"] = lr
+
+        # update Jetformer noise schedule if applicable
+        raw_model = model.module if ddp else model
+        if isinstance(raw_model, GPT) and raw_model.config.tokeniser == "jetformer":
+            raw_model.set_jetformer_schedule(iter_num, max_iters)
 
         # evaluate the loss on train/val sets and write checkpoints
         if iter_num % eval_interval == 0 and master_process:
@@ -569,7 +657,7 @@ if __name__ == "__main__":
                     ax.set_title(train_loss)
                     ax.plot(loss_df["iter_num"], loss_df[train_loss], label="train")
                     ax.plot(loss_df["iter_num"], loss_df[valid_loss], label="valid")
-                [ax.set_yscale("log") for ax in axs.ravel()]
+                # [ax.set_yscale("log") for ax in axs.ravel()]
                 [ax.legend() for ax in axs.ravel()]
                 f.savefig(os.path.join(out_dir, "loss.png"))
                 plt.close(f)
@@ -613,9 +701,9 @@ if __name__ == "__main__":
             with ctx:
                 logits, loss = model(B["X"], targets=B["Y"])
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
-            B = tds.process_modes(
-                next(tdl), modality_registry, device
-            )  # fetch the very first batch
+            batch_raw = next(tdl)
+            batch_raw = prepare_batch_for_jetformer(batch_raw, tokeniser)
+            B = tds.process_modes(batch_raw, modality_registry, device)  # fetch the very first batch
             # backward pass, with gradient scaling if training in fp16
             scaler.scale(loss).backward()
 

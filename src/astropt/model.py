@@ -36,6 +36,15 @@ except ImportError:
     flex_attention_avail = False
 from torch.nn import functional as F
 
+from astropt.jetformer import (
+    GMMHead as JetformerGMMHead,
+    TinyFlow2D,
+    gmm_nll,
+    patchify,
+    depatchify,
+    uniform_dequantize,
+)
+
 
 @dataclass
 class ModalityConfig:
@@ -292,6 +301,67 @@ class Encoder(nn.Module):
             return x
 
 
+class JetformerImageEncoder(Encoder):
+    """Encoder for images when using Jetformer tokeniser.
+
+    Matches original JetFormerLite workflow:
+    1. Accepts raw images [B, C, H, W]
+    2. Applies uniform_dequantize
+    3. Flows on image space → z [B, C, H, W]
+    4. Patchifies z → tokens [B, T, D]
+    5. Adds noise to tokens (not z)
+    6. Projects tokens to embeddings
+
+    Caches patchified z tokens and logdet for loss computation.
+    """
+
+    def __init__(self, config, in_size, img_size: int, n_chan: int, patch_size: int):
+        super().__init__(config, in_size)
+        self.img_size = img_size
+        self.n_chan = n_chan
+        self.patch_size = patch_size
+        # Flow operates on image space [B, C, H, W]
+        self.flow = TinyFlow2D(in_ch=n_chan, img_size=img_size, steps=config.jetformer_flow_steps)
+        self.jetformer_noise_max = config.jetformer_noise_max
+        self.jetformer_noise_min = config.jetformer_noise_min
+        self.jet_epoch_frac = 1.0
+        # Cache patchified z tokens (not z directly) and logdet
+        self.last_tokens: torch.Tensor | None = None
+        self.last_logdet: torch.Tensor | None = None
+
+    def set_jet_epoch_frac(self, frac: float) -> None:
+        self.jet_epoch_frac = float(frac)
+
+    def forward(self, x):
+        # x: [B, C, H, W] raw images (for Jetformer)
+        # 1. Uniform dequantization
+        x = uniform_dequantize(x)
+        
+        # 2. Flow on image space → z [B, C, H, W]
+        z, logdet = self.flow(x, reverse=False)
+        
+        # 3. Patchify z → tokens [B, T, D]
+        tokens = patchify(z, self.patch_size)
+        self.last_tokens = tokens
+        self.last_logdet = logdet.detach()
+        
+        # 4. Add noise to tokens (not z) - matching original
+        sigma = self.jetformer_noise_max + (
+            self.jetformer_noise_min - self.jetformer_noise_max
+        ) * self.jet_epoch_frac
+        if self.training and sigma > 0.0:
+            tokens = tokens + torch.randn_like(tokens) * sigma
+        
+        # 5. Project tokens to embeddings
+        if self.tokeniser == "affine":
+            return self.c_fc(tokens)
+        # AIM-style projection (same as Encoder)
+        tokens = self.c_fc(tokens)
+        tokens = new_gelu(tokens)
+        tokens = self.c_proj(tokens)
+        return tokens
+
+
 class Decoder(nn.Module):
     """base module to move from embedding space to data space"""
 
@@ -338,7 +408,7 @@ class GPTConfig:
     dropout: float = 0.0
     bias: bool = False  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     attn_type: str = "causal"  # causal or prefix
-    tokeniser: str = "aim" # one of "aim" or "affine"
+    tokeniser: str = "aim"  # one of "aim", "affine", or "jetformer"
     # LoRA params
     lora_r: int = 0  # rank, 0 disables LoRA
     lora_alpha: float = 2.0
@@ -347,6 +417,12 @@ class GPTConfig:
     # LLM specific parameters
     backbone: str = "native"  # native or llm
     llm_model_name: str = None
+    # Jetformer-specific hyperparameters (used only when tokeniser == "jetformer" and backbone == "native")
+    jetformer_flow_steps: int = 4
+    jetformer_gmm_K: int = 4
+    jetformer_noise_max: float = 0.1
+    jetformer_noise_min: float = 0.0
+    img_size: int = 256  # Image size (H=W) for Jetformer image-space flow
 
 
 class GPT(nn.Module):
@@ -361,6 +437,8 @@ class GPT(nn.Module):
         self.config = config
         self.modality_registry = modality_registry
         self.backbone = config.backbone
+        # Jetformer noise curriculum state (only used for native + jetformer)
+        self.jet_epoch_frac: float = 1.0
 
         if self.backbone == "native":
             self._init_native_backbone(config)
@@ -400,6 +478,20 @@ class GPT(nn.Module):
             print(f"Total parameters: {total_params / 1e6:.2f}M")
             print(f"Trainable parameters: {trainable_params / 1e6:.2f}M")
 
+    def set_jetformer_schedule(self, iter_num: int, max_iters: int) -> None:
+        """Set Jetformer noise schedule fraction based on global iteration."""
+        if max_iters <= 0:
+            self.jet_epoch_frac = 1.0
+            return
+        frac = float(iter_num) / float(max_iters)
+        frac = max(0.0, min(1.0, frac))
+        self.jet_epoch_frac = frac
+        # Propagate to Jetformer encoders if present
+        if hasattr(self, "encoders"):
+            for enc in self.encoders.values():
+                if hasattr(enc, "set_jet_epoch_frac"):
+                    enc.set_jet_epoch_frac(self.jet_epoch_frac)
+
     def get_num_params(self):
         """Return the number of parameters in the model."""
         return sum(p.numel() for p in self.parameters())
@@ -419,7 +511,15 @@ class GPT(nn.Module):
         decoders = {}
         embedders = {}
         for name, mod_config in self.modality_registry.modalities.items():
-            if mod_config.vocab_size > 0:
+            if config.tokeniser == "jetformer" and name == "images":
+                # For Jetformer, need image dimensions and patch size
+                img_size = config.img_size
+                n_chan = config.n_chan
+                patch_size = mod_config.patch_size
+                encoders[name] = JetformerImageEncoder(
+                    config, mod_config.input_size, img_size, n_chan, patch_size
+                )
+            elif mod_config.vocab_size > 0:
                 # for e.g. if you have a list of integers to process a la AION
                 # if we define a vocab size 
                 encoders[name] = Embedder(config, vocab_size=mod_config.vocab_size)
@@ -434,6 +534,17 @@ class GPT(nn.Module):
         self.encoders = nn.ModuleDict(encoders)
         self.decoders = nn.ModuleDict(decoders)
         self.embedders = nn.ModuleDict(embedders)
+
+        # Jetformer GMM head for images modality (only used for native + jetformer)
+        if (
+            config.tokeniser == "jetformer"
+            and "images" in self.modality_registry.modalities
+        ):
+            images_cfg = self.modality_registry.get_config("images")
+            patch_dim = images_cfg.input_size
+            self.jetformer_images_head = JetformerGMMHead(
+                config.n_embd, patch_dim, config.jetformer_gmm_K
+            )
 
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
@@ -599,6 +710,34 @@ class GPT(nn.Module):
         for block in self.transformer.h:
             x = block(x, block_mask=block_mask)
         x = self.transformer.ln_f(x)
+
+        # Jetformer images-only path (native backbone)
+        if (
+            self.config.backbone == "native"
+            and self.config.tokeniser == "jetformer"
+            and self.modality_registry.names() == ["images"]
+        ):
+            # Only images modality is present; encoders["images"] is JetformerImageEncoder
+            # Get patchified z tokens (not z directly) - matching original JetFormerLite
+            tokens = self.encoders["images"].last_tokens
+            logdet = self.encoders["images"].last_logdet
+            if tokens is None or logdet is None:
+                raise RuntimeError(
+                    "JetformerImageEncoder did not cache tokens/logdet; forward() must be called before loss."
+                )
+            # x currently contains hidden states for all tokens (just images here)
+            h_images = x
+            logits_pi, mu, log_sigma = self.jetformer_images_head(h_images[:, :-1])
+            # Target is patchified z tokens at positions 1..T (matching original)
+            target_tokens = tokens[:, 1:, :]
+            nll_gmm = gmm_nll(target_tokens, logits_pi, mu, log_sigma)
+            loss_images = nll_gmm - logdet
+            loss = loss_images.mean()
+
+            # Optionally decode images for logging (not used in loss)
+            outputs = {}
+            outputs["images"] = self.decoders["images"](h_images)
+            return outputs, loss
 
         outputs = {}
         current_idx = 0
@@ -1039,6 +1178,100 @@ class GPT(nn.Module):
         flops_promised = 312e12  # A100 GPU bfloat16 peak flops is 312 TFLOPS
         mfu = flops_achieved / flops_promised
         return mfu
+
+    @torch.no_grad()
+    def jetformer_reconstruct_images(
+        self, x_real: torch.Tensor, positions: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """
+        Reconstruct images using Jetformer in a teacher-forced way.
+        Matches original JetFormerLite.sample(reconstruction) workflow.
+
+        Args:
+            x_real: [B, C, H, W] ground-truth raw images.
+            positions: optional [B, T] long tensor of positions. If None, a
+                simple 0..T-1 range is used per batch element (T = (H//patch_size) * (W//patch_size)).
+
+        Returns:
+            x_pred: [B, C, H, W] reconstructed images.
+        """
+        if self.config.backbone != "native" or self.config.tokeniser != "jetformer":
+            raise RuntimeError("jetformer_reconstruct_images is only valid for native Jetformer runs.")
+        if "images" not in self.encoders:
+            raise RuntimeError("Images encoder not found; Jetformer expects an 'images' modality.")
+
+        device = next(self.parameters()).device
+        x_real = x_real.to(device)
+
+        img_encoder = self.encoders["images"]
+        if not hasattr(img_encoder, "flow"):
+            raise RuntimeError("Images encoder does not have a flow; expected JetformerImageEncoder.")
+
+        B, C, H, W = x_real.shape
+        patch_size = img_encoder.patch_size
+        T = (H // patch_size) * (W // patch_size)
+
+        if positions is None:
+            positions = torch.arange(T, device=device, dtype=torch.long).unsqueeze(0).expand(B, T)
+        else:
+            positions = positions.to(device)
+
+        # 1. Apply uniform dequantization (matching encoder)
+        x_real = uniform_dequantize(x_real)
+        
+        # 2. Pass real images through the flow to get latent z [B, C, H, W]
+        z_real, _ = img_encoder.flow(x_real, reverse=False)
+
+        # 3. Patchify to get the real tokens [B, T, D]
+        tokens_real = patchify(z_real, patch_size)
+
+        # 4. Get the model's predictions (teacher-forced)
+        # Temporarily disable noise
+        old_frac = getattr(img_encoder, "jet_epoch_frac", 1.0)
+        img_encoder.set_jet_epoch_frac(0.0)
+        tok_emb = img_encoder.c_fc(tokens_real)
+        if img_encoder.tokeniser != "affine":
+            tok_emb = new_gelu(tok_emb)
+            tok_emb = img_encoder.c_proj(tok_emb)
+        img_encoder.set_jet_epoch_frac(old_frac)
+
+        pos_emb = self.embedders["images"](positions)
+        h = self.transformer.drop(tok_emb + pos_emb)
+        for block in self.transformer.h:
+            h = block(h)
+        h = self.transformer.ln_f(h)
+
+        # 5. Get GMM parameters for tokens 1...T-1
+        logits_pi, mu, log_sigma = self.jetformer_images_head(h[:, :-1])
+
+        # 6. Create the "predicted" token sequence
+        tokens_pred = torch.zeros_like(tokens_real)
+        tokens_pred[:, 0] = tokens_real[:, 0]  # Copy first token (it's not predicted)
+
+        # 7. Get deterministic 'mu' from most likely GMM component
+        best_comp_idx = torch.argmax(logits_pi, dim=-1, keepdim=True)  # [B, T-1, 1]
+        D = tokens_real.size(-1)
+        gather_idx = best_comp_idx.unsqueeze(-1).expand(-1, -1, -1, D)
+        sel_mu = torch.gather(mu, 2, gather_idx).squeeze(2)  # [B, T-1, D]
+        tokens_pred[:, 1:] = sel_mu  # Fill in the predicted tokens
+
+        # 8. Depatchify tokens_pred back to image space [B, C, H, W]
+        z_pred = depatchify(tokens_pred, C=C, H=H, W=W, patch_size=patch_size)
+
+        # 9. Invert flow to get reconstructed images
+        x_pred, _ = img_encoder.flow(z_pred, reverse=True)
+        x_pred = x_pred.clamp(0, 1)  # Clamp to [0,1] matching original
+        return x_pred
+
+    @torch.no_grad()
+    def jetformer_reconstruct_patches(
+        self, x_patches: torch.Tensor, positions: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """
+        Legacy method name for compatibility. Now expects raw images [B,C,H,W].
+        Use jetformer_reconstruct_images() for clarity.
+        """
+        return self.jetformer_reconstruct_images(x_patches, positions)
 
     @torch.no_grad()
     def generate(self, inputs, new_tokens, target_modality, temperature=0.0):
