@@ -28,7 +28,7 @@ import pandas as pd
 import torch
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
 
 try:
@@ -108,16 +108,16 @@ if __name__ == "__main__":
             name="images",
             input_size=16 * 16 * n_chan,
             patch_size=16,
+            pos_input_size=1,
             loss_weight=1.0,
             embed_pos=True,
-            pos_input_size=1,
         ),
         ModalityConfig(
             name="spectra",
             input_size=10,
             patch_size=10, #256,
-            pos_input_size=256,
-            loss_weight=0.5,
+            pos_input_size=10,
+            loss_weight=1.0,
             embed_pos=False,
         ),
     ]
@@ -228,22 +228,36 @@ if __name__ == "__main__":
 
     print("Using EuclidDESIdataset (MSc Thesis Version)...")
 
-    tds = EuclidDESIDataset(
-    	metadata_path=METADATA_PATH,
-    	vis_folder=VIS_FOLDER,
-    	nisp_folder=NISP_FOLDER,
-    	transform=transforms,
-    	modality_registry=modality_registry,
-    	spiral=spiral
-     )
-    # validation dataset and dataloader
-    vds = EuclidDESIDataset(
+
+    # Loading datasets
+    
+    # Loading ful datasets
+    full_dataset = EuclidDESIDataset(
         metadata_path=METADATA_PATH,
         vis_folder=VIS_FOLDER,
         nisp_folder=NISP_FOLDER,
         transform=transforms,
         modality_registry=modality_registry,
         spiral=spiral
+    )
+
+    # Dataset sizes
+    total_size = len(full_dataset) 
+    train_size = int(0.8 * total_size) # 80%
+    val_size = int(0.1 * total_size) # 10%
+    test_size = total_size - train_size - val_size 
+    
+    print(f"Total samples: {total_size}")
+    print(f"Splitting into: Train ({train_size}), Val ({val_size}), Test ({test_size})")
+
+    # Random split, seed 61
+    generator = torch.Generator().manual_seed(61)
+
+    # Splitting datasets
+    tds, vds, test_ds = random_split(
+            full_dataset, 
+            [train_size, val_size, test_size], 
+            generator=generator
         )
 
     tdl = iter(
@@ -252,6 +266,7 @@ if __name__ == "__main__":
             batch_size=batch_size,
             num_workers=num_workers,
             pin_memory=True,
+            shuffle=True
         )
     )
     vdl = iter(
@@ -260,6 +275,7 @@ if __name__ == "__main__":
             batch_size=batch_size,
             num_workers=num_workers,
             pin_memory=True,
+            shuffle=False,
         )
     )
 
@@ -397,7 +413,7 @@ if __name__ == "__main__":
             losses = torch.zeros(n_iters)
             for k in range(n_iters):
                 try:
-                    B = ds.process_modes(next(dl), modality_registry, device)
+                    B = full_dataset.process_modes(next(dl), modality_registry, device)
                     with ctx:
                         logits, loss = model(B["X"], targets=B["Y"])
                     losses[k] = loss.item()
@@ -410,11 +426,22 @@ if __name__ == "__main__":
         return out
 
     @torch.no_grad()
-    def validate(iter_num, out_dir):
+    def validate(iter_num, out_dir, tds, vds):
         model.eval()
-        for dl, split in zip([tdl, vdl], ["train", "val"]):
+
+        t_dl_viz = iter(DataLoader(tds, batch_size=batch_size, num_workers=num_workers, pin_memory=True, shuffle=True))
+        v_dl_viz = iter(DataLoader(vds, batch_size=batch_size, num_workers=num_workers, pin_memory=True, shuffle=True))
+
+        for dl, split in zip([t_dl_viz, v_dl_viz], ["train", "val"]):
             f, axs = plt.subplots(8, 4, figsize=(6, 12), constrained_layout=True)
-            B = vds.process_modes(next(vdl), modality_registry, device)
+            
+            try:
+                batch = next(dl)
+            except StopIteration:
+                continue 
+
+            B = full_dataset.process_modes(batch, modality_registry, device)
+            
             with ctx:
                 P, loss = model(B["X"], B["Y"])
                 if "images" in modality_registry.names():
@@ -422,8 +449,10 @@ if __name__ == "__main__":
                     b, t, c = Yim.size()
                     zero_block = torch.zeros((b, 1, c)).to(device)
                     Yim = torch.cat((zero_block, Yim), dim=1)
+                    
                     if spiral:
-                        Yim = torch.stack([vds.antispiralise(yy) for yy in Yim])
+                        Yim = torch.stack([full_dataset.antispiralise(yy) for yy in Yim])
+                        
                     im_patch = modality_registry.get_config("images").patch_size
                     Yim = einops.rearrange(
                         Yim,
@@ -434,8 +463,10 @@ if __name__ == "__main__":
                         w=image_size // im_patch,
                     )
                     Pim = torch.cat((zero_block, P["images"]), dim=1)
+                    
                     if spiral:
-                        Pim = torch.stack([vds.antispiralise(pp) for pp in Pim])
+                        Pim = torch.stack([full_dataset.antispiralise(pp) for pp in Pim])
+                        
                     Pim = einops.rearrange(
                         Pim,
                         "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
@@ -467,8 +498,9 @@ if __name__ == "__main__":
                 for ax, p, y in zip(
                     axs, Psp.to(float).cpu().numpy(), Ysp.to(float).cpu().numpy()
                 ):
+
                     ax[2].plot(np.concatenate(y, axis=0))
-                    ax[2].plot(np.concatenate(p, axis=0))  # overlay too cause yolo
+                    ax[2].plot(np.concatenate(p, axis=0)) 
                     ax[3].plot(np.concatenate(p, axis=0))
             f.savefig(
                 os.path.join(out_dir, f"{iter_num:06d}_{split}.jpg"),
@@ -495,7 +527,7 @@ if __name__ == "__main__":
     # training loop
     if master_process:
         print("starting training...")
-    B = tds.process_modes(
+    B = full_dataset.process_modes(
         next(tdl), modality_registry, device
     )  # fetch the very first batch
     t0 = time.time()
@@ -519,7 +551,7 @@ if __name__ == "__main__":
 
         # evaluate the loss on train/val sets and write checkpoints
         if iter_num % eval_interval == 0 and master_process:
-            validate(iter_num, out_dir)
+            validate(iter_num, out_dir, tds, vds)
             losses = estimate_loss(tds, vds)
             val_loss = np.mean(list(losses["val"].values()))
             print(
@@ -618,7 +650,7 @@ if __name__ == "__main__":
                     logits, loss = model(B["X"], targets=B["Y"])
                 
                 # immediately async prefetch next batch while model is doing the forward pass on the GPU
-                B = tds.process_modes(
+                B = full_dataset.process_modes(
                 next(tdl), modality_registry, device
                 )  # fetch the very first batch
                 
@@ -636,7 +668,7 @@ if __name__ == "__main__":
                     pin_memory=True,
                 )
             )
-            B = tds.process_modes(next(tdl), modality_registry, device)
+            B = full_dataset.process_modes(next(tdl), modality_registry, device)
             
                 
         # clip the gradient
