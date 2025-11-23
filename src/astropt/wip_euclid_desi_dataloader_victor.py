@@ -27,7 +27,8 @@ class EuclidDESIDataset(Dataset):
     def __init__(self, 
                  metadata_path, 
                  vis_folder, 
-                 nisp_folder, 
+                 nisp_folders, 
+                 spectra_folder,
                  healpix_nside=64,
                  transform={}, 
                  stochastic=True,
@@ -43,7 +44,9 @@ class EuclidDESIDataset(Dataset):
         """
         self.meta = Table.read(metadata_path)
         self.vis_folder = vis_folder
-        self.nisp_folder = nisp_folder
+        self.nisp_folder = nisp_folders
+        self.spectra_folder = spectra_folder
+        
         self.healpix_nside = healpix_nside
         
         self.transform = transform
@@ -417,7 +420,8 @@ class EuclidDESIDataset(Dataset):
         nisp_images_list = []
         for band in ['H', 'J', 'Y']:
             nisp_filename = vis_filename.replace("VIS", f"NIR-{band}")
-            nisp_path = os.path.join(self.nisp_folder, nisp_filename)
+            
+            nisp_path = os.path.join(self.nisp_folders[band], nisp_filename)
             nisp_img = self._load_fits_data(nisp_path)
             
             # Managing not found NISP images
@@ -437,7 +441,9 @@ class EuclidDESIDataset(Dataset):
         #    raise FileNotFoundError(f"Spectrum for TARGETID {targetid} (idx {idx}) not found. Skipping.")
         
         # Loading preprocces spectra
-        spectrum_path = entry['SPEC_PATH']
+        original_path = entry['SPEC_PATH']
+        spectrum_filename = os.path.basename(original_path)
+        spectrum_path = os.path.join(self.spectra_folder, spectrum_filename)   
 
         try:
             with fits.open(spectrum_path) as hdul:
