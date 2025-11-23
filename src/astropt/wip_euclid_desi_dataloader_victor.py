@@ -29,6 +29,7 @@ class EuclidDESIDataset(Dataset):
                  vis_folder, 
                  nisp_folders, 
                  spectra_folder,
+                 spectra_dirs=None,
                  healpix_nside=64,
                  transform={}, 
                  stochastic=True,
@@ -44,8 +45,9 @@ class EuclidDESIDataset(Dataset):
         """
         self.meta = Table.read(metadata_path)
         self.vis_folder = vis_folder
-        self.nisp_folder = nisp_folders
+        self.nisp_folders = nisp_folders
         self.spectra_folder = spectra_folder
+        self.spectra_dirs = spectra_dirs
         
         self.healpix_nside = healpix_nside
         
@@ -393,91 +395,91 @@ class EuclidDESIDataset(Dataset):
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
             idx = idx.tolist()
-            
-        if self.stochastic:
-            idx = np.random.randint(self.dataset_len)   
-            
-        if not self.stochastic and idx >= len(self.meta):
-            raise IndexError(f"Debug index {idx} out of reange for a dataset with len {len(self.meta)}")
 
-        # From Gosia's datalaoder
         entry = self.meta[idx]
         targetid = entry['TARGETID']
-        healpix_id = entry['HEALPIX']
-        survey = entry['SURVEY']
-        program = entry['PROGRAM']
-        vis_filename = entry['name']
-
-        # Load VIS image
+        
+        vis_filename = os.path.basename(str(entry['VIS_cutout']))
         vis_image_path = os.path.join(self.vis_folder, vis_filename)
+        
         vis_image = self._load_fits_data(vis_image_path)
-
         if vis_image is None:
-            raise FileNotFoundError(f"VIS image {vis_filename} (idx {idx}) not found. Skipping.")
+            return None
 
-        # Load NISP images (H, J, Y)
         ref_shape = vis_image.shape
         nisp_images_list = []
         for band in ['H', 'J', 'Y']:
-            nisp_filename = vis_filename.replace("VIS", f"NIR-{band}")
+            col_name = f'NIR-{band}_cutout'
+            if col_name in entry.colnames:
+                nisp_filename = os.path.basename(str(entry[col_name]))
+            else:
+                nisp_filename = vis_filename.replace("VIS", f"NIR-{band}")
             
             nisp_path = os.path.join(self.nisp_folders[band], nisp_filename)
             nisp_img = self._load_fits_data(nisp_path)
             
-            # Managing not found NISP images
             if nisp_img is None or nisp_img.shape != ref_shape:
-                nisp_images_list.append(np.zeros_like(vis_image))
-            # Replacing image by zeros array
+                nisp_images_list.append(np.zeros_like(vis_image)) 
             else:
                 nisp_images_list.append(nisp_img)
 
-        # Staking images: [VIS, NISP-H, NISP-J, NISP-Y]
         raw_galaxy = np.stack([vis_image] + nisp_images_list, axis=0).astype(np.float32)
         raw_galaxy = torch.tensor(raw_galaxy).to(torch.bfloat16)
 
-        # Loading spectrum as Gosia's dataloader
-        #spectrum_dict = self._load_desi_spectrum(healpix_id, targetid, survey, program)
-        #if spectrum_dict is None:
-        #    raise FileNotFoundError(f"Spectrum for TARGETID {targetid} (idx {idx}) not found. Skipping.")
-        
-        # Loading preprocces spectra
-        original_path = entry['SPEC_PATH']
-        spectrum_filename = os.path.basename(original_path)
-        spectrum_path = os.path.join(self.spectra_folder, spectrum_filename)   
+        if self.spectra_dirs is None:       
+            patch_galaxy = self.process_galaxy(raw_galaxy)
+            return {
+                "images": patch_galaxy,
+                "images_positions": torch.arange(0, len(patch_galaxy), dtype=torch.long),
+                "idx": idx,
+                "targetid": targetid
+            }
 
-        try:
-            with fits.open(spectrum_path) as hdul:
-                data = hdul[1].data 
-                wave = data['WAVELENGTH'].astype(np.float32)
-                flux = data['FLUX'].astype(np.float32)
-        except Exception as e:
-            raise FileNotFoundError(f"[ERROR] Unable to read spectra: {spectrum_path}. Error: {e}")
-        
-        # Converting spectrum to tensor
-        raw_spectra = torch.tensor(flux).to(torch.bfloat16)
-        wavelength = torch.tensor(wave).to(torch.bfloat16)
-        
-        # Normalizing wavelength
-        wavelength = (wavelength - 3000) / (10000 - 3000) # Normalizar
+        else:
+            # Loading spectrum as Gosia's dataloader
+            #spectrum_dict = self._load_desi_spectrum(healpix_id, targetid, survey, program)
+            #if spectrum_dict is None:
+            #    raise FileNotFoundError(f"Spectrum for TARGETID {targetid} (idx {idx}) not found. Skipping.")
+            
+            # Loading preprocces spectra
+            original_path = entry['SPEC_PATH']
+            spectrum_filename = os.path.basename(original_path)
+            spectrum_path = os.path.join(self.spectra_folder, spectrum_filename)   
 
-        # Patching the galaxy
-        patch_galaxy = self.process_galaxy(raw_galaxy)
-        patch_spectra, patch_wl = self.process_spectra(raw_spectra, wavelength)
+            try:
+                with fits.open(spectrum_path) as hdul:
+                    data = hdul[1].data 
+                    wave = data['WAVELENGTH'].astype(np.float32)
+                    flux = data['FLUX'].astype(np.float32)
+            except Exception as e:
+                raise FileNotFoundError(f"[ERROR] Unable to read spectra: {spectrum_path}. Error: {e}")
+            
+            # Converting spectrum to tensor
+            raw_spectra = torch.tensor(flux).to(torch.bfloat16)
+            wavelength = torch.tensor(wave).to(torch.bfloat16)
+            
+            # Normalizing wavelength
+            wavelength = (wavelength - 3000) / (10000 - 3000) # Normalizar
 
-        # Checking incorrect data fot NaNs and torch
-        if torch.isnan(patch_galaxy).any():
-            raise ValueError(f"NaNs found in image (idx {idx}). Skipping.")
-        if torch.isnan(patch_spectra).any() or torch.isnan(patch_wl).any():
-            raise ValueError(f"NaNs found in spectrum (idx {idx}). Skipping.")
-        
-        # Formatting output as expected by AstroPT
-        return {
-            "images": patch_galaxy,
-            "images_positions": torch.arange(0, len(patch_galaxy), dtype=torch.long),
-            "spectra": patch_spectra,
-            "spectra_positions": patch_wl,
-            "idx": idx,
-        }
+            # Patching the galaxy
+            patch_galaxy = self.process_galaxy(raw_galaxy)
+            patch_spectra, patch_wl = self.process_spectra(raw_spectra, wavelength)
+
+            # Checking incorrect data fot NaNs and torch
+            if torch.isnan(patch_galaxy).any():
+                raise ValueError(f"NaNs found in image (idx {idx}). Skipping.")
+            if torch.isnan(patch_spectra).any() or torch.isnan(patch_wl).any():
+                raise ValueError(f"NaNs found in spectrum (idx {idx}). Skipping.")
+            
+            # Formatting output as expected by AstroPT
+            return {
+                "images": patch_galaxy,
+                "images_positions": torch.arange(0, len(patch_galaxy), dtype=torch.long),
+                "spectra": patch_spectra,
+                "spectra_positions": patch_wl,
+                "idx": idx,
+                "targetid": int(targetid)
+            }
 
 
 def adjust_dynamic_range(flux, q=100, clip=99.85):

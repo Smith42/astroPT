@@ -76,7 +76,7 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a 100M parameter model on galaxy imagery and spectra
     # look at `config/astropt*.py` for a prod run example
-    out_dir = "logs/astropt0100M_multimodal"
+    out_dir = "logs/astropt0100M_multimodal_17K"
     eval_interval = 1000
     log_interval = 100
     checkpoint_interval = 5000
@@ -222,10 +222,17 @@ if __name__ == "__main__":
     # training dataset and dataloader
 
     BASE_DIR = "/home/valonso/iac18_aasensio_shared/euclid_q1_desi_dr1"
-    METADATA_PATH = os.path.join(BASE_DIR, "base_EuclidQ1_DESIDR1_TRAIN.fits")
-    VIS_FOLDER = os.path.join(BASE_DIR, "VIS")
-    NISP_FOLDER = os.path.join(BASE_DIR, "NISP")
-
+    METADATA_PATH = os.path.join(BASE_DIR, "base_EuclidQ1_DESIDR1_HYBRID.fits")
+    SPECTRA_FOLDER = os.path.join(BASE_DIR, "desi_dr1_training_spectra")
+    
+    BASE_IMG_DIR = "/home/valonso/iac18_aasensio_shared/euclid_dr1"
+    VIS_FOLDER = os.path.join(BASE_IMG_DIR, "VIS")
+    NISP_FOLDERS = {
+        'H': os.path.join(BASE_IMG_DIR, "NIR-H"),
+        'J': os.path.join(BASE_IMG_DIR, "NIR-J"),
+        'Y': os.path.join(BASE_IMG_DIR, "NIR-Y"),
+}
+    
     print("Using EuclidDESIdataset (MSc Thesis Version)...")
 
 
@@ -235,7 +242,9 @@ if __name__ == "__main__":
     full_dataset = EuclidDESIDataset(
         metadata_path=METADATA_PATH,
         vis_folder=VIS_FOLDER,
-        nisp_folder=NISP_FOLDER,
+        nisp_folders=NISP_FOLDERS,
+        spectra_folder=SPECTRA_FOLDER,
+        spectra_dirs={"main": "dummy"},
         transform=transforms,
         modality_registry=modality_registry,
         spiral=spiral

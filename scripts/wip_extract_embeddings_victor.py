@@ -1,36 +1,53 @@
 import os
 import torch
 import numpy as np
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
-import matplotlib.pyplot as plt
-
-# Importamos tus módulos (asegúrate de estar en la raíz del proyecto al ejecutar)
-from astropt.model import GPT, GPTConfig, ModalityRegistry, ModalityConfig
+from torchvision import transforms
+from astropt.model import GPT, GPTConfig
 from astropt.wip_euclid_desi_dataloader_victor import EuclidDESIDataset
 
-# --- CONFIGURACIÓN ---
-# Ajusta estas rutas a donde tengas tus datos EN LOCAL
-BASE_DIR_LOCAL = "/Users/victor/TFM/data"  # <-- ¡CAMBIA ESTO!
-CHECKPOINT_PATH = "logs/astropt0100M_multimodal/ckpt.pt" # <-- ¡Y ESTO!
+# Updated paths - using the full dataset path sctructure
+BASE_IMG_DIR = "/home/valonso/iac18_aasensio_shared/euclid_dr1"
+METADATA_PATH = "/home/valonso/iac18_aasensio_shared/euclid_q1_desi_dr1/base_EuclidQ1_DESIDR1_HYBRID.fits"
+VIS_FOLDER = os.path.join(BASE_IMG_DIR, "VIS")
+NISP_FOLDERS = {
+    'H': os.path.join(BASE_IMG_DIR, "NIR-H"),
+    'J': os.path.join(BASE_IMG_DIR, "NIR-J"),
+    'Y': os.path.join(BASE_IMG_DIR, "NIR-Y"),
+}
 
-DEVICE = "mps" if torch.backends.mps.is_available() else "cpu" # Usa 'mps' para Mac M1/M2/M3
-print(f"Usando dispositivo: {DEVICE}")
+SPECTRA_FOLDER = "/home/valonso/iac18_aasensio_shared/euclid_q1_desi_dr1/desi_dr1_training_spectra"
 
-def load_model_from_checkpoint(ckpt_path, device):
-    print(f"Cargando checkpoint desde {ckpt_path}...")
-    checkpoint = torch.load(ckpt_path, map_location=device)
+CHECKPOINT_PATH = "./logs/astropt0100M_multimodal/ckpt.pt"
+OUTPUT_FILE = "../embeddings_hybrid_17k.npz" 
+DEVICE = "cuda"
+
+# Auxiliar function to normalize
+def normalise(x):
+    """This function computes the mean value of all pixels vector of one image"""
     
-    # Recuperar argumentos y configuración
-    model_args = checkpoint["model_args"]
-    config = checkpoint["config"] # Diccionario de configuración original
-    modality_registry = checkpoint["modality_registry"]
+    std, mean = torch.std_mean(x, dim=1, keepdim=True)
+    x_norm = (x - mean) / (std + 1e-8)
+    return x_norm.to(torch.float16)
+
+def collate_skip_none(batch):
+    batch = [b for b in batch if b is not None]
+    if len(batch) == 0: return None
+    return torch.utils.data.dataloader.default_collate(batch)
+
+# Main function
+def extract():
+    print(f"#--- Initializing embedding extraction ---#")
+    print(f"Device: {DEVICE}")
     
-    # Crear una instancia limpia del modelo
-    gptconf = GPTConfig(**model_args)
-    model = GPT(gptconf, modality_registry)
+    # Loading the model
+    print(f"Loading model from {CHECKPOINT_PATH}...")
+    checkpoint = torch.load(CHECKPOINT_PATH, map_location=DEVICE, weights_only=False)
+    config = GPTConfig(**checkpoint["model_args"])
+    model = GPT(config, checkpoint["modality_registry"])
     
-    # Cargar los pesos (limpiando el prefijo '_orig_mod.' si existe por torch.compile)
+    # Cleaning names al weights
     state_dict = checkpoint["model"]
     unwanted_prefix = "_orig_mod."
     for k, v in list(state_dict.items()):
@@ -38,85 +55,65 @@ def load_model_from_checkpoint(ckpt_path, device):
             state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
             
     model.load_state_dict(state_dict)
-    model.to(device)
-    model.eval() # ¡Importante! Modo evaluación (apaga dropout)
-    return model, modality_registry, model_args
+    model.to(DEVICE)
+    model.eval()
 
-def extract_embeddings():
-    # 1. Cargar Modelo
-    model, modality_registry, model_args = load_model_from_checkpoint(CHECKPOINT_PATH, DEVICE)
+    # Creating a dataset
+    print("Setting up the Dataloader...")
+    transform = transforms.Compose([transforms.Lambda(normalise)])
     
-    # 2. Preparar Dataset (Usamos la configuración multimodal)
-    # Reconstruimos las transformaciones necesarias (normalización)
-    from torchvision import transforms
-    def normalise(x):
-        std, mean = torch.std_mean(x, dim=1, keepdim=True)
-        x_norm = (x - mean) / (std + 1e-8)
-        return x_norm.to(torch.float32) # float32 para MPS/CPU
-        
-    tf = transforms.Compose([transforms.Lambda(normalise)])
-    transforms_dict = {"image": tf}
-
-    print("Cargando Dataset...")
-    # Asegúrate de que apuntas al catálogo correcto en tu Mac
     ds = EuclidDESIDataset(
-        metadata_path=os.path.join(BASE_DIR_LOCAL, "base_EuclidQ1_DESIDR1_CLEAN.fits"),
-        vis_folder=os.path.join(BASE_DIR_LOCAL, "VIS"),
-        nisp_folder=os.path.join(BASE_DIR_LOCAL, "NISP"),
-        transform=transforms_dict,
-        modality_registry=modality_registry,
-        spiral=model_args.get('spiral', True) # Recuperamos si era spiral del config
+        metadata_path=METADATA_PATH,
+        vis_folder=VIS_FOLDER,
+        nisp_folders=NISP_FOLDERS,
+        spectra_folder=SPECTRA_FOLDER,
+        spectra_dirs={"main": "dummy"},
+        transform={"images": transform},
+        modality_registry=checkpoint["modality_registry"],
+        spiral=checkpoint["model_args"].get('spiral', True)
     )
     
-    # Cogemos un subconjunto si quieres ir rápido (ej. los primeros 1000)
-    # ds = torch.utils.data.Subset(ds, range(1000)) 
-
-    dl = DataLoader(ds, batch_size=16, shuffle=False, num_workers=0) # num_workers=0 para evitar líos en Mac local
-
-    # 3. Bucle de Extracción
-    print("Extrayendo embeddings...")
+    print(f"Hybrid Dataset loaded with {len(ds)} samples.")
     
-    all_embeddings = {mod: [] for mod in modality_registry.names()}
-    all_targets = [] # Guardamos TARGETID u otra info útil
+    dl = DataLoader(
+        ds, 
+        batch_size=32, 
+        shuffle=False, 
+        num_workers=8, 
+        pin_memory=True,
+    )
     
-    with torch.no_grad():
+    # Extraction
+    print(f"Processing {len(ds)} galaxies...")
+    all_embeddings = {mod: [] for mod in checkpoint["modality_registry"].names()}
+    all_ids = []
+
+    with torch.no_grad(), torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
         for batch in tqdm(dl):
-            # Extraer TARGETIDs para luego pintar (asumiendo que el dataloader devuelve indices)
-            # Nota: Tu dataloader devuelve 'idx', tendríamos que mirar el catálogo para saber el ID real
-            # Por ahora guardamos el índice
-            indices = batch['idx']
+            if batch is None: continue
             
-            # Procesar batch
-            B = EuclidDESIDataset.process_modes(batch, modality_registry, DEVICE)
+            index = batch['targetid']
             
-            # Llamada mágica: get_embeddings
-            # Esto devuelve un diccionario {modality: [batch, seq_len, n_embd]}
-            emb_dict = model.get_embeddings(B["X"], draw_from_centre=True)
+            B_batch = EuclidDESIDataset.process_modes(batch, checkpoint["modality_registry"], DEVICE)
             
-            # Procesar cada modalidad
-            for mod_name, emb_tensor in emb_dict.items():
-                # emb_tensor es [Batch, Tokens, 768]
-                # Hacemos MEAN POOLING para tener un solo vector por galaxia
-                # (Promediamos todos los parches de la imagen/espectro)
-                pooled_emb = emb_tensor.mean(dim=1).cpu().numpy()
-                all_embeddings[mod_name].append(pooled_emb)
+            emb_dict = model.get_embeddings(B_batch["X"], draw_from_centre=True)
             
-            all_targets.extend(indices.numpy())
+            for mod, tensor in emb_dict.items():
+                pooled = tensor.mean(dim=1).float().cpu().numpy()
+                all_embeddings[mod].append(pooled)
+            
+            all_ids.extend(index.numpy())
 
-    # 4. Guardar resultados
-    print("Guardando resultados...")
-    final_arrays = {}
-    for mod_name in all_embeddings:
-        final_arrays[mod_name] = np.concatenate(all_embeddings[mod_name], axis=0)
+    # Saving
+    print("Saving data...")
     
-    final_arrays['indices'] = np.array(all_targets)
+    final_arrays = {k: np.concatenate(v, axis=0) for k, v in all_embeddings.items()}
+    final_arrays['targetid'] = np.array(all_ids)
     
-    save_path = "embeddings_dump.npz"
-    np.savez(save_path, **final_arrays)
-    print(f"¡Hecho! Guardado en {save_path}")
-    print("Dimensiones:")
-    for k, v in final_arrays.items():
-        print(f"  {k}: {v.shape}")
+    np.savez(OUTPUT_FILE, **final_arrays)
+    
+    print(f"Finished without errors!")
+    print(f"Embedings save into {OUTPUT_FILE}!!")
 
 if __name__ == "__main__":
-    extract_embeddings()
+    extract()
