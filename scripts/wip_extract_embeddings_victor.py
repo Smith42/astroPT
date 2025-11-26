@@ -19,8 +19,8 @@ NISP_FOLDERS = {
 
 SPECTRA_FOLDER = "/home/valonso/iac18_aasensio_shared/euclid_q1_desi_dr1/desi_dr1_training_spectra"
 
-CHECKPOINT_PATH = "./logs/astropt0100M_multimodal/ckpt.pt"
-OUTPUT_FILE = "../embeddings_hybrid_17k.npz" 
+CHECKPOINT_PATH = "./logs/astropt0100M_multimodal_17K/ckpt.pt"
+OUTPUT_FILE = "./logs/astropt0100M_multimodal_17K/embeddings_hybrid_17k_Train.npz" 
 DEVICE = "cuda"
 
 # Auxiliar function to normalize
