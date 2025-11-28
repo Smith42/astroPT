@@ -6,26 +6,28 @@ from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
 
 from astropt.model import GPT, GPTConfig
-from astropt.wip_euclid_desi_dataloader_victor import EuclidDESIDataset
+from astropt.wip_euclid_desi_dataloader_victor_40K import EuclidDESIDataset
 
 BASE_DIR = "/home/valonso/iac18_aasensio_shared/euclid_q1_desi_dr1"
-BASE_IMG_DIR = "/home/valonso/iac18_aasensio_shared/euclid_dr1"
+METADATA_PATH = os.path.join(BASE_DIR, "base_EuclidQ1_DESIDR1_TRAIN.fits")
+SPECTRA_FOLDER = os.path.join(BASE_DIR, "desi_dr1_training_spectra")
 
-METADATA_PATH = os.path.join(BASE_DIR, "base_EuclidQ1_DESIDR1_HYBRID.fits")
-VIS_FOLDER = os.path.join(BASE_IMG_DIR, "VIS")
-NISP_FOLDERS = {
-    'H': os.path.join(BASE_IMG_DIR, "NIR-H"),
-    'J': os.path.join(BASE_IMG_DIR, "NIR-J"),
-    'Y': os.path.join(BASE_IMG_DIR, "NIR-Y"),
-}
+VIS_FOLDER = os.path.join(BASE_DIR, "VIS")
+NISP_FOLDER = os.path.join(BASE_DIR, "NISP")
+#VIS_FOLDER = os.path.join(BASE_IMG_DIR, "VIS")
+#NISP_FOLDER = {
+#    'H': os.path.join(BASE_IMG_DIR, "NIR-H"),
+#    'J': os.path.join(BASE_IMG_DIR, "NIR-J"),
+#    'Y': os.path.join(BASE_IMG_DIR, "NIR-Y"),
+#}
 
-SPECTRA_FOLDER = "/home/valonso/iac18_aasensio_shared/euclid_q1_desi_dr1/desi_dr1_training_spectra"
+CHECKPOINT_PATH = "./logs/astropt0100M_multimodal_40K_T2/ckpt.pt"
+OUTPUT_DIR = "./logs/astropt0100M_multimodal_40K_T2"
+DEVICE = "cuda"
 
-CHECKPOINT_PATH = "./logs/astropt0100M_multimodal_17K/ckpt.pt"
-OUTPUT_DIR = "./logs/astropt0100M_multimodal_17K"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-DEVICE = "cuda"
+
 
 def normalise(x):
     std, mean = torch.std_mean(x, dim=1, keepdim=True)
@@ -54,7 +56,8 @@ def main():
     full_ds = EuclidDESIDataset(
         metadata_path=METADATA_PATH,
         vis_folder=VIS_FOLDER,
-        nisp_folders=NISP_FOLDERS,
+        #nisp_folders=NISP_FOLDERS,
+        nisp_folder=NISP_FOLDER,
         spectra_folder=SPECTRA_FOLDER,
         spectra_dirs={"dummy": "active"}, 
         transform={"images": transform},
@@ -85,21 +88,22 @@ def main():
         P_spectra = P["spectra"].float().cpu().numpy()
         
         target_ids = batch['targetid'].numpy()
-
+        
     for i in range(len(target_ids)):
         tid = target_ids[i]
+        
         y_seq = np.concatenate(Y_spectra[i])
         p_seq = np.concatenate(P_spectra[i])
         
         plt.figure(figsize=(30, 6))
         
-        plt.plot(y_seq, label='Real (DESI)', color='black', alpha=0.5, linewidth=0.5)
+        plt.plot(y_seq, label='Real (DESI)', color='black', alpha=0.5, linewidth=0.75)
         
         plt.plot(p_seq, label='Predicted (AstroPT)', color='red', linewidth=1)
         
         plt.title(f"Spectra simulation - TARGETID: {tid}")
         plt.xlabel("Tokens (Wavelength index)")
-        plt.xlim(left=0,right=2500)
+        #plt.xlim(left=0,right=2500)
         plt.ylabel("Flux (Normalized)")
         plt.legend()
         plt.grid(True, alpha=0.3)

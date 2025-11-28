@@ -117,7 +117,7 @@ if __name__ == "__main__":
             input_size=10,
             patch_size=10, #256,
             pos_input_size=10,
-            loss_weight=1.0,
+            loss_weight=5.0,
             embed_pos=False,
         ),
     ]
@@ -149,8 +149,8 @@ if __name__ == "__main__":
     device = "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
     dtype = "bfloat16"  # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
     compile = True  # use PyTorch 2.0 to compile the model to be faster
-    log_via_wandb = True
-    wandb_project = "AstroPT TFM"
+    log_via_wandb = False
+    wandb_project = None
     # -----------------------------------------------------------------------------
     config_keys = [
         k
@@ -192,7 +192,7 @@ if __name__ == "__main__":
     )
     if master_process:
         if log_via_wandb:
-            print("wandb detected, gonna log to that")
+            print("wandb detected, gonna log to that")            
         if log_emissions:
             print("codecarbon detected, will log emissions")
         print(f"tokens per iteration will be: {tokens_per_iter:,}")
@@ -335,15 +335,36 @@ if __name__ == "__main__":
     # this is here so we can get the number of params from model()
     if log_via_wandb and master_process:
         if wandb_project is None:
-            wandb.init(
-                project=f"AstroPT-{model.get_num_params() / 1e6:06.1f}M",
-                config=config,
-            )
-        else:
+            wandb_project = f"TFM: AstroPT-{model.get_num_params() / 1e6:06.1f}M"
+        
+        try:
+            print("Trying to connect with wandb (Online mode)...")
             wandb.init(
                 project=wandb_project,
                 config=config,
+                settings=wandb.Settings(init_timeout=300)
             )
+            print('Susccesfully online conexion with wandb')
+            
+        except:
+            print('Error while conecting with wandb\nChanging to offline mode')
+            
+            try:
+            
+                if wandb.run is not None:
+                    wandb.finish()
+                    wandb.init(
+                        project=wandb_project,
+                        config=config,
+                        mode="offline"
+                    )
+                    
+            except Exception as e_offline:
+                print(f'Fatal error while initializating wandb: {e_offline}')
+                print('wand unabled')
+                log_via_wandb = False
+
+
     # write config and important information to log file
     with open(f"{out_dir}/hparams.txt", "w") as fi:
         fi.write(f"AstroPT-{model.get_num_params() / 1e6:06.1f}M\n")

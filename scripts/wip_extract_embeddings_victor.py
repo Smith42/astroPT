@@ -5,22 +5,25 @@ from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 from torchvision import transforms
 from astropt.model import GPT, GPTConfig
-from astropt.wip_euclid_desi_dataloader_victor import EuclidDESIDataset
+from astropt.wip_euclid_desi_dataloader_victor_40K import EuclidDESIDataset
 
 # Updated paths - using the full dataset path sctructure
-BASE_IMG_DIR = "/home/valonso/iac18_aasensio_shared/euclid_dr1"
-METADATA_PATH = "/home/valonso/iac18_aasensio_shared/euclid_q1_desi_dr1/base_EuclidQ1_DESIDR1_HYBRID.fits"
-VIS_FOLDER = os.path.join(BASE_IMG_DIR, "VIS")
-NISP_FOLDERS = {
-    'H': os.path.join(BASE_IMG_DIR, "NIR-H"),
-    'J': os.path.join(BASE_IMG_DIR, "NIR-J"),
-    'Y': os.path.join(BASE_IMG_DIR, "NIR-Y"),
-}
+BASE_DIR = "/home/valonso/iac18_aasensio_shared/euclid_q1_desi_dr1"
+METADATA_PATH = os.path.join(BASE_DIR, "base_EuclidQ1_DESIDR1_TRAIN.fits")
+SPECTRA_FOLDER = os.path.join(BASE_DIR, "desi_dr1_training_spectra")
 
-SPECTRA_FOLDER = "/home/valonso/iac18_aasensio_shared/euclid_q1_desi_dr1/desi_dr1_training_spectra"
+VIS_FOLDER = os.path.join(BASE_DIR, "VIS")
+NISP_FOLDER = os.path.join(BASE_DIR, "NISP")
+#VIS_FOLDER = os.path.join(BASE_IMG_DIR, "VIS")
+#NISP_FOLDER = {
+#    'H': os.path.join(BASE_IMG_DIR, "NIR-H"),
+#    'J': os.path.join(BASE_IMG_DIR, "NIR-J"),
+#    'Y': os.path.join(BASE_IMG_DIR, "NIR-Y"),
+#}
 
-CHECKPOINT_PATH = "./logs/astropt0100M_multimodal_17K/ckpt.pt"
-OUTPUT_FILE = "./logs/astropt0100M_multimodal_17K/embeddings_hybrid_17k_Train.npz" 
+
+CHECKPOINT_PATH = "./logs/astropt0100M_multimodal_40K_T2/ckpt.pt"
+OUTPUT_FILE = "./logs/astropt0100M_multimodal_40K_T2/astropt0100M_multimodal_40K_T2.npz" 
 DEVICE = "cuda"
 
 # Auxiliar function to normalize
@@ -65,7 +68,8 @@ def extract():
     ds = EuclidDESIDataset(
         metadata_path=METADATA_PATH,
         vis_folder=VIS_FOLDER,
-        nisp_folders=NISP_FOLDERS,
+        #nisp_folders=NISP_FOLDERS,
+        nisp_folder=NISP_FOLDER,
         spectra_folder=SPECTRA_FOLDER,
         spectra_dirs={"main": "dummy"},
         transform={"images": transform},

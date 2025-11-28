@@ -1,64 +1,63 @@
 import os
-from astropy.io import fits
-from astropy.table import Table
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.patches import Circle
-import scipy.ndimage
+from astropy.table import Table
 import logging
-
-import desispec.io
-from desispec import coaddition
 
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, IterableDataset # add as in docs
 
+from Datasets import load_from_disk
+
 import einops
-from torch.utils.data import Dataset
 
-
-def find_matching_indices(targets, reference_ids):
-    """Return indices of `targets` in `reference_ids`."""
-    id_to_index = {tid: i for i, tid in enumerate(reference_ids)}
-    return np.array([id_to_index[tid] for tid in targets])
+from typing import Optional, Dict, Any
 
 class EuclidDESIDataset(Dataset):
-    def __init__(self, 
-                 metadata_path, 
-                 vis_folder, 
-                 nisp_folder, 
-                 spectra_folder,
-                 spectra_dirs=None,
-                 healpix_nside=64,
-                 transform={}, 
-                 stochastic=True,
-                 spiral=False, 
-                 modality_registry=None
-        ):
+    def __init__(
+        self, 
+        metadata_path: str,
+        vis_folder: str,
+        nisp_folders: Dict[str, str],     
+        spectra_folder: str,
+        modality_registry: Any,           
+        transform: Dict = {},             
+        spiral: bool = False
+    ):
         """
+        Dataset para cargar imágenes Euclid y espectros DESI.
+        
         Args:
-            metadata_path (str): Path to base_EuclidQ1_DESIDR1.fits file.
-            vis_folder (str): Path to folder with VIS images.
-            nisp_folder (str): Path to folder with NISP images (H, J, Y).
-            healpix_nside (int): NSIDE for HEALPix structure (informational only).
+            metadata_path: Ruta al catálogo FITS (.fits).
+            vis_folder: Ruta a la carpeta de imágenes VIS.
+            nisp_folders: Diccionario con rutas {'H': path, 'J': path, 'Y': path}.
+            spectra_folder: Ruta a la carpeta de espectros procesados.
+            modality_registry: Objeto Registry para saber config de parches y modalidades activas.
+            transform: Diccionario de transformaciones por modalidad.
+            spiral: Si True, aplica tokenización en espiral.
         """
-        self.meta = Table.read(metadata_path)
+        
+        # 1. Loading metadata
+        self.dataset = load_from_disk(arrow_folder_path)
+        
+        # 2. Paths
         self.vis_folder = vis_folder
-        self.nisp_folder = nisp_folder
+        self.nisp_folders = nisp_folders
         self.spectra_folder = spectra_folder
-        self.spectra_dirs = spectra_dirs
         
-        self.healpix_nside = healpix_nside
-        
+        # 3. Configuration
         self.transform = transform
-        self.stochastic = stochastic
         self.spiral = spiral
         self.modality_registry = modality_registry
-        
 
     def __len__(self):
         return len(self.meta)
+    
+    @staticmethod
+    def _find_matching_indices(targets, reference_ids):
+        """Return indices of `targets` in `reference_ids`."""
+        id_to_index = {tid: i for i, tid in enumerate(reference_ids)}
+        return np.array([id_to_index[tid] for tid in targets])
         
     @staticmethod
     def _spiral(n):
@@ -234,7 +233,7 @@ class EuclidDESIDataset(Dataset):
             selected = spectra.select(targets=[targetid])
             combined = coaddition.coadd_cameras(selected)
 
-            reorder_idx = find_matching_indices([targetid], combined.target_ids())
+            reorder_idx = self._find_matching_indices([targetid], combined.target_ids())
 
             wave = combined.wave["brz"].astype(np.float32)
             flux = combined.flux["brz"][reorder_idx].astype(np.float32)[0]
