@@ -76,7 +76,7 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a 100M parameter model on galaxy imagery and spectra
     # look at `config/astropt*.py` for a prod run example
-    out_dir = "logs/astropt0100M_multimodal_40K_T2"
+    out_dir = "logs/astropt0100M_multimodal_40K_T3"
     eval_interval = 1000
     log_interval = 100
     checkpoint_interval = 5000
