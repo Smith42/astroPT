@@ -14,20 +14,12 @@ SPECTRA_FOLDER = os.path.join(BASE_DIR, "desi_dr1_training_spectra")
 
 VIS_FOLDER = os.path.join(BASE_DIR, "VIS")
 NISP_FOLDER = os.path.join(BASE_DIR, "NISP")
-#VIS_FOLDER = os.path.join(BASE_IMG_DIR, "VIS")
-#NISP_FOLDER = {
-#    'H': os.path.join(BASE_IMG_DIR, "NIR-H"),
-#    'J': os.path.join(BASE_IMG_DIR, "NIR-J"),
-#    'Y': os.path.join(BASE_IMG_DIR, "NIR-Y"),
-#}
 
 CHECKPOINT_PATH = "./logs/astropt0100M_multimodal_40K_T2/ckpt.pt"
 OUTPUT_DIR = "./logs/astropt0100M_multimodal_40K_T2"
 DEVICE = "cuda"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-
 
 def normalise(x):
     std, mean = torch.std_mean(x, dim=1, keepdim=True)
@@ -56,7 +48,6 @@ def main():
     full_ds = EuclidDESIDataset(
         metadata_path=METADATA_PATH,
         vis_folder=VIS_FOLDER,
-        #nisp_folders=NISP_FOLDERS,
         nisp_folder=NISP_FOLDER,
         spectra_folder=SPECTRA_FOLDER,
         spectra_dirs={"dummy": "active"}, 
@@ -65,7 +56,6 @@ def main():
         spiral=checkpoint["model_args"].get('spiral', True)
     )
     
-
     generator = torch.Generator().manual_seed(61)
     total_size = len(full_ds)
     train_size = int(0.8 * total_size)
@@ -74,9 +64,9 @@ def main():
     
     _, vds, _ = random_split(full_ds, [train_size, val_size, test_size], generator=generator)
     
-    vdl = DataLoader(vds, batch_size=5, shuffle=True, num_workers=8, pin_memory=True)
+    vdl = DataLoader(vds, batch_size=16, shuffle=True, num_workers=8, pin_memory=True)
     
-    print("--- Creting plots ---")
+    print("--- Creating plots ---")
     batch = next(iter(vdl))
     
     B = EuclidDESIDataset.process_modes(batch, checkpoint["modality_registry"], DEVICE)
@@ -88,28 +78,34 @@ def main():
         P_spectra = P["spectra"].float().cpu().numpy()
         
         target_ids = batch['targetid'].numpy()
+        indices = batch['idx'].numpy() # Recuperamos los índices originales del catálogo
         
     for i in range(len(target_ids)):
         tid = target_ids[i]
+        idx = indices[i]
+        
+        try:
+            tz = full_ds.meta[idx]['Z']
+        except Exception:
+            tz = -1.0 # Fallback por si acaso
         
         y_seq = np.concatenate(Y_spectra[i])
         p_seq = np.concatenate(P_spectra[i])
         
-        plt.figure(figsize=(30, 6))
+        plt.figure(figsize=(30, 15))
         
         plt.plot(y_seq, label='Real (DESI)', color='black', alpha=0.5, linewidth=0.75)
-        
         plt.plot(p_seq, label='Predicted (AstroPT)', color='red', linewidth=1)
         
-        plt.title(f"Spectra simulation - TARGETID: {tid}")
+        plt.title(f"Spectra simulation - TARGETID: {tid} - Z: {tz:.4f}")
+        
         plt.xlabel("Tokens (Wavelength index)")
-        #plt.xlim(left=0,right=2500)
         plt.ylabel("Flux (Normalized)")
         plt.legend()
         plt.grid(True, alpha=0.3)
         
         save_path = os.path.join(OUTPUT_DIR, f"spec_{tid}.png")
-        plt.savefig(save_path, dpi=300, bbox_inches='tight') # Alta resolución
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close()
         print(f"Saved: {save_path}")
 
