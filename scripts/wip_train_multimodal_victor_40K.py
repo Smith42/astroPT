@@ -218,7 +218,8 @@ if __name__ == "__main__":
     )
 
     # dataset init
-    transforms = {"image": data_transforms()}
+    transforms = {"image": data_transforms(),
+                  "spectra": data_transforms()}
     # training dataset and dataloader
 
     BASE_DIR = "/home/valonso/iac18_aasensio_shared/euclid_q1_desi_dr1"
@@ -476,7 +477,7 @@ if __name__ == "__main__":
                     Yim = torch.cat((zero_block, Yim), dim=1)
                     
                     if spiral:
-                        Yim = torch.stack([full_dataset.antispiralise(yy) for yy in Yim])
+                        Yim = torch.stack([full_dataset.antispiralise_image(yy) for yy in Yim])
                         
                     im_patch = modality_registry.get_config("images").patch_size
                     Yim = einops.rearrange(
@@ -490,7 +491,7 @@ if __name__ == "__main__":
                     Pim = torch.cat((zero_block, P["images"]), dim=1)
                     
                     if spiral:
-                        Pim = torch.stack([full_dataset.antispiralise(pp) for pp in Pim])
+                        Pim = torch.stack([full_dataset.antispiralise_image(pp) for pp in Pim])
                         
                     Pim = einops.rearrange(
                         Pim,
@@ -553,7 +554,7 @@ if __name__ == "__main__":
     if master_process:
         print("starting training...")
     B = full_dataset.process_modes(
-        next(tdl), modality_registry, device
+        next(tdl), modality_registry, device, True
     )  # fetch the very first batch
     t0 = time.time()
     dts = []
@@ -676,7 +677,7 @@ if __name__ == "__main__":
                 
                 # immediately async prefetch next batch while model is doing the forward pass on the GPU
                 B = full_dataset.process_modes(
-                next(tdl), modality_registry, device
+                next(tdl), modality_registry, device, True
                 )  # fetch the very first batch
                 
                 # backward pass, with gradient scaling if training in fp16
@@ -693,7 +694,7 @@ if __name__ == "__main__":
                     pin_memory=True,
                 )
             )
-            B = full_dataset.process_modes(next(tdl), modality_registry, device)
+            B = full_dataset.process_modes(next(tdl), modality_registry, device, True)
             
                 
         # clip the gradient

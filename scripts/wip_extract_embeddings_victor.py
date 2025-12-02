@@ -22,8 +22,8 @@ NISP_FOLDER = os.path.join(BASE_DIR, "NISP")
 #}
 
 
-CHECKPOINT_PATH = "./logs/astropt0100M_multimodal_40K_T2/ckpt.pt"
-OUTPUT_FILE = "./logs/astropt0100M_multimodal_40K_T2/astropt0100M_multimodal_40K_T2.npz" 
+CHECKPOINT_PATH = "./logs/astropt0100M_multimodal_40K_T3/ckpt.pt"
+OUTPUT_FILE = "./logs/astropt0100M_multimodal_40K_T3/astropt0100M_multimodal_40K_T3.npz" 
 DEVICE = "cuda"
 
 # Auxiliar function to normalize

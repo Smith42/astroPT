@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, IterableDataset # add as in docs
 
-from Datasets import load_from_disk
+from datasets import load_from_disk
 
 import einops
 
