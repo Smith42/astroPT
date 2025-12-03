@@ -453,224 +453,173 @@ class EuclidDESIDataset(Dataset):
         except Exception as e:
             logging.error(f"Failed to load spectrum {path}: {e}")
             return None
-
-    def plot_entry(self, idx, save_path=None):
-        entry = self.meta[idx]
-        data = self[idx]
-        segmentation_area = entry.get('segmentation_area', None)
-
-        # UV/AGN lines (rest-frame, in Angstrom)
-        main_lines = {
-            "Lyα": 1216,
-            "C IV": 1549,
-            "C III]": 1909,
-            "Mg II": 2798,
-            "[O II]": 3727,
-            "[Ne III]": 3869,
-            "Hδ": 4102,
-            "Hγ": 4341,
-            "Hβ": 4861,
-            "[O III]": 4959,
-            "[O III]": 5007,
-            "[N II]": 6548,
-            "Hα": 6563,
-            "[N II]": 6584,
-            "[S II]": 6717,
-            "[S II]": 6731
-        }
-        redshift = entry.get('Z', 0.0)
-
-        fig = plt.figure(figsize=(14, 6))
-        gs = fig.add_gridspec(2, 5)
-
-        # Spectrum plot
-        ax_spec = fig.add_subplot(gs[:, :2])
-        spec = data["SPECTRUM"]
-        if spec is not None:
-            wave = spec["wavelength"]
-            flux = spec["flux"]
-
-            # Smooth the flux (sigma=2 can be adjusted)
-            smoothed_flux = scipy.ndimage.gaussian_filter1d(flux, sigma=5)
-
-            ax_spec.plot(wave, smoothed_flux, label="Smoothed Spectrum", color='black')
-            ax_spec.set_xlabel("Observed Wavelength [Å]")
-            ax_spec.set_ylabel("Flux")
-            ax_spec.set_title(f"Spectrum (TARGETID={data['TARGETID']}, z={redshift:.3f})")
-
-            # Mark main UV lines at observed positions
-            for name, rest_wave in main_lines.items():
-                obs_wave = rest_wave * (1 + redshift)
-                # Only mark if within the observed wavelength range
-                if wave.min() < obs_wave < wave.max():
-                    ax_spec.axvline(obs_wave, color='red', linestyle='--', alpha=0.7)
-                    ax_spec.text(obs_wave, ax_spec.get_ylim()[1]*0.9, name, rotation=90, color='red', va='top', ha='center', fontsize=8)
-            # Set axis limits to observed spectrum range
-            ax_spec.set_xlim(wave.min(), wave.max())
-        else:
-            ax_spec.text(0.5, 0.5, "No spectrum", ha='center', va='center', transform=ax_spec.transAxes)
-
-        # VIS cutout
-        ax_vis = fig.add_subplot(gs[0, 2])
-        vis_img = data["VIS"]
-        if vis_img is not None:
-            ax_vis.imshow(vis_img, cmap='gray', origin='lower')
-            ax_vis.set_title("VIS")
-            ax_vis.axis('off')
-            if segmentation_area is not None:
-                radius = np.sqrt(segmentation_area / np.pi) + 10  # Make circle bigger
-                h, w = vis_img.shape
-                circ = Circle((w/2, h/2), radius, edgecolor='lime', facecolor='none', lw=2, alpha=0.8)
-                ax_vis.add_patch(circ)
-        else:
-            ax_vis.text(0.5, 0.5, "No VIS", ha='center', va='center', transform=ax_vis.transAxes)
-            ax_vis.axis('off')
-
-        # New composite (top-center, gs[0,3]): Y-J-H RGB (R=H, G=J, B=Y)
-        ax_comp_rgb = fig.add_subplot(gs[0, 3])
-        composite_rgb = make_nisp_rgb_composite(data.get("NISP", {}), band_order=('H', 'J', 'Y'))
-        if composite_rgb is not None:
-            ax_comp_rgb.imshow(composite_rgb, origin='lower')
-            ax_comp_rgb.set_title("NISP RGB (R=H, G=J, B=Y)")
-            ax_comp_rgb.axis('off')
-            if segmentation_area is not None:
-                h, w = composite_rgb.shape[:2]
-                radius = np.sqrt(segmentation_area / np.pi) + 10
-                circ = Circle((w/2, h/2), radius, edgecolor='lime', facecolor='none', lw=2, alpha=0.8)
-                ax_comp_rgb.add_patch(circ)
-        else:
-            ax_comp_rgb.text(0.5, 0.5, "No NISP RGB", ha='center', va='center', transform=ax_comp_rgb.transAxes)
-            ax_comp_rgb.axis('off')
-
-        # Composite cutout (top-right, gs[0,4]) -- unchanged behavior
-        ax_comp = fig.add_subplot(gs[0, 4])
-        composite = make_composite_cutout(vis_img, data.get("NISP", {}))
-        if composite is not None:
-            ax_comp.imshow(composite, origin='lower')
-            ax_comp.set_title("Composite (NISP, mean, VIS)")
-            ax_comp.axis('off')
-            if segmentation_area is not None:
-                # segmentation circle only if shapes match (composite made)
-                h, w = composite.shape[:2]
-                radius = np.sqrt(segmentation_area / np.pi) + 10
-                circ = Circle((w/2, h/2), radius, edgecolor='lime', facecolor='none', lw=2, alpha=0.8)
-                ax_comp.add_patch(circ)
-        else:
-            ax_comp.text(0.5, 0.5, "No composite", ha='center', va='center', transform=ax_comp.transAxes)
-            ax_comp.axis('off')
-
-        # NISP cutouts
-        for i, band in enumerate(['Y', 'J', 'H']):
-            ax_nisp = fig.add_subplot(gs[1, 2 + i])
-            nisp_img = data["NISP"].get(band)
-            if nisp_img is not None:
-                ax_nisp.imshow(nisp_img, cmap='gray', origin='lower')
-                ax_nisp.set_title(f"NISP-{band}")
-                ax_nisp.axis('off')
-                if segmentation_area is not None:
-                    radius = np.sqrt(segmentation_area / np.pi) + 10
-                    h, w = nisp_img.shape
-                    circ = Circle((w/2, h/2), radius, edgecolor='lime', facecolor='none', lw=2, alpha=0.8)
-                    ax_nisp.add_patch(circ)
-            else:
-                ax_nisp.text(0.5, 0.5, f"No NISP-{band}", ha='center', va='center', transform=ax_nisp.transAxes)
-                ax_nisp.axis('off')
-
-        # adjust spacing so top composites don't overlap NISP titles
-        fig.subplots_adjust(top=0.92, hspace=0.75, wspace=0.35)
-
-        plt.tight_layout()
-        if save_path:
-            plt.savefig(save_path, dpi=150)
-            print(f"[INFO] Figure saved to {save_path}")
-        plt.show()
+        
     
-    
-    
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve a single sample from the dataset by index.
+
+        Loads the galaxy images (VIS + NISP) (if available), the spectrum (if available),
+        and associated metadata. Handles missing files gracefully by returning None.
+
+        Args:
+            idx (int): Index of the sample in the metadata table.
+
+        Returns:
+            Optional[Dict[str, Any]]: A dictionary containing:
+                - 'images': Tensor (4, H, W) [VIS, H, J, Y]
+                - 'images_positions': Tensor (Spiral order indices)
+                - 'spectra': Tensor (Tokens) (Optional)
+                - 'spectra_positions': Tensor (Wavelengths) (Optional)
+                - 'targetid': int (Unique Object ID)
+                - 'idx': int (Original index)
+            
+            Returns None if there is neither Images nor Spectra to train with.
+        """
+        # Ensure index is a standard Python type for Astropy compatibility
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
+        # Retrieve metadata row and object target ID
         entry = self.meta[idx]
         targetid = entry['TARGETID']
         
-        vis_filename = os.path.basename(str(entry['name']))
-        vis_image_path = os.path.join(self.vis_folder, vis_filename)
+        # Base returning dictionary
+        sample = {
+            "idx": idx,
+            "targetid": int(targetid)
+        }
         
-        vis_image = self._load_image(vis_image_path)
-        if vis_image is None:
+
+        #--- 1. LOAD VIS & NISP IMAGES (OPTIONAL) ---#
+        # Just loading images if there is a VIS folder configured
+        if self.vis_folder is not None:
+            
+            # Determining possible VIS file names based on catalog version
+            if 'VIS_cutout' in entry.colnames: 
+                vis_filename = os.path.basename(str(entry['VIS_cutout']))
+            elif 'name' in entry.colnames: 
+                vis_filename = os.path.basename(str(entry['name']))
+            else: 
+                vis_filename = None
+                logging.error(f"Skipping index {idx}: Catalog missing 'VIS_cutout' or 'name' column.")
+    
+            if vis_filename:
+                # Extracting the name
+                vis_image_path = os.path.join(self.vis_folder, vis_filename)
+                
+                # Loading the image
+                vis_image = self._load_image(vis_image_path)
+
+                # Managing possible errors
+                if vis_image is not None:
+                    
+                    # --- NISP IMAGES LOADING ---
+                    # Store reference shape from VIS image to ensure consistency
+                    ref_shape = vis_image.shape
+                    nisp_images_list = []
+                    
+                    # Iterate over the expected Near-Infrared bands
+                    for band in ['H', 'J', 'Y']:
+                        
+                        # 1. Resolve NISP filename
+                        col_name = f"NIR-{band}_cutout"
+                        
+                        if col_name in entry.colnames:
+                            # 250K catalog: explicit column
+                            nisp_filename = os.path.basename(str(entry[col_name]))
+                        else:
+                            # 40K catalog: infer from VIS name
+                            nisp_filename = vis_filename.replace("VIS", f"NIR-{band}")
+                        
+                        # 2. Resolve Path
+                        if isinstance(self.nisp_folder, dict):
+                            # Dictionary config: {'H': path_h, ...}
+                            # Fallback to 'default' key or empty string if band missing
+                            band_folder = self.nisp_folder.get(band, self.nisp_folder.get(f'{band}-band', ''))
+                            nisp_path = os.path.join(band_folder, nisp_filename)
+                        else:
+                            # String config: single folder for all
+                            nisp_path = os.path.join(self.nisp_folder, nisp_filename)
+
+                        # 3. Load image using the optimized internal method
+                        nisp_img = self._load_image(nisp_path)
+                        
+                        # 4. Validation: Check if image exists and matches VIS dimensions
+                        if nisp_img is None or nisp_img.shape != ref_shape:
+                            # If missing/bad, append a black image (zeros) to maintain channel consistency
+                            nisp_images_list.append(np.zeros_like(vis_image)) 
+                            logging.warning(f"Missing/Bad NISP-{band} for target {targetid}. Filling with zeros.")
+                        else:
+                            nisp_images_list.append(nisp_img)
+                    
+                    # --- STACKING IMAGES (OUTSIDE THE LOOP) ---
+                    # Combine VIS + 3 NISP bands into a single 4-channel array
+                    # Result shape: (4, Height, Width)
+                    raw_galaxy = np.stack([vis_image] + nisp_images_list, axis=0)
+                    
+                    # Convert to Tensor (bfloat16 for memory efficiency on A100)
+                    raw_galaxy = torch.from_numpy(raw_galaxy).to(torch.bfloat16)
+
+                    # Process image (Patching + Spiralisation)
+                    patch_galaxy = self.process_image(raw_galaxy)
+                    
+                    # Update return dictionary
+                    sample["images"] = patch_galaxy
+                    sample["images_positions"] = torch.arange(0, len(patch_galaxy), dtype=torch.long)
+                    
+                else:
+                    logging.warning(f"VIS image not found or corrupt: {vis_image_path} (TargetID: {targetid}). Skipping.")
+
+        #--- 2. LOAD SPECTRA (OPTIONAL) ---#
+        # Using spectra as optional for training the model
+        if self.spectra_folder is not None:
+            
+            # 1. Define spectrum filename
+            if 'SPEC_PATH' in entry.colnames:
+                # Old catalog (40K): Use explicit path from column
+                spec_filename = os.path.basename(str(entry['SPEC_PATH']))
+            else:
+                # New catalog (250K): Construct filename using TARGETID
+                spec_filename = f"TARGETID_{targetid}.fits"
+            
+            spectrum_path = os.path.join(self.spectra_folder, spec_filename)
+
+            # 2. Load spectrum using optimized internal method
+            spec_data = self._load_spectrum(spectrum_path)
+            
+            # 3. Process and add to sample if loaded successfully
+            if spec_data is not None:
+                raw_flux = torch.from_numpy(spec_data['flux']).to(torch.bfloat16)
+                
+                # Normalize wavelength (Typical DESI Optical Range scaled to 0-1)
+                raw_wave = torch.from_numpy(spec_data['wavelength']).to(torch.bfloat16)
+                raw_wave = (raw_wave - 3000.0) / (10000.0 - 3000.0)
+
+                # Apply padding and patching
+                patch_spectra, patch_wl = self.process_spectra(raw_flux, raw_wave)
+                
+                # Safety checks (NaNs)
+                if torch.isnan(patch_spectra).any():
+                    # Raising error here to debug training data issues early
+                    raise ValueError(f"NaNs found in spectrum {targetid}")
+
+                # Add to output dictionary
+                sample["spectra"] = patch_spectra
+                sample["spectra_positions"] = patch_wl
+            
+            else:
+                # If spectrum loading fails, warn and raise error (as requested)
+                logging.warning(f"Spectrum missing: {spectrum_path}")
+                raise FileNotFoundError(f"Spectrum missing: {spectrum_path}")
+
+
+        #--- 3. FINAL VALIDATION ---#
+        # If neither images nor spectra were loaded successfully, return None to skip sample
+        if "images" not in sample and "spectra" not in sample:
             return None
 
-        ref_shape = vis_image.shape
-        nisp_images_list = []
-        for band in ['H', 'J', 'Y']:
-            nisp_filename = vis_filename.replace("VIS", f"NIR-{band}")
-            
-            nisp_path = os.path.join(self.nisp_folder, nisp_filename)
-            nisp_img = self._load_image(nisp_path)
-            
-            if nisp_img is None or nisp_img.shape != ref_shape:
-                nisp_images_list.append(np.zeros_like(vis_image)) 
-            else:
-                nisp_images_list.append(nisp_img)
-
-        raw_galaxy = np.stack([vis_image] + nisp_images_list, axis=0).astype(np.float32)
-        raw_galaxy = torch.tensor(raw_galaxy).to(torch.bfloat16)
-
-        if self.spectra_dirs is None:       
-            patch_galaxy = self.process_image(raw_galaxy)
-            return {
-                "images": patch_galaxy,
-                "images_positions": torch.arange(0, len(patch_galaxy), dtype=torch.long),
-                "idx": idx,
-                "targetid": targetid
-            }
-
-        else:
-            # Loading spectrum as Gosia's dataloader
-            #spectrum_dict = self._load_desi_spectrum(healpix_id, targetid, survey, program)
-            #if spectrum_dict is None:
-            #    raise FileNotFoundError(f"Spectrum for TARGETID {targetid} (idx {idx}) not found. Skipping.")
-            
-            # Loading preprocces spectra
-            original_path = entry['SPEC_PATH']
-            spectrum_filename = os.path.basename(original_path)
-            spectrum_path = os.path.join(self.spectra_folder, spectrum_filename)   
-
-            try:
-                with fits.open(spectrum_path) as hdul:
-                    data = hdul[1].data 
-                    wave = data['WAVELENGTH'].astype(np.float32)
-                    flux = data['FLUX'].astype(np.float32)
-            except Exception as e:
-                raise FileNotFoundError(f"[ERROR] Unable to read spectra: {spectrum_path}. Error: {e}")
-            
-            # Converting spectrum to tensor
-            raw_spectra = torch.tensor(flux).to(torch.bfloat16)
-            wavelength = torch.tensor(wave).to(torch.bfloat16)
-            
-            # Normalizing wavelength
-            wavelength = (wavelength - 3000) / (10000 - 3000) # Normalizar
-
-            # Patching the galaxy
-            patch_galaxy = self.process_image(raw_galaxy)
-            patch_spectra, patch_wl = self.process_spectra(raw_spectra, wavelength)
-
-            # Checking incorrect data fot NaNs and torch
-            if torch.isnan(patch_galaxy).any():
-                raise ValueError(f"NaNs found in image (idx {idx}). Skipping.")
-            if torch.isnan(patch_spectra).any() or torch.isnan(patch_wl).any():
-                raise ValueError(f"NaNs found in spectrum (idx {idx}). Skipping.")
-            
-            # Formatting output as expected by AstroPT
-            return {
-                "images": patch_galaxy,
-                "images_positions": torch.arange(0, len(patch_galaxy), dtype=torch.long),
-                "spectra": patch_spectra,
-                "spectra_positions": patch_wl,
-                "idx": idx,
-                "targetid": int(targetid)
-            }
+        return sample
 
 
 def adjust_dynamic_range(flux, q=100, clip=99.85):
