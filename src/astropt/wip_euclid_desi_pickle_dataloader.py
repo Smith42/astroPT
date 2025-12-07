@@ -1,83 +1,121 @@
 """
-This file contains the Euclid images and DESI spectra Dataloader
-for traingin AstroPT trnasformer model.
+Pickle/Arrow Dataloader for AstroPT.
+Handles chunked datasets (lists of dicts) with LRU Caching for high-performance training.
 """
 
+from collections import OrderedDict
 import logging
 import numpy as np
 from numpy.typing import NDArray
 import os
-from typing import Optional, Dict, Any, List, Tuple
+import glob
+import pickle
+import re
+from typing import Optional, Dict, Any, List, Tuple, OrderedDict
 
-from astropy.io import fits
-from astropy.table import Table
 
 import einops
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 
-
-class EuclidDESIDatasetFits(Dataset): 
+class EuclidDESIDatasetPickle(Dataset): 
     
     def __init__(
         self, 
-        metadata_path: str,
-        vis_folder: str,
-        nisp_folder: Dict[str, str],     
-        spectra_folder: str,
-        modality_registry: Any,
+        data_dir: str,
+        split: str = 'train', # 'train', 'test', or 'val'
+        modality_registry: Any = None,
         spiral: bool = False,           
-        stochastic = True,      
         transform: Dict = {},
+        cache_size: int = 4, # Number of .pkl files to keep in RAM (approx 2000 galaxies)
+        samples_per_file: int = 500 # Standard chunk size of your dataset
     ):
         
         """
-        Dataset to loading Euclid Images and DESI spectra
+        Dataloader for Chunked Pickle Files.
         
         Args:
-            metadata_path: Path to crossmatch database .fits file
-            vis_folder: Path to Euclid VIS images
-            nisp_folders: Path dictionary to NISP filters images {'H': path, 'J': path, 'Y': path}.
-            spectra_folder: Path to DESI spectra folder
-            modality_registry: ModalityRegistry object to load the modality configuration
-            spiral: For applying the spiral tokenization
-            stochastic: For applyting an stochastic training
-            transform: Transform method for each modality
+            data_dir: Root directory containing the .pkl files.
+            split: Dataset split ('train', 'val', 'test').
+            modality_registry: Configuration for modalities.
+            spiral: Whether to apply spiral tokenization to images.
+            cache_size: How many batch files to keep in memory to reduce Disk I/O.
+            samples_per_file: Number of samples per .pkl file (usually 500).
         """
-        
-        # 1. Loading metadata
-        self.meta = Table.read(metadata_path)
-        
-        # 2. .fits files paths
-        self.vis_folder = vis_folder
-        self.nisp_folder = nisp_folder
-        self.spectra_folder = spectra_folder
-        
-        # 3. Configuration
+        self.data_dir = data_dir
+        self.split = split
         self.modality_registry = modality_registry
         self.spiral = spiral
-        self.stochastic = stochastic
         self.transform = transform
+        self.cache_size = cache_size
+        self.samples_per_file = samples_per_file
         
+        # 1. Index Files
+        # Looking for files like "batch_train_1.pkl", "batch_train_2.pkl"
+        pattern = os.path.join(data_dir, f"batch_{split}_*.pkl")
+        self.file_paths = glob.glob(pattern)
         
-    def __len__(self) -> int:
-        """Returns the total number of samples in the dataset."""
-        return len(self.meta)
-    
-    
-    @staticmethod
-    def _find_matching_indices(
-        targets: List[int] | NDArray, 
-        reference_ids: List[int] | NDArray
-    ) -> NDArray[np.int64]:
+        # Filter out metadata files ("_info.pkl")
+        self.file_paths = [f for f in self.file_paths if not f.endswith("_info.pkl")]
         
-        """Returns indices of `targets` in `reference_ids`."""
-        id_to_index = {tid: i for i, tid in enumerate(reference_ids)}
+        # Sort numerically (Crucial for deterministic indexing)
+        # Regex extracts '10' from 'batch_train_10.pkl'
+        def extract_number(path):
+            match = re.search(r'batch_\w+_(\d+).pkl', path)
+            return int(match.group(1)) if match else 0
+            
+        self.file_paths.sort(key=extract_number)
         
-        return np.array([id_to_index[tid] for tid in targets])
+        if not self.file_paths:
+            raise FileNotFoundError(f"No .pkl files found in {data_dir} for split '{split}'")
+            
+        logging.info(f"[{split.upper()}] Found {len(self.file_paths)} batch files.")
+        
+        # 2. Calculate Total Length
+        # Assumption: All files have fixed size except maybe the last one.
+        # This is faster than opening all files to count.
+        self.total_len = len(self.file_paths) * samples_per_file
+        
+        # 3. Initialize LRU Cache
+        # Stores loaded file content: {file_index: list_of_dicts}
+        self.cache: OrderedDict[int, List[Dict]] = OrderedDict()
 
+    def __len__(self) -> int:
+        return self.total_len
+    
+    def _get_from_cache(self, file_idx: int) -> Optional[List[Dict]]:
+        """
+        Retrieves a data batch from RAM cache or loads it from disk if missing.
+        Implements Least Recently Used (LRU) eviction policy.
+        """
+        # Hit: Return immediately and move to end (mark as recently used)
+        if file_idx in self.cache:
+            self.cache.move_to_end(file_idx)
+            return self.cache[file_idx]
         
+        # Miss: Load from disk
+        path = self.file_paths[file_idx]
+        try:
+            with open(path, 'rb') as f:
+                data_list = pickle.load(f)
+        except Exception as e:
+            logging.error(f"Failed to load batch {path}: {e}")
+            return None
+
+        # Insert into cache
+        self.cache[file_idx] = data_list
+        
+        # Evict oldest if full
+        if len(self.cache) > self.cache_size:
+            self.cache.popitem(last=False) # pop first item (oldest)
+            
+        return data_list
+
+    # --------------------------------------------------------------
+    # PROCESSING METHODS (Copied from previous robust version)
+    # --------------------------------------------------------------
+    
     @staticmethod
     def _spiral_sorting(n: int) -> NDArray[np.int64]:
         """
@@ -138,8 +176,7 @@ class EuclidDESIDatasetFits(Dataset):
         
         # Returns the vector order
         return result
-    
-    
+
     def spiralise_image(self, 
         image: torch.Tensor | NDArray
     ) -> torch.Tensor | NDArray:
@@ -182,8 +219,7 @@ class EuclidDESIDatasetFits(Dataset):
             return torch.stack(spiraled_patches)
         else:
             return np.stack(spiraled_patches)
-
-
+        
     def antispiralise_image(self, 
         image: torch.Tensor | NDArray
     ) -> torch.Tensor | NDArray:
@@ -214,7 +250,7 @@ class EuclidDESIDatasetFits(Dataset):
         
         # Gather indexing operation
         return image[spiral_indices]
-        
+
     def process_image(self, 
         raw_image: torch.Tensor | NDArray
     ) -> torch.Tensor | NDArray:
@@ -257,7 +293,7 @@ class EuclidDESIDatasetFits(Dataset):
             patch_image = self.spiralise_image(patch_image)
 
         return patch_image
-    
+
     def process_spectra(self, 
         raw_spectra: torch.Tensor, 
         wavelength: torch.Tensor
@@ -390,246 +426,118 @@ class EuclidDESIDatasetFits(Dataset):
 
         return {"X": X, "Y": Y}
 
-    def _load_image(self, 
-        path: str
-    ) -> Optional[NDArray]:
-        """
-        Safely load data from a FITS file.
-
-        This method handles file existence checks and reading errors gracefully,
-        returning None instead of raising an exception to avoid interrupting
-        the data loading process.
-
-        Args:
-            path: Absolute path to the .fits file.
-
-        Returns:
-            A NumPy array containing the data from the primary HDU, 
-            or None if the file is missing or corrupt.
-        """
-        # 1. Check existence to fail fast
-        if not os.path.exists(path):
-            logging.warning(f"Missing file: {path}")
-            return None
-
-        try:
-            # 2. Open with context manager for safety
-            # memmap=False ensures data is read into RAM and file handle is closed immediately
-            with fits.open(path, memmap=False) as hdul:
-                data = hdul[0].data
-                
-            # 3. Ensure we actually got data (some FITS can have empty primary HDUs)
-            if data is None:
-                logging.warning(f"Empty primary HDU in file: {path}")
-                return None
-                
-            return data
-
-        except Exception as e:
-            logging.error(f"Failed to read {path}: {e}")
-            return None
-
-
-    def _load_spectrum(self, 
-        path: str
-    ) -> Optional[Dict[str, NDArray[np.float32]]]:
-        """
-        Load a processed 1D spectrum from a FITS file.
-
-        Expects a FITS binary table in HDU 1 with columns 'WAVELENGTH' and 'FLUX'.
-
-        Args:
-            path: Absolute path to the .fits file.
-
-        Returns:
-            A dictionary with 'wavelength' and 'flux' arrays (float32),
-            or None if loading fails.
-        """
-        if not os.path.exists(path):
-            logging.warning(f"Spectrum file missing: {path}")
-            return None
-
-        try:
-            with fits.open(path, memmap=False) as hdul:
-                # In your processed files, data is in HDU 1 (Table)
-                data = hdul[1].data 
-                wave = data['WAVELENGTH'].astype(np.float32)
-                flux = data['FLUX'].astype(np.float32)
-
-            return {
-                "wavelength": wave,
-                "flux": flux
-            }
-        except Exception as e:
-            logging.error(f"Failed to load spectrum {path}: {e}")
-            return None
-        
-    
+    # --------------------------------------------------------------
+    # CORE LOGIC: __getitem__
+    # --------------------------------------------------------------
     def __getitem__(self, idx: int) -> Optional[Dict[str, Any]]:
-        """
-        Retrieve a single sample from the dataset by index.
-
-        Loads the galaxy images (VIS + NISP) (if available), the spectrum (if available),
-        and associated metadata. Handles missing files gracefully by returning None.
-
-        Args:
-            idx (int): Index of the sample in the metadata table.
-
-        Returns:
-            Optional[Dict[str, Any]]: A dictionary containing:
-                - 'images': Tensor (4, H, W) [VIS, H, J, Y]
-                - 'images_positions': Tensor (Spiral order indices)
-                - 'spectra': Tensor (Tokens) (Optional)
-                - 'spectra_positions': Tensor (Wavelengths) (Optional)
-                - 'targetid': int (Unique Object ID)
-                - 'idx': int (Original index)
-            
-            Returns None if there is neither Images nor Spectra to train with.
-        """
-        # Ensure index is a standard Python type for Astropy compatibility
-        if torch.is_tensor(idx):
-            idx = idx.tolist()
-
-        # Retrieve metadata row and object target ID
-        entry = self.meta[idx]
-        targetid = entry['TARGETID']
         
-        # Base returning dictionary
+        # 1. Resolve File and Local Index
+        if torch.is_tensor(idx): idx = idx.tolist()
+        
+        file_idx = idx // self.samples_per_file
+        local_idx = idx % self.samples_per_file
+        
+        # Safety Check: Index out of bounds
+        if file_idx >= len(self.file_paths):
+            return None
+            
+        # 2. Load Data from Cache (or Disk)
+        batch_data = self._get_from_cache(file_idx)
+        
+        # Safety Check: Empty file or local index out of bounds (last file case)
+        if batch_data is None or local_idx >= len(batch_data):
+            return None 
+            
+        # Get the specific galaxy dictionary
+        entry = batch_data[local_idx]
+        targetid = entry.get('targetid', -1)
+        
+        # --- 3. LOAD IMAGES ---
+        # Keys: 'VIS_image', 'NISP_Y_image', 'NISP_J_image', 'NISP_H_image'
+        vis = entry.get('VIS_image')
+        
+        if vis is None: 
+            # Skip if primary image is missing
+            return None 
+        
+        # Helper to validate NISP shapes against VIS
+        ref_shape = vis.shape
+        def validate_nisp(img):
+            if img is None or img.shape != ref_shape:
+                return np.zeros_like(vis)
+            return img
+            
+        nisp_stack = [
+            validate_nisp(entry.get('NISP_H_image')),
+            validate_nisp(entry.get('NISP_J_image')),
+            validate_nisp(entry.get('NISP_Y_image'))
+        ]
+        
+        # Stack: (4, H, W) -> [VIS, H, J, Y]
+        raw_image = np.stack([vis] + nisp_stack, axis=0).astype(np.float32)
+        raw_image_tensor = torch.from_numpy(raw_image).to(torch.bfloat16)
+        
+        # --- FIX: ROBUST SIZE ENFORCEMENT ---
+        # Aseguramos que la imagen sea 224x224 (o lo que espere el modelo)
+        # Si es más pequeña, rellenamos (Pad). Si es más grande, recortamos (Crop).
+        TARGET_H, TARGET_W = 224, 224 
+        C, H, W = raw_image_tensor.shape
+        
+        if H != TARGET_H or W != TARGET_W:
+            # Calculamos padding necesario
+            pad_h = max(0, TARGET_H - H)
+            pad_w = max(0, TARGET_W - W)
+            
+            # Si necesita relleno, aplicamos padding a derecha y abajo
+            if pad_h > 0 or pad_w > 0:
+                raw_image_tensor = F.pad(raw_image_tensor, (0, pad_w, 0, pad_h))
+            
+            # Si sobra (es más grande), recortamos el centro (o la esquina)
+            # Aquí recortamos la esquina superior izquierda para simplificar y mantener alineación
+            raw_image_tensor = raw_image_tensor[:, :TARGET_H, :TARGET_W]
+
+        # ------------------------------------
+        
+        # Tokenize Image
+        patch_image = self.process_image(raw_image_tensor)
+        
+        # --- 4. LOAD SPECTRA ---
+        # Key: 'spectrum' (Dict with 'flux' and 'wavelength')
+        spec_dict = entry.get('spectrum')
+        patch_spectra = None
+        patch_wl = None
+        
+        if spec_dict is not None and isinstance(spec_dict, dict):
+            raw_flux = spec_dict.get('flux')
+            raw_wave = spec_dict.get('wavelength')
+            
+            if raw_flux is not None and raw_wave is not None:
+                # Convert to Tensor
+                raw_flux = torch.from_numpy(raw_flux.astype(np.float32)).to(torch.bfloat16)
+                raw_wave = torch.from_numpy(raw_wave.astype(np.float32)).to(torch.bfloat16)
+                
+                # Normalize Wavelength (Standard Min-Max 3000-10000A)
+                # This keeps consistency with the previous dataloader scaling
+                raw_wave = (raw_wave - 3000.0) / (10000.0 - 3000.0)
+                
+                # Tokenize Spectra
+                patch_spectra, patch_wl = self.process_spectra(raw_flux, raw_wave)
+        
+        # --- 5. ASSEMBLE SAMPLE ---
         sample = {
+            "images": patch_image,
+            "images_positions": torch.arange(0, len(patch_image), dtype=torch.long),
             "idx": idx,
             "targetid": int(targetid)
         }
         
-
-        #--- 1. LOAD VIS & NISP IMAGES (OPTIONAL) ---#
-        # Just loading images if there is a VIS folder configured
-        if self.vis_folder is not None:
+        # Add spectra if available (multimodal)
+        if patch_spectra is not None:
+            sample["spectra"] = patch_spectra
+            sample["spectra_positions"] = patch_wl
             
-            # Determining possible VIS file names based on catalog version
-            if 'VIS_cutout' in entry.colnames: 
-                vis_filename = os.path.basename(str(entry['VIS_cutout']))
-            elif 'name' in entry.colnames: 
-                vis_filename = os.path.basename(str(entry['name']))
-            else: 
-                vis_filename = None
-                logging.error(f"Skipping index {idx}: Catalog missing 'VIS_cutout' or 'name' column.")
-    
-            if vis_filename:
-                # Extracting the name
-                vis_image_path = os.path.join(self.vis_folder, vis_filename)
-                
-                # Loading the image
-                vis_image = self._load_image(vis_image_path)
-
-                # Managing possible errors
-                if vis_image is not None:
-                    
-                    #--- NISP IMAGES LOADING ---#
-                    # Store reference shape from VIS image to ensure consistency
-                    ref_shape = vis_image.shape
-                    nisp_images_list = []
-                    
-                    # Iterate over the expected Near-Infrared bands
-                    for band in ['H', 'J', 'Y']:
-                        
-                        # 1. Resolve NISP filename
-                        col_name = f"NIR-{band}_cutout"
-                        
-                        if col_name in entry.colnames:
-                            # 250K catalog: explicit column
-                            nisp_filename = os.path.basename(str(entry[col_name]))
-                        else:
-                            # 40K catalog: infer from VIS name
-                            nisp_filename = vis_filename.replace("VIS", f"NIR-{band}")
-                        
-                        # 2. Resolve Path
-                        if isinstance(self.nisp_folder, dict):
-                            # Dictionary config: {'H': path_h, ...}
-                            # Fallback to 'default' key or empty string if band missing
-                            band_folder = self.nisp_folder.get(band, self.nisp_folder.get(f'{band}-band', ''))
-                            nisp_path = os.path.join(band_folder, nisp_filename)
-                        else:
-                            # String config: single folder for all
-                            nisp_path = os.path.join(self.nisp_folder, nisp_filename)
-
-                        # 3. Load image using the optimized internal method
-                        nisp_img = self._load_image(nisp_path)
-                        
-                        # 4. Validation: Check if image exists and matches VIS dimensions
-                        if nisp_img is None or nisp_img.shape != ref_shape:
-                            # If missing/bad, append a black image (zeros) to maintain channel consistency
-                            nisp_images_list.append(np.zeros_like(vis_image)) 
-                            logging.warning(f"Missing/Bad NISP-{band} for target {targetid}. Filling with zeros.")
-                        else:
-                            nisp_images_list.append(nisp_img)
-                    
-                    #--- STACKING IMAGES (OUTSIDE THE LOOP) ---#
-                    # Combine VIS + 3 NISP bands into a single 4-channel array
-                    # Result shape: (4, Height, Width)
-                    raw_galaxy = np.stack([vis_image] + nisp_images_list, axis=0)
-                    
-                    # Convert to Tensor (bfloat16 for memory efficiency on A100)
-                    raw_galaxy = torch.from_numpy(raw_galaxy).to(torch.bfloat16)
-
-                    # Process image (Patching + Spiralisation)
-                    patch_galaxy = self.process_image(raw_galaxy)
-                    
-                    # Update return dictionary
-                    sample["images"] = patch_galaxy
-                    sample["images_positions"] = torch.arange(0, len(patch_galaxy), dtype=torch.long)
-                    
-                else:
-                    logging.warning(f"VIS image not found or corrupt: {vis_image_path} (TargetID: {targetid}). Skipping.")
-
-        #--- 2. LOAD SPECTRA (OPTIONAL) ---#
-        # Using spectra as optional for training the model
-        if self.spectra_folder is not None:
-            
-            # 1. Define spectrum filename
-            if 'SPEC_PATH' in entry.colnames:
-                # Old catalog (40K): Use explicit path from column
-                spec_filename = os.path.basename(str(entry['SPEC_PATH']))
-            else:
-                # New catalog (250K): Construct filename using TARGETID
-                spec_filename = f"TARGETID_{targetid}.fits"
-            
-            spectrum_path = os.path.join(self.spectra_folder, spec_filename)
-
-            # 2. Load spectrum using optimized internal method
-            spec_data = self._load_spectrum(spectrum_path)
-            
-            # 3. Process and add to sample if loaded successfully
-            if spec_data is not None:
-                raw_flux = torch.from_numpy(spec_data['flux']).to(torch.bfloat16)
-                
-                # Normalize wavelength (Typical DESI Optical Range scaled to 0-1)
-                raw_wave = torch.from_numpy(spec_data['wavelength']).to(torch.bfloat16)
-                raw_wave = (raw_wave - 3000.0) / (10000.0 - 3000.0)
-
-                # Apply padding and patching
-                patch_spectra, patch_wl = self.process_spectra(raw_flux, raw_wave)
-                
-                # Safety checks (NaNs)
-                if torch.isnan(patch_spectra).any():
-                    # Raising error here to debug training data issues early
-                    raise ValueError(f"NaNs found in spectrum {targetid}")
-
-                # Add to output dictionary
-                sample["spectra"] = patch_spectra
-                sample["spectra_positions"] = patch_wl
-            
-            else:
-                # If spectrum loading fails, warn and raise error (as requested)
-                logging.warning(f"Spectrum missing: {spectrum_path}")
-                raise FileNotFoundError(f"Spectrum missing: {spectrum_path}")
-
-
-        #--- 3. FINAL VALIDATION ---#
-        # If neither images nor spectra were loaded successfully, return None to skip sample
-        if "images" not in sample and "spectra" not in sample:
+        # Final validation (ensure at least images exist)
+        if "images" not in sample:
             return None
-
+            
         return sample
-
-
-
