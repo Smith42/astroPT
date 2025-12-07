@@ -1,6 +1,6 @@
 """
 This file contains the Euclid images and DESI spectra Dataloader
-for traingin AstroPT trnasformer model
+for traingin AstroPT trnasformer model.
 """
 
 import logging
@@ -514,7 +514,7 @@ class EuclidDESIDataset(Dataset):
                 # Managing possible errors
                 if vis_image is not None:
                     
-                    # --- NISP IMAGES LOADING ---
+                    #--- NISP IMAGES LOADING ---#
                     # Store reference shape from VIS image to ensure consistency
                     ref_shape = vis_image.shape
                     nisp_images_list = []
@@ -553,7 +553,7 @@ class EuclidDESIDataset(Dataset):
                         else:
                             nisp_images_list.append(nisp_img)
                     
-                    # --- STACKING IMAGES (OUTSIDE THE LOOP) ---
+                    #--- STACKING IMAGES (OUTSIDE THE LOOP) ---#
                     # Combine VIS + 3 NISP bands into a single 4-channel array
                     # Result shape: (4, Height, Width)
                     raw_galaxy = np.stack([vis_image] + nisp_images_list, axis=0)
@@ -620,147 +620,6 @@ class EuclidDESIDataset(Dataset):
             return None
 
         return sample
-
-
-def adjust_dynamic_range(flux, q=100, clip=99.85):
-    """Adjust dynamic range using asinh scaling and optional percentile clipping."""
-    im = np.arcsinh(flux * q)
-    if clip < 100:
-        im = np.clip(im, 0, np.percentile(im, clip))
-    return im
-
-
-# new helper to test whether an image is usable
-def is_valid_image(im, min_range=1e-6):
-    """Return False if im is None, has only NaNs, or has negligible dynamic range."""
-    if im is None:
-        return False
-    if not np.isfinite(im).any():
-        return False
-    try:
-        im_min = np.nanmin(im)
-        im_max = np.nanmax(im)
-    except Exception:
-        return False
-    if not np.isfinite(im_min) or not np.isfinite(im_max):
-        return False
-    return (im_max - im_min) > min_range
-
-
-def to_uint8(im, clip_below_zero=True):
-    """Normalize to [0,255] uint8. If image is constant/invalid, return mid-gray."""
-    if im is None:
-        return None
-    if clip_below_zero:
-        im = np.clip(im, 0, None)
-    # handle all-NaN or constant arrays gracefully
-    if not np.isfinite(im).any():
-        # return neutral gray image
-        shape = im.shape
-        return np.full(shape, 128, dtype=np.uint8)
-    im_min = np.nanmin(im)
-    im_max = np.nanmax(im)
-    if not np.isfinite(im_min) or not np.isfinite(im_max) or im_max <= im_min:
-        # constant image -> neutral gray
-        shape = im.shape
-        return np.full(shape, 128, dtype=np.uint8)
-    im = (im - im_min) / (im_max - im_min)
-    return (255 * im).astype(np.uint8)
-
-
-def make_composite_cutout(vis_cutout, nisp_cutouts, vis_q=100, vis_clip=99.85, nisp_q=1, nisp_clip=99.85):
-    """
-    Create a composite RGB cutout from VIS and NISP images.
-
-    - vis_cutout: 2D array or None
-    - nisp_cutouts: dict of band->2D array (e.g. {'Y': arr, 'J': arr, 'H': arr})
-    Returns an HxWx3 uint8 image or None if not enough data / shape mismatch.
-    """
-    logging.debug('Creating composite cutout')
-
-    # require a valid VIS image
-    if not is_valid_image(vis_cutout):
-        logging.debug('VIS cutout missing or invalid, cannot create composite')
-        return None
-
-    # collect available and valid NISP images (filter out empty/constant)
-    raw_available = [img for img in (nisp_cutouts or {}).values() if img is not None]
-    available = [img for img in raw_available if is_valid_image(img)]
-    if len(available) == 0:
-        logging.debug('No valid NISP bands available, cannot create composite')
-        return None
-
-    # ensure shapes match
-    for arr in available:
-        if arr.shape != vis_cutout.shape:
-            logging.debug(f'vis shape {vis_cutout.shape}, nisp shape {arr.shape} - cannot make composite')
-            return None
-
-    # mean of available NISP bands
-    nisp_mean = np.mean(np.stack(available, axis=0), axis=0)
-
-    # adjust dynamic ranges
-    vis_adj = adjust_dynamic_range(vis_cutout, q=vis_q, clip=vis_clip)
-    nisp_adj = adjust_dynamic_range(nisp_mean, q=nisp_q, clip=nisp_clip)
-    mean_flux = np.mean([vis_adj, nisp_adj], axis=0)
-
-    # convert to uint8 (to_uint8 now returns neutral gray for constant/invalid arrays)
-    vis_uint8 = to_uint8(vis_adj)
-    nisp_uint8 = to_uint8(nisp_adj)
-    mean_uint8 = to_uint8(mean_flux)
-
-    im = np.stack([nisp_uint8, mean_uint8, vis_uint8], axis=2)
-    return im
-
-# new helper: build RGB from specified NISP bands (use neutral gray for missing bands)
-def make_nisp_rgb_composite(nisp_cutouts, band_order=('H', 'J', 'Y'), q=1, clip=99.85):
-    """
-    Build RGB image from NISP bands in given order.
-    band_order: tuple/list where first element maps to R, second->G, third->B.
-    Missing bands are substituted with neutral gray. Returns HxWx3 uint8 or None.
-    """
-    logging.debug('Creating NISP RGB composite with bands: %s', band_order)
-    if not nisp_cutouts:
-        logging.debug('No NISP inputs')
-        return None
-
-    # collect band arrays in requested order
-    bands = [nisp_cutouts.get(b) for b in band_order]
-    # require at least one valid band
-    valid_any = any(is_valid_image(b) for b in bands if b is not None)
-    if not valid_any:
-        logging.debug('No valid NISP bands present for RGB composite')
-        return None
-
-    # determine reference shape from first valid band
-    ref = None
-    for b in bands:
-        if b is not None and is_valid_image(b):
-            ref = b.shape
-            break
-    if ref is None:
-        return None
-
-    # ensure shapes of valid bands match ref
-    for b in bands:
-        if b is not None and is_valid_image(b) and b.shape != ref:
-            logging.debug('Shape mismatch among NISP bands; abort RGB composite')
-            return None
-
-    # prepare channels: if band valid -> adjust & convert, else neutral gray
-    channels = []
-    for b in bands:
-        if b is not None and is_valid_image(b):
-            b_adj = adjust_dynamic_range(b, q=q, clip=clip)
-            ch = to_uint8(b_adj)
-        else:
-            ch = np.full(ref, 128, dtype=np.uint8)
-        channels.append(ch)
-
-    # stack as R,G,B where band_order maps to R,G,B
-    rgb = np.stack(channels, axis=2)
-    return rgb
-
 
 
 
