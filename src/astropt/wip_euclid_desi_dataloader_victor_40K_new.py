@@ -254,7 +254,7 @@ class EuclidDESIDataset(Dataset):
             
         # 4. Spiral order
         if self.spiral:
-            patch_image = self.spiralise(patch_image)
+            patch_image = self.spiralise_image(patch_image)
 
         return patch_image
     
@@ -337,11 +337,8 @@ class EuclidDESIDataset(Dataset):
             - "X": Inputs dictionary mapping {modality: tensor}.
             - "Y": Targets dictionary mapping {modality: tensor}.
         """
-        # 1. Determining modality order (e.g. ['images', 'spectra'])
         modes = modality_registry.generate_sequence(shuf=shuf)
 
-        # 2. Moving all tensors tu GPU (Device) at same time
-        # Using dict comprehension
         data_on_device = {
             k: v.to(device, non_blocking=True) if isinstance(v, torch.Tensor) else v 
             for k, v in batch_data.items()
@@ -350,35 +347,35 @@ class EuclidDESIDataset(Dataset):
         X = {}
         Y = {}
         
-        # 3. Creating the X and Y sequences with the correct shift
-        num_modes = len(modes)
-        
-        for i, mode in enumerate(modes):
-            
-            # Cloning originald ata to avoid modifications
+        for mode in modes:
             data = data_on_device[mode]
             pos = data_on_device[f"{mode}_positions"]
             
-            # X logic (input) 
-            # Removing last item if it is the last mode, no predicts nothing
-            if i == num_modes - 1:
-                X[mode] = data[:, :-1]
-                X[f"{mode}_positions"] = pos[:, :-1]
-            else:
-                # If not, we using it full
+            # --- TARGET (Y) ---
+            # Siempre recortamos el primero (t+1)
+            Y[mode] = data[:, 1:]
+            
+            # --- INPUT (X) ---
+            # Lógica basada en el NOMBRE, no en la posición
+            if mode == 'images':
+                # IMÁGENES: El modelo come 1 token interno.
+                # Necesitamos Input Completo.
                 X[mode] = data
                 X[f"{mode}_positions"] = pos
-
-            # Y logic (target)
-            # Removing first item if it is the first mode, nothing predict it
-            if i == 0:
-                Y[mode] = data[:, 1:]
+                
+            elif mode == 'spectra':
+                # ESPECTROS: El modelo conserva longitud.
+                # Necesitamos Input Recortado manualmente (:-1).
+                X[mode] = data[:, :-1]
+                X[f"{mode}_positions"] = pos[:, :-1]
+                
             else:
-                # If not, using it full
-                Y[mode] = data
+                # Fallback seguro para futuras modalidades desconocidas
+                # Asumimos comportamiento estándar (recortar último)
+                X[mode] = data[:, :-1]
+                X[f"{mode}_positions"] = pos[:, :-1]
 
         return {"X": X, "Y": Y}
-
 
     def _load_image(self, 
         path: str

@@ -44,7 +44,7 @@ try:
 except ImportError:
     log_emissions = False
 
-from astropt.wip_euclid_desi_dataloader_victor_40K import EuclidDESIDataset
+from astropt.wip_euclid_desi_dataloader_victor_40K_new import EuclidDESIDataset
 from astropt.model import GPT, GPTConfig, ModalityConfig, ModalityRegistry
 
 
@@ -76,7 +76,7 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a 100M parameter model on galaxy imagery and spectra
     # look at `config/astropt*.py` for a prod run example
-    out_dir = "logs/astropt0100M_multimodal_40K_T3"
+    out_dir = "logs/astropt0100M_multimodal_40K_T4_test"
     eval_interval = 1000
     log_interval = 100
     checkpoint_interval = 5000
@@ -240,10 +240,9 @@ if __name__ == "__main__":
         vis_folder=VIS_FOLDER,
         nisp_folder=NISP_FOLDER,
         spectra_folder=SPECTRA_FOLDER,
-        spectra_dirs={"main": "dummy"},
-        transform=transforms,
         modality_registry=modality_registry,
-        spiral=spiral
+        spiral=spiral,
+        transform=transforms,
     )
 
     # Dataset sizes
