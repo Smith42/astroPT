@@ -44,7 +44,7 @@ try:
 except ImportError:
     log_emissions = False
 
-from astropt.wip_euclid_desi_dataloader_victor_40K_new import EuclidDESIDataset
+from astropt.euclid_desi_fits_dataloader import EuclidDESIDataset
 from astropt.model import GPT, GPTConfig, ModalityConfig, ModalityRegistry
 
 

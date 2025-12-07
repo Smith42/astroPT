@@ -315,30 +315,37 @@ class EuclidDESIDataset(Dataset):
         shuf: bool = False
     ) -> Dict[str, Dict[str, torch.Tensor]]:
         """
-        Prepare the batch for training: move to GPU and split into Inputs (X) and Targets (Y).
+        Prepares the batch for training by moving tensors to GPU and creating Input (X) 
+        and Target (Y) sequences with a Hybrid Autoregressive Shift.
 
-        This function applies the 'Autoregressive Shift':
-        - X (Input): Represents sequence [0, 1, ..., N-1]
-        - Y (Target): Represents sequence [1, 2, ..., N]
-        
-        For multimodal sequences (e.g., Image -> Spectrum), it handles the chaining:
-        - Y of the FIRST modality is shifted forward (skips 1st token).
-        - X of the LAST modality is shifted backward (drops last token).
-        - Middle modalities connect perfectly (End of Mod A predicts Start of Mod B).
+        This method solves the dimension mismatch issue by applying different slicing 
+        strategies based on the modality name, derived from empirical model behavior:
+
+        1. Target (Y): Always represents the 'next token' (t+1).
+           - Logic: Shift forward by 1 (drops the first token).
+           
+        2. Input (X): Depends on how the model processes each modality internally.
+           - 'images': The model internally consumes 1 token (likely during embedding).
+             Strategy: Feed the FULL sequence (N). Output will be N-1, matching Y.
+           - 'spectra': The model preserves the sequence length.
+             Strategy: Feed a TRIMMED sequence (N-1). Output will be N-1, matching Y.
 
         Args:
-            batch_data: Dictionary with raw tensors from the Dataloader.
-            modality_registry: Registry to determine the order of modalities.
-            device: The target device (CPU/CUDA/MPS).
-            shuf: Whether to shuffle the order of modalities (Data Augmentation).
+            batch_data (Dict[str, Any]): Dictionary containing raw tensors from the Dataloader.
+            modality_registry (Any): Object containing the configuration and order of modalities.
+            device (torch.device): The target device (CPU/CUDA) for tensor allocation.
+            shuf (bool, optional): Whether to shuffle the order of modalities (Data Augmentation). 
+                                   Defaults to False.
 
         Returns:
-            A dictionary containing:
-            - "X": Inputs dictionary mapping {modality: tensor}.
-            - "Y": Targets dictionary mapping {modality: tensor}.
+            Dict[str, Dict[str, torch.Tensor]]: A dictionary with two keys:
+                - "X": Inputs dictionary mapping {modality_name: tensor}.
+                - "Y": Targets dictionary mapping {modality_name: tensor}.
         """
+        # 1. Determine the order of modalities (e.g., ['images', 'spectra'])
         modes = modality_registry.generate_sequence(shuf=shuf)
 
+        # 2. Move all data to the target device (GPU) efficiently
         data_on_device = {
             k: v.to(device, non_blocking=True) if isinstance(v, torch.Tensor) else v 
             for k, v in batch_data.items()
@@ -348,30 +355,36 @@ class EuclidDESIDataset(Dataset):
         Y = {}
         
         for mode in modes:
+            # Extract raw data and position tensors for the current modality
             data = data_on_device[mode]
             pos = data_on_device[f"{mode}_positions"]
             
-            # --- TARGET (Y) ---
-            # Siempre recortamos el primero (t+1)
+            #--- TARGET (Y) GENERATION ---#
+            # The goal is always to predict the next step.
+            # We slice from index 1 to the end (removing the first token).
+            # Shape: (Batch, N-1, Dim)
             Y[mode] = data[:, 1:]
             
-            # --- INPUT (X) ---
-            # Lógica basada en el NOMBRE, no en la posición
+            #--- INPUT (X) GENERATION (HYBRID STRATEGY) ---#
             if mode == 'images':
-                # IMÁGENES: El modelo come 1 token interno.
-                # Necesitamos Input Completo.
+                # CASE 1: IMAGES
+                # Empirical observation: Model output is 1 token shorter than input.
+                # Action: Provide FULL sequence (N) so output becomes (N-1).
+                # Matches Target Y (N-1).
                 X[mode] = data
                 X[f"{mode}_positions"] = pos
                 
             elif mode == 'spectra':
-                # ESPECTROS: El modelo conserva longitud.
-                # Necesitamos Input Recortado manualmente (:-1).
+                # CASE 2: SPECTRA
+                # Empirical observation: Model output length equals input length.
+                # Action: Manually TRIM the last token (N-1) so output stays (N-1).
+                # Matches Target Y (N-1).
                 X[mode] = data[:, :-1]
                 X[f"{mode}_positions"] = pos[:, :-1]
                 
             else:
-                # Fallback seguro para futuras modalidades desconocidas
-                # Asumimos comportamiento estándar (recortar último)
+                # Fallback for unknown modalities
+                # Standard autoregressive behavior (Input is t, Target is t+1)
                 X[mode] = data[:, :-1]
                 X[f"{mode}_positions"] = pos[:, :-1]
 
