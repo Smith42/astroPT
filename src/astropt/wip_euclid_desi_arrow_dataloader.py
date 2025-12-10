@@ -1,121 +1,83 @@
 """
-Pickle/Arrow Dataloader for AstroPT.
-Handles chunked datasets (lists of dicts) with LRU Caching for high-performance training.
+This file contains the Euclid images and DESI spectra Dataloader
+for traingin AstroPT transformer model from an Arrow format database.
 """
-
-from collections import OrderedDict
+import einops
+from datasets import load_from_disk, concatenate_datasets
+import glob
 import logging
 import numpy as np
 from numpy.typing import NDArray
 import os
-import glob
-import pickle
-import re
-from typing import Optional, Dict, Any, List, Tuple, OrderedDict
-
-
-import einops
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
+from typing import Optional, Dict, Any, List, Tuple
 
-class EuclidDESIDatasetPickle(Dataset): 
+
+class EuclidDESIDatasetArrow(Dataset): 
     
     def __init__(
         self, 
-        data_dir: str,
-        split: str = 'train', # 'train', 'test', or 'val'
-        modality_registry: Any = None,
+        arrow_folder_root: str,
+        split: str,
+        modality_registry: Any,
         spiral: bool = False,           
+        stochastic = True,      
         transform: Dict = {},
-        cache_size: int = 4, # Number of .pkl files to keep in RAM (approx 2000 galaxies)
-        samples_per_file: int = 500 # Standard chunk size of your dataset
     ):
-        
         """
-        Dataloader for Chunked Pickle Files.
+        Dataset to loading Euclid Images and DESI spectra
         
         Args:
-            data_dir: Root directory containing the .pkl files.
-            split: Dataset split ('train', 'val', 'test').
-            modality_registry: Configuration for modalities.
-            spiral: Whether to apply spiral tokenization to images.
-            cache_size: How many batch files to keep in memory to reduce Disk I/O.
-            samples_per_file: Number of samples per .pkl file (usually 500).
+            arrow_folder_root: Path to the root folder of the arrow dataset
+            split: Indicates the train and test spliting
+            modality_registry: ModalityRegistry object to load the modality configuration
+            spiral: For applying the spiral tokenization
+            stochastic: For applyting an stochastic training
+            transform: Transform method for each modality
         """
-        self.data_dir = data_dir
-        self.split = split
+        
+        # 1. Loading Arrow Dataset
+        arrow_pattern = os.path.join(arrow_folder_root, f"{split}_*")
+        arrow_folders = sorted(glob.glob(arrow_pattern))
+        
+        # Raising an error in case of data not found
+        if not arrow_folders:
+            raise ValueError(f"No Arrow data found at {arrow_pattern}")
+        
+        # Keeping user informed
+        logging.info(f"Loading {len(arrow_folders)} Arrow parts for split '{split}'...")
+        
+        # Creating the dataset with the corresponding split
+        self.ds = concatenate_datasets([load_from_disk(p) for p in arrow_folders])
+        
+        logging.info(f"Dataset loaded. Total samples: {len(self.ds)}")
+        
+        # 2. Configuration
         self.modality_registry = modality_registry
         self.spiral = spiral
+        self.stochastic = stochastic
         self.transform = transform
-        self.cache_size = cache_size
-        self.samples_per_file = samples_per_file
         
-        # 1. Index Files
-        # Looking for files like "batch_train_1.pkl", "batch_train_2.pkl"
-        pattern = os.path.join(data_dir, f"batch_{split}_*.pkl")
-        self.file_paths = glob.glob(pattern)
         
-        # Filter out metadata files ("_info.pkl")
-        self.file_paths = [f for f in self.file_paths if not f.endswith("_info.pkl")]
-        
-        # Sort numerically (Crucial for deterministic indexing)
-        # Regex extracts '10' from 'batch_train_10.pkl'
-        def extract_number(path):
-            match = re.search(r'batch_\w+_(\d+).pkl', path)
-            return int(match.group(1)) if match else 0
-            
-        self.file_paths.sort(key=extract_number)
-        
-        if not self.file_paths:
-            raise FileNotFoundError(f"No .pkl files found in {data_dir} for split '{split}'")
-            
-        logging.info(f"[{split.upper()}] Found {len(self.file_paths)} batch files.")
-        
-        # 2. Calculate Total Length
-        # Assumption: All files have fixed size except maybe the last one.
-        # This is faster than opening all files to count.
-        self.total_len = len(self.file_paths) * samples_per_file
-        
-        # 3. Initialize LRU Cache
-        # Stores loaded file content: {file_index: list_of_dicts}
-        self.cache: OrderedDict[int, List[Dict]] = OrderedDict()
-
     def __len__(self) -> int:
-        return self.total_len
+        """Returns the total number of samples in the dataset."""
+        return len(self.ds)
     
-    def _get_from_cache(self, file_idx: int) -> Optional[List[Dict]]:
-        """
-        Retrieves a data batch from RAM cache or loads it from disk if missing.
-        Implements Least Recently Used (LRU) eviction policy.
-        """
-        # Hit: Return immediately and move to end (mark as recently used)
-        if file_idx in self.cache:
-            self.cache.move_to_end(file_idx)
-            return self.cache[file_idx]
-        
-        # Miss: Load from disk
-        path = self.file_paths[file_idx]
-        try:
-            with open(path, 'rb') as f:
-                data_list = pickle.load(f)
-        except Exception as e:
-            logging.error(f"Failed to load batch {path}: {e}")
-            return None
-
-        # Insert into cache
-        self.cache[file_idx] = data_list
-        
-        # Evict oldest if full
-        if len(self.cache) > self.cache_size:
-            self.cache.popitem(last=False) # pop first item (oldest)
-            
-        return data_list
-
-    # --------------------------------------------------------------
-    # PROCESSING METHODS (Copied from previous robust version)
-    # --------------------------------------------------------------
     
+    @staticmethod
+    def _find_matching_indices(
+        targets: List[int] | NDArray, 
+        reference_ids: List[int] | NDArray
+    ) -> NDArray[np.int64]:
+        
+        """Returns indices of `targets` in `reference_ids`."""
+        id_to_index = {tid: i for i, tid in enumerate(reference_ids)}
+        
+        return np.array([id_to_index[tid] for tid in targets])
+
+        
     @staticmethod
     def _spiral_sorting(n: int) -> NDArray[np.int64]:
         """
@@ -176,7 +138,8 @@ class EuclidDESIDatasetPickle(Dataset):
         
         # Returns the vector order
         return result
-
+    
+    
     def spiralise_image(self, 
         image: torch.Tensor | NDArray
     ) -> torch.Tensor | NDArray:
@@ -219,7 +182,8 @@ class EuclidDESIDatasetPickle(Dataset):
             return torch.stack(spiraled_patches)
         else:
             return np.stack(spiraled_patches)
-        
+
+
     def antispiralise_image(self, 
         image: torch.Tensor | NDArray
     ) -> torch.Tensor | NDArray:
@@ -250,7 +214,7 @@ class EuclidDESIDatasetPickle(Dataset):
         
         # Gather indexing operation
         return image[spiral_indices]
-
+        
     def process_image(self, 
         raw_image: torch.Tensor | NDArray
     ) -> torch.Tensor | NDArray:
@@ -293,7 +257,7 @@ class EuclidDESIDatasetPickle(Dataset):
             patch_image = self.spiralise_image(patch_image)
 
         return patch_image
-
+    
     def process_spectra(self, 
         raw_spectra: torch.Tensor, 
         wavelength: torch.Tensor
@@ -425,119 +389,153 @@ class EuclidDESIDatasetPickle(Dataset):
                 X[f"{mode}_positions"] = pos[:, :-1]
 
         return {"X": X, "Y": Y}
-
-    # --------------------------------------------------------------
-    # CORE LOGIC: __getitem__
-    # --------------------------------------------------------------
+        
+    
     def __getitem__(self, idx: int) -> Optional[Dict[str, Any]]:
-        
-        # 1. Resolve File and Local Index
-        if torch.is_tensor(idx): idx = idx.tolist()
-        
-        file_idx = idx // self.samples_per_file
-        local_idx = idx % self.samples_per_file
-        
-        # Safety Check: Index out of bounds
-        if file_idx >= len(self.file_paths):
-            return None
-            
-        # 2. Load Data from Cache (or Disk)
-        batch_data = self._get_from_cache(file_idx)
-        
-        # Safety Check: Empty file or local index out of bounds (last file case)
-        if batch_data is None or local_idx >= len(batch_data):
-            return None 
-            
-        # Get the specific galaxy dictionary
-        entry = batch_data[local_idx]
-        targetid = entry.get('targetid', -1)
-        
-        # --- 3. LOAD IMAGES ---
-        # Keys: 'VIS_image', 'NISP_Y_image', 'NISP_J_image', 'NISP_H_image'
-        vis = entry.get('VIS_image')
-        
-        if vis is None: 
-            # Skip if primary image is missing
-            return None 
-        
-        # Helper to validate NISP shapes against VIS
-        ref_shape = vis.shape
-        def validate_nisp(img):
-            if img is None or img.shape != ref_shape:
-                return np.zeros_like(vis)
-            return img
-            
-        nisp_stack = [
-            validate_nisp(entry.get('NISP_H_image')),
-            validate_nisp(entry.get('NISP_J_image')),
-            validate_nisp(entry.get('NISP_Y_image'))
-        ]
-        
-        # Stack: (4, H, W) -> [VIS, H, J, Y]
-        raw_image = np.stack([vis] + nisp_stack, axis=0).astype(np.float32)
-        raw_image_tensor = torch.from_numpy(raw_image).to(torch.bfloat16)
-        
-        # --- FIX: ROBUST SIZE ENFORCEMENT ---
-        # Aseguramos que la imagen sea 224x224 (o lo que espere el modelo)
-        # Si es más pequeña, rellenamos (Pad). Si es más grande, recortamos (Crop).
-        TARGET_H, TARGET_W = 224, 224 
-        C, H, W = raw_image_tensor.shape
-        
-        if H != TARGET_H or W != TARGET_W:
-            # Calculamos padding necesario
-            pad_h = max(0, TARGET_H - H)
-            pad_w = max(0, TARGET_W - W)
-            
-            # Si necesita relleno, aplicamos padding a derecha y abajo
-            if pad_h > 0 or pad_w > 0:
-                raw_image_tensor = F.pad(raw_image_tensor, (0, pad_w, 0, pad_h))
-            
-            # Si sobra (es más grande), recortamos el centro (o la esquina)
-            # Aquí recortamos la esquina superior izquierda para simplificar y mantener alineación
-            raw_image_tensor = raw_image_tensor[:, :TARGET_H, :TARGET_W]
+        """
+        Retrieve a single sample from the arrow dataset by index.
 
-        # ------------------------------------
-        
-        # Tokenize Image
-        patch_image = self.process_image(raw_image_tensor)
-        
-        # --- 4. LOAD SPECTRA ---
-        # Key: 'spectrum' (Dict with 'flux' and 'wavelength')
-        spec_dict = entry.get('spectrum')
-        patch_spectra = None
-        patch_wl = None
-        
-        if spec_dict is not None and isinstance(spec_dict, dict):
-            raw_flux = spec_dict.get('flux')
-            raw_wave = spec_dict.get('wavelength')
+        Loads the galaxy images (VIS + NISP), the spectrum,
+        and associated metadata. Handles missing files gracefully by returning None.
+
+        Args:
+            idx (int): Index of the sample in the metadata table.
+
+        Returns:
+            Optional[Dict[str, Any]]: A dictionary containing:
+                - 'images': Tensor (4, H, W) [VIS, H, J, Y]
+                - 'images_positions': Tensor (Spiral order indices)
+                - 'spectra': Tensor (Tokens) (Optional)
+                - 'spectra_positions': Tensor (Wavelengths) (Optional)
+                - 'targetid': int (Unique Object ID)
+                - 'idx': int (Original index)
             
-            if raw_flux is not None and raw_wave is not None:
-                # Convert to Tensor
-                raw_flux = torch.from_numpy(raw_flux.astype(np.float32)).to(torch.bfloat16)
-                raw_wave = torch.from_numpy(raw_wave.astype(np.float32)).to(torch.bfloat16)
-                
-                # Normalize Wavelength (Standard Min-Max 3000-10000A)
-                # This keeps consistency with the previous dataloader scaling
-                raw_wave = (raw_wave - 3000.0) / (10000.0 - 3000.0)
-                
-                # Tokenize Spectra
-                patch_spectra, patch_wl = self.process_spectra(raw_flux, raw_wave)
+            Returns None if there is neither Images nor Spectra to train with.
+        """
+        # Ensure index is a standard Python type for Astropy compatibility
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        #--- 1. ARROW ACCESS ---#
+        try:
+            item = self.ds[idx]
+            targetid = int(item['targetid']) 
+        except Exception as e:
+            logging.error(f"Error reading index {idx} from Arrow: {e}")
+            return None
         
-        # --- 5. ASSEMBLE SAMPLE ---
+        # Base returning dictionary
         sample = {
-            "images": patch_image,
-            "images_positions": torch.arange(0, len(patch_image), dtype=torch.long),
             "idx": idx,
             "targetid": int(targetid)
         }
         
-        # Add spectra if available (multimodal)
-        if patch_spectra is not None:
-            sample["spectra"] = patch_spectra
-            sample["spectra_positions"] = patch_wl
+
+        #--- 2. LOAD VIS & NISP IMAGES ---#
+        try:
+            # Check for existence of VIS images (mandatory)
+            if item['image_vis'] is not None:
+                
+                # Convert values to Tensor objects
+                vis = torch.from_numpy(item['image_vis']).to(torch.bfloat16)
+                
+                # Check for Numerical Stability (NaNs/Infs)
+                if torch.isnan(vis).any() or torch.isinf(vis).any():
+                    raise ValueError("NaNs or Infs detected in VIS image.")
+                
+                # Loading NISP images
+                ref_shape = vis.shape
+                nisp_tensors = []
+                nisp_keys = ['image_nisp_h', 'image_nisp_j', 'image_nisp_y']
+                
+                for key in nisp_keys:
+                    raw_data = item[key]
+                    
+                    if raw_data is None:
+                        # Padding with zeros until fulfill the VIS shape
+                        nisp_tensors.append(torch.zeros(ref_shape, dtype=torch.bfloat16))
+                        continue
+                    
+                    try:
+                        
+                        # Converting to tensor objects
+                        tensor = torch.from_numpy(raw_data).to(torch.bfloat16)
+                        
+                        # Checking possible NaNs or Infs values
+                        if torch.isnan(tensor).any() or torch.isinf(tensor).any():
+                            logging.warning(f"Target {targetid}: NaNs/Infs detected in {key}. Filling with zeros.")
+                            nisp_tensors.append(torch.zeros(ref_shape, dtype=torch.bfloat16))
+                        
+                        # Checking the shape
+                        elif tensor.shape != ref_shape:
+                            logging.warning(f"Target {targetid}: Shape mismatch in {key} {tensor.shape} vs VIS {ref_shape}. Filling zeros.")
+                            nisp_tensors.append(torch.zeros(ref_shape, dtype=torch.bfloat16))
+                        
+                        # Everything ok
+                        else:
+                            nisp_tensors.append(tensor)
+                        
+                    except Exception as e:
+                        logging.error(f"Target {targetid}: Crash loading {key}: {e}. Filling zeros.")
+                        nisp_tensors.append(torch.zeros(ref_shape, dtype=torch.bfloat16)) 
+                
+
+                # Stack and Process
+                raw_galaxy = torch.stack([vis] + nisp_tensors, dim=0)
+                patch_galaxy = self.process_image(raw_galaxy)
+                
+                # adding values to sample dictionary
+                sample["images"] = patch_galaxy
+                sample["images_positions"] = torch.arange(0, len(patch_galaxy), dtype=torch.long)
+
+            else:
+                logging.warning(f"Target {targetid}: VIS image is None in Arrow dataset. Skipping.")
+                pass
+
+        except Exception as e:
+            logging.error(f"Target {targetid}: Error processing images: {e}")
+
+        
+
+        #--- 3. LOAD SPECTRA ---#
+        try:
+            # Only proceed if we have valid flux data
+            if item['spectrum_flux'] is not None and len(item['spectrum_flux']) > 0:
+                
+                # Flux and Wavelength MUST have the same length
+                if len(item['spectrum_flux']) != len(item['spectrum_wave']):
+                    
+                    logging.warning(f"Target {targetid}: Spectrum mismatch (Flux len {len(item['spectrum_flux'])} != Wave len {len(item['spectrum_wave'])}). Skipping spectrum.")
+                    
+                else:
+                    
+                    # Obtaining flux and wavalenght values
+                    raw_flux = torch.from_numpy(item['spectrum_flux']).to(torch.bfloat16)
+                    raw_wave = torch.from_numpy(item['spectrum_wave']).to(torch.bfloat16)
+                    
+                    # Check for NaNs in Spectrum
+                    if torch.isnan(raw_flux).any():
+                        logging.warning(f"Target {targetid}: NaNs in spectrum flux. Skipping spectrum.")
+                        
+                    else:
+                        # Normalize wavelength
+                        raw_wave = (raw_wave - 3000.0) / (10000.0 - 3000.0)
+                        
+                        # Apply padding and patching
+                        patch_spectra, patch_wl = self.process_spectra(raw_flux, raw_wave)
+                        
+                        # Adding values to sample dictionary
+                        sample["spectra"] = patch_spectra
+                        sample["spectra_positions"] = patch_wl
+                        
+        except Exception as e:
+            logging.warning(f"Target {targetid}: Error processing spectrum: {e}")
             
-        # Final validation (ensure at least images exist)
-        if "images" not in sample:
+
+        #--- 4. FINAL VALIDATION ---#
+        # Ensure we are not returning a sample with only metadata
+        if "images" not in sample and "spectra" not in sample:
+            logging.debug(f"Target {targetid}: Sample ended up empty.")
             return None
-            
+        
         return sample
