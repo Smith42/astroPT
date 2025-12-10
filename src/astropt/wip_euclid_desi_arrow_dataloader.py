@@ -46,13 +46,18 @@ class EuclidDESIDatasetArrow(Dataset):
         if not arrow_folders:
             raise ValueError(f"No Arrow data found at {arrow_pattern}")
         
+        print(f"[{split}] Data found in: {len(arrow_folders)} directories")
+        print(f"[{split}] Directories list: {[os.path.basename(f) for f in arrow_folders]}")
+        
         # Keeping user informed
         logging.info(f"Loading {len(arrow_folders)} Arrow parts for split '{split}'...")
         
         # Creating the dataset with the corresponding split
         self.ds = concatenate_datasets([load_from_disk(p) for p in arrow_folders])
+        self.ds = self.ds.with_format("numpy")
         
         logging.info(f"Dataset loaded. Total samples: {len(self.ds)}")
+        print(f"[{split}] Dataset loaded. Total samples: {len(self.ds)}\n")
         
         # 2. Configuration
         self.modality_registry = modality_registry
@@ -437,7 +442,10 @@ class EuclidDESIDatasetArrow(Dataset):
             if item['image_vis'] is not None:
                 
                 # Convert values to Tensor objects
-                vis = torch.from_numpy(item['image_vis']).to(torch.bfloat16)
+                raw_vis = item['image_vis']
+                if isinstance(raw_vis, list):
+                    raw_vis = np.array(raw_vis) 
+                vis = torch.from_numpy(raw_vis).to(torch.bfloat16)
                 
                 # Check for Numerical Stability (NaNs/Infs)
                 if torch.isnan(vis).any() or torch.isinf(vis).any():
@@ -450,6 +458,8 @@ class EuclidDESIDatasetArrow(Dataset):
                 
                 for key in nisp_keys:
                     raw_data = item[key]
+                    if isinstance(raw_data, list):
+                        raw_data = np.array(raw_data) 
                     
                     if raw_data is None:
                         # Padding with zeros until fulfill the VIS shape
@@ -509,9 +519,17 @@ class EuclidDESIDatasetArrow(Dataset):
                     
                 else:
                     
-                    # Obtaining flux and wavalenght values
-                    raw_flux = torch.from_numpy(item['spectrum_flux']).to(torch.bfloat16)
-                    raw_wave = torch.from_numpy(item['spectrum_wave']).to(torch.bfloat16)
+                    # Cheking the format
+                    raw_flux = item['spectrum_flux']
+                    if isinstance(raw_flux, list):
+                        raw_flux = np.array(raw_flux) 
+                    raw_flux = torch.from_numpy(raw_flux).to(torch.bfloat16)
+                    
+                    raw_wave = item['spectrum_wave']
+                    if isinstance(raw_wave, list):
+                        raw_wave = np.array(raw_wave) 
+                    raw_wave = torch.from_numpy(raw_wave).to(torch.bfloat16)                    
+                    
                     
                     # Check for NaNs in Spectrum
                     if torch.isnan(raw_flux).any():

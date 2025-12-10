@@ -44,7 +44,7 @@ try:
 except ImportError:
     log_emissions = False
 
-from astropt.wip_euclid_desi_pickle_dataloader import EuclidDESIDatasetPickle
+from astropt.wip_euclid_desi_arrow_dataloader import EuclidDESIDatasetArrow
 from astropt.model import GPT, GPTConfig, ModalityConfig, ModalityRegistry
 
 
@@ -71,31 +71,29 @@ def process_galaxy_wrapper(galdict, func):
         ),
     }
     
-    
-def robust_collate(batch):
+def robust_collate_fn(batch):
     """
-    Función de colapsado customizada para ignorar muestras fallidas (None).
-    Filtra los None antes de crear el batch de PyTorch.
+    Remove None values in batch
     """
-    # 1. Filtrar los None (muestras corruptas/faltantes)
-    batch = [b for b in batch if b is not None]
+    # Filter None
+    batch = list(filter(lambda x: x is not None, batch))
     
-    # 2. Si el batch entero es None (muy raro, pero posible), devolver None
+    # If the batch is empty
     if len(batch) == 0:
         return None
     
-    # 3. Usar el colapsado por defecto de PyTorch con las muestras limpias
-    return torch.utils.data.default_collate(batch)
+    # Creating the new batch
+    return torch.utils.data.dataloader.default_collate(batch)
 
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a 100M parameter model on galaxy imagery and spectra
     # look at `config/astropt*.py` for a prod run example
-    out_dir = "logs/astropt0100M_multimodal_250K_T01"
+    out_dir = "logs/astropt0100M_multimodal_250K_T1_20251210"
     eval_interval = 1000
     log_interval = 100
-    checkpoint_interval = 5000
+    checkpoint_interval = 2000
     assert checkpoint_interval % eval_interval == 0
     eval_iters = 100
     eval_only = False  # if True, script exits right after the first eval
@@ -109,8 +107,7 @@ if __name__ == "__main__":
     spiral = True  # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     image_size = 224
-    num_workers = 0 # 8 for TiedeHPC #32  # 64
-    prefetch_factor = None
+    num_workers = 8 # 8 for TiedeHPC #32  # 64
     # astroPT model
     n_layer = 12
     n_head = 12
@@ -134,7 +131,7 @@ if __name__ == "__main__":
             input_size=10,
             patch_size=10, #256,
             pos_input_size=10,
-            loss_weight=5.0,
+            loss_weight=1.0,
             embed_pos=False,
         ),
     ]
@@ -181,9 +178,7 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------------------
 
     # various inits, derived attributes, I/O setup
-    #ddp = int(os.environ.get("RANK", -1)) != -1  # is this a ddp run?
-    ddp = False
-    
+    ddp = int(os.environ.get("RANK", -1)) != -1  # is this a ddp run?
     if ddp:
         init_process_group(backend=backend)
         ddp_rank = int(os.environ["RANK"])
@@ -202,9 +197,6 @@ if __name__ == "__main__":
         master_process = True
         seed_offset = 0
         ddp_world_size = 1
-        
-    print("DEBUG: DDP Unabled", flush=True)
-    
     tokens_per_iter = (
         gradient_accumulation_steps
         * ddp_world_size
@@ -242,66 +234,58 @@ if __name__ == "__main__":
     # dataset init
     transforms = {"images": data_transforms(),
                   "spectra": data_transforms()}
+    
+    
     # training dataset and dataloader
-
-    PICKLE_PATH = "/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data"
+    ARROW_FOLDER_ROOT = "/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
     
-    print("Using EuclidDESIDatasetPickle (MSc Thesis Version)...")
+    print("Using EuclidDESIdataset (MSc Thesis Version)...")
 
 
-    # Loading datasets
+
+
+    # Splitting datasets
+    tds = EuclidDESIDatasetArrow(
+        arrow_folder_root=ARROW_FOLDER_ROOT,
+        split="train",                       
+        modality_registry=modality_registry, 
+        spiral=spiral,                  
+        stochastic=True,
+        transform=transforms
+    )
     
-    # Loading ful datasets
-    train_ds = EuclidDESIDatasetPickle(
-        data_dir=PICKLE_PATH,
-        split='train',
+    vds = EuclidDESIDatasetArrow(
+        arrow_folder_root=ARROW_FOLDER_ROOT,
+        split="test",                        
         modality_registry=modality_registry,
         spiral=spiral,
-        transform=transforms,
-        cache_size=200,
-    )
-    
-    val_ds = EuclidDESIDatasetPickle(
-        data_dir=PICKLE_PATH,
-        split='test',           # <--- Buscará "batch_test_*.pkl"
-        modality_registry=modality_registry,
-        spiral=True,
-        transform=transforms,
-        cache_size=4,           # En validación no hace falta tanta caché
-        samples_per_file=500
+        stochastic=False,
+        transform=transforms
     )
 
-
-    print(f"Train samples: {len(train_ds)}")
-    print(f"Val samples:   {len(val_ds)}")
-
-    # 2. Define DataLoaders
-    # Note: 'shuffle=True' in Train is important! It shuffles indices, 
-    # and the LRU Cache handles the file jumping efficiently.
-    
-    # Training DataLoader
-    # We keep it as an iterator if your loop uses next(tdl)
-# Training DataLoader
-    tdl = iter(DataLoader(
-        train_ds,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        pin_memory=True,
-        shuffle=True, 
-        prefetch_factor=prefetch_factor,
-        collate_fn=robust_collate  
-    ))
-
-    # Validation DataLoader
-    vdl = iter(DataLoader(
-        val_ds,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        pin_memory=True,
-        shuffle=False,
-        prefetch_factor=prefetch_factor,
-        collate_fn=robust_collate 
-    ))
+    tdl = iter(
+        DataLoader(
+            tds,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            prefetch_factor=2,
+            persistent_workers=True,
+            pin_memory=True,
+            shuffle=True,
+            collate_fn=robust_collate_fn,
+            drop_last=True
+        )
+    )
+    vdl = iter(
+        DataLoader(
+            vds,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            pin_memory=True,
+            shuffle=False,
+            collate_fn=robust_collate_fn
+        )
+    )
 
     # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
     iter_num = 0
@@ -458,13 +442,7 @@ if __name__ == "__main__":
             losses = torch.zeros(n_iters)
             for k in range(n_iters):
                 try:
-                    
-                    raw_batch = next(tdl)
-                    if raw_batch is None:
-                        print("⚠️ Batch vacío o corrupto encontrado. Saltando...")
-                        continue
-                    
-                    B = EuclidDESIDatasetPickle.process_modes(next(dl), modality_registry, device)
+                    B = EuclidDESIDatasetArrow.process_modes(next(dl), modality_registry, device)
                     with ctx:
                         logits, loss = model(B["X"], targets=B["Y"])
                     losses[k] = loss.item()
@@ -489,52 +467,60 @@ if __name__ == "__main__":
             try:
                 batch = next(dl)
             except StopIteration:
-                continue 
+                tdl = iter(torch.utils.data.DataLoader(
+                    tds, 
+                    batch_size=batch_size, 
+                    num_workers=16, 
+                    pin_memory=True, 
+                    shuffle=True,
+                    collate_fn=robust_collate_fn, 
+                    drop_last=True
+                ))
+                batch = next(tdl)
+            
+            if batch is None:
+                print("None Batch. Skipping.")
+                continue
+            
 
-            B = EuclidDESIDatasetPickle.process_modes(batch, modality_registry, device)
+            B = EuclidDESIDatasetArrow.process_modes(batch, modality_registry, device)
             
             with ctx:
                 P, loss = model(B["X"], B["Y"])
                 if "images" in modality_registry.names():
-                    # --- FIX VISUALIZATION ---
-                    # Yim tiene 195 tokens (N-1). Necesitamos 196 para hacer el cuadrado (14x14).
-                    # Añadimos un token dummy al principio.
-                    
-                    Yim = B["Y"]["images"].to(device) # Shape: (B, 195, C)
-                    Pim = P["images"]                 # Shape: (B, 195, C)
-                    
+                    Yim = B["Y"]["images"].to(device)
                     b, t, c = Yim.size()
-                    # Creamos el bloque de relleno (1 token)
-                    pad_token = torch.zeros((b, 1, c), device=device, dtype=Yim.dtype)
-                    
-                    # Concatenamos al principio: 1 + 195 = 196
-                    Yim_full = torch.cat([pad_token, Yim], dim=1)
-                    Pim_full = torch.cat([pad_token, Pim], dim=1)
+                    zero_block = torch.zeros((b, 1, c)).to(device)
+                    Yim = torch.cat((zero_block, Yim), dim=1)
                     
                     if spiral:
-                        # Antispiral espera la secuencia completa cuadrada
-                        Yim_full = torch.stack([tds.antispiralise_image(yy) for yy in Yim_full])
-                        Pim_full = torch.stack([tds.antispiralise_image(pp) for pp in Pim_full])
+                        Yim = torch.stack([vds.antispiralise_image(yy) for yy in Yim])
                         
                     im_patch = modality_registry.get_config("images").patch_size
-                    
-                    # Ahora sí podemos hacer rearrange con 196 tokens
-                    Yim_viz = einops.rearrange(
-                        Yim_full,
+                    Yim = einops.rearrange(
+                        Yim,
                         "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
-                        p1=im_patch, p2=im_patch,
-                        h=image_size // im_patch, w=image_size // im_patch,
+                        p1=im_patch,
+                        p2=im_patch,
+                        h=image_size // im_patch,
+                        w=image_size // im_patch,
                     )
+                    Pim = torch.cat((zero_block, P["images"]), dim=1)
                     
-                    Pim_viz = einops.rearrange(
-                        Pim_full,
+                    if spiral:
+                        Pim = torch.stack([vds.antispiralise_image(pp) for pp in Pim])
+                        
+                    Pim = einops.rearrange(
+                        Pim,
                         "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
-                        p1=im_patch, p2=im_patch,
-                        h=image_size // im_patch, w=image_size // im_patch,
+                        p1=im_patch,
+                        p2=im_patch,
+                        h=image_size // im_patch,
+                        w=image_size // im_patch,
                     )
 
                     for ax, p, y in zip(
-                        axs, Pim_viz.to(float).cpu().numpy(), Yim_viz.to(float).cpu().numpy()
+                        axs, Pim.to(float).cpu().numpy(), Yim.to(float).cpu().numpy()
                     ):
                         ax[0].imshow(np.clip(y, 0, 1))
                         ax[1].imshow(np.clip(p, 0, 1))
@@ -584,35 +570,9 @@ if __name__ == "__main__":
     # training loop
     if master_process:
         print("starting training...")
-
-    # --- PROTECCIÓN DE INICIO ---
-    # Buscamos el primer batch válido.
-    # Si 'next(tdl)' devuelve None (batch corrupto), lo intentamos de nuevo.
-    raw_batch = None
-    while raw_batch is None:
-        try:
-            raw_batch = next(tdl)
-            if raw_batch is None:
-                print("⚠️ El primer batch ha salido vacío/corrupto. Buscando el siguiente...")
-        except StopIteration:
-            # Si se acaba el dataloader intentando buscar (muy raro), lo reiniciamos
-            print("⚠️ Dataloader agotado en la inicialización. Reiniciando.")
-            tdl = iter(DataLoader(
-                train_ds,
-                batch_size=batch_size,
-                num_workers=num_workers,
-                pin_memory=True,
-                shuffle=True, 
-                prefetch_factor=prefetch_factor,
-                collate_fn=robust_collate
-            ))
-            
-    # Una vez tenemos un 'raw_batch' seguro, lo procesamos
-    B = EuclidDESIDatasetPickle.process_modes(
-        raw_batch, modality_registry, device, True
-    )
-    # ----------------------------
-
+    B = EuclidDESIDatasetArrow.process_modes(
+        next(tdl), modality_registry, device, True
+    )  # fetch the very first batch
     t0 = time.time()
     dts = []
     local_iter_num = 0  # number of iterations in the lifetime of this process
@@ -634,8 +594,8 @@ if __name__ == "__main__":
 
         # evaluate the loss on train/val sets and write checkpoints
         if iter_num % eval_interval == 0 and master_process:
-            validate(iter_num, out_dir, train_ds, val_ds)
-            losses = estimate_loss(train_ds, val_ds)
+            validate(iter_num, out_dir, tds, vds)
+            losses = estimate_loss(tds, vds)
             val_loss = np.mean(list(losses["val"].values()))
             print(
                 f"iter {iter_num}:\ntrain loss:\n{losses['train']}\nval loss:\n{losses['val']}"
@@ -733,26 +693,9 @@ if __name__ == "__main__":
                     logits, loss = model(B["X"], targets=B["Y"])
                 
                 # immediately async prefetch next batch while model is doing the forward pass on the GPU
-                raw_batch = None
-                while raw_batch is None:
-                    try:
-                        raw_batch = next(tdl)
-                    except StopIteration:
-                        print("End of the epoch. Restarting training dataloader")
-                        tdl = iter(DataLoader(
-                            train_ds,
-                            batch_size=batch_size,
-                            num_workers=num_workers,
-                            pin_memory=True,
-                            shuffle=True,
-                            collate_fn=robust_collate
-                        ))
-                        raw_batch = next(tdl)
-                
-                # Ahora seguro que raw_batch no es None
-                B = EuclidDESIDatasetPickle.process_modes(
-                    raw_batch, modality_registry, device, True
-                )
+                B = EuclidDESIDatasetArrow.process_modes(
+                next(tdl), modality_registry, device, True
+                )  # fetch the very first batch
                 
                 # backward pass, with gradient scaling if training in fp16
                 scaler.scale(loss).backward()    
@@ -762,13 +705,13 @@ if __name__ == "__main__":
             # Creating the next tdl in case it is missing
             tdl = iter(
                 DataLoader(
-                    train_ds,
+                    tds,
                     batch_size=batch_size,
                     num_workers=num_workers,
                     pin_memory=True,
                 )
             )
-            B = EuclidDESIDatasetPickle.process_modes(next(tdl), modality_registry, device, True)
+            B = EuclidDESIDatasetArrow.process_modes(next(tdl), modality_registry, device, True)
             
                 
         # clip the gradient
