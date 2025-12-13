@@ -14,6 +14,7 @@ import argparse
 import math
 import logging
 import os
+import sys
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass, asdict
@@ -166,6 +167,112 @@ def get_config_from_args() -> TrainingConfig:
     
     # Overriding default configuration
     return TrainingConfig(**vars(args))
+
+def ddp_setup() -> Tuple[bool, int, int, str]:
+    """
+    Detects and initializes the Distributed Data Parallel (DDP) environment.
+    
+    If the script is launched via 'torchrun' (or srun in Slurm), specific environment
+    variables (RANK, WORLD_SIZE) will be present. This function configures the
+    process group and GPU device accordingly.
+
+    Returns:
+        ddp (bool): True if running in distributed mode, False otherwise.
+        ddp_rank (int): Global rank of the process (0 is the master).
+        ddp_world_size (int): Total number of processes (GPUs) participating.
+        device (str): The specific device identifier for this process (e.g., 'cuda:1').
+    """
+    # Check if 'RANK' is in environment variables to determine if we are in DDP mode
+    ddp = int(os.environ.get("RANK", -1)) != -1
+
+    if ddp:
+        # DDP Mode (Multi-GPU)
+        init_process_group(backend="nccl")
+        ddp_rank = int(os.environ["RANK"])
+        ddp_local_rank = int(os.environ["LOCAL_RANK"])
+        ddp_world_size = int(os.environ["WORLD_SIZE"])
+        
+        # Pin this process to a specific GPU based on its local rank
+        device = f"cuda:{ddp_local_rank}"
+        torch.cuda.set_device(device)
+        
+        # Log initialization only on the master process to avoid spam
+        if ddp_rank == 0:
+            print(f"[INFO]: DDP Initialized: Global Rank {ddp_rank}/{ddp_world_size} | Local Rank {ddp_local_rank} | Device {device}")
+            
+    else:
+        # Single Device Mode
+        ddp_rank = 0
+        ddp_local_rank = 0
+        ddp_world_size = 1
+        
+        if torch.cuda.is_available():
+            device = "cuda"
+            print(f"[INFO]: Single GPU Mode: Using {device}")
+        else:
+            device = "cpu"
+            print("[WARNING]: Running on CPU. This will be slow!")
+
+    return ddp, ddp_rank, ddp_world_size, device
+
+
+def logging_setup(
+    config: TrainingConfig, 
+    ddp_rank: int
+) -> logging.Logger:
+    """
+    Configures the logging system.
+    
+    - Master Process (Rank 0): Logs to Console (stdout) AND a file (training.log).
+    - Worker Processes (Rank > 0): Only log ERRORS to avoid cluttering the output.
+
+    Args:
+        config (TrainingConfig): To know where the 'out_dir' is.
+        ddp_rank (int): To decide verbosity (Master vs Workers).
+
+    Returns:
+        logging.Logger: The configured logger object.
+    """
+    
+    # Ensuring the output directory exists
+    if ddp_rank == 0:
+        os.makedirs(config.out_dir, exist_ok=True)
+
+    # Defining the log format
+    log_format = "[%(asctime)s] [%(levelname)s] %(message)s"
+    date_format = "%Y-%m-%d %H:%M:%S"
+
+    # Creating the Logger
+    logger = logging.getLogger("AstroPT")
+    logger.setLevel(logging.INFO)
+    
+    # Avoiding duplicate logs in interactive modes
+    if logger.hasHandlers():
+        logger.handlers.clear()
+
+    # Configuration for Master Process (Rank 0)
+    if ddp_rank == 0:
+        # Handler 1: Console (Stdout)
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(logging.Formatter(log_format, datefmt=date_format))
+        logger.addHandler(console_handler)
+        
+        # Handler 2: File (training.log)
+        log_file = os.path.join(config.out_dir, "training.log")
+        file_handler = logging.FileHandler(log_file, mode="a") # 'a' for append
+        file_handler.setFormatter(logging.Formatter(log_format, datefmt=date_format))
+        logger.addHandler(file_handler)
+        
+        logger.info(f"Logging initialized. Saving logs to: {log_file}")
+        
+    # Configuration for Workers (Rank > 0)
+    else:
+        # Workers stay silent unless something explodes (ERROR/CRITICAL)
+        null_handler = logging.NullHandler()
+        logger.addHandler(null_handler)
+        logger.setLevel(logging.ERROR)
+
+    return logger
 
 
 def normalise(x):
