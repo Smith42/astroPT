@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import logging
 import os
 import time
 from contextlib import nullcontext
@@ -40,6 +41,131 @@ except ImportError:
 
 from astropt.model import GPT, GPTConfig, ModalityConfig, ModalityRegistry
 from astropt.euclid_desi_arrow_dataloader import EuclidDESIDatasetArrow
+
+
+@dataclass
+class TrainingConfig:
+    """
+    Hyperparameters and configuration settings for AstroPT training.
+    
+    This dataclass acts as the single source of truth for the experiment.
+    Arguments can be overridden via command line (CLI).
+    """
+
+    #--- 1. I/O & Paths ---#
+    out_dir: str = "logs/astropt_100M_arrow_v1"
+    data_dir: str = "/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
+    
+    #--- 2. Data Loading ---#
+    batch_size: int = 16        # Micro-batch size per GPU (what fits in VRAM)
+    num_workers: int = 16       # Optimized for Arrow (CPU cores for loading)
+    prefetch_factor: int = 2    # How many batches to preload per worker
+    pin_memory: bool = True     # Faster transfer RAM -> VRAM
+    spiral: bool = True         # Whether to apply spiral readout to galaxy images
+    
+    #--- 3. Model Architecture for the 100M Parameter Setup ---#
+    n_layer: int = 12           # Depth of the Transformer
+    n_head: int = 12            # Number of attention heads
+    n_embd: int = 768           # Embedding dimension (width of the network)
+    n_chan: int = 4             # Input channels: 1 VIS + 3 NISP (Y, J, H)
+    block_size: int = 1024      # Context length (max tokens per sample)
+    dropout: float = 0.0        # Regularization (0.0 for pretraining is standard)
+    bias: bool = False          # Learnable bias in Linear layers (False is modern/faster)
+    attn_type: str = "causal"   # Attention mechanism type
+    
+    #--- Multimodality Specifics ---#
+    # Images
+    images_size: int = 224          # Images side size in pixels
+    images_patch_size: int = 16     # Side size in pixels of each patch in an image
+    images_channels: int = 4        # Channels per image (VIS + NISP Y,J,H)
+    
+    # Spectra
+    spectra_size: int = 7781        # Spectra total size
+    spectra_patch_size: int = 10    # Patch size for each spectrum
+    
+    #--- 4. Optimization of the Learning Process) ---#
+    learning_rate: float = 6e-4     # Learning rate per weight update
+    max_iters: int = 100_000        # Total training steps (NOT epochs)
+    weight_decay: float = 1e-1      # Regularization to prevent overfitting
+    beta1: float = 0.9              # AdamW parameter
+    beta2: float = 0.95             # AdamW parameter
+    grad_clip: float = 1.0          # Stabilizes training if gradients explode
+    
+    # Gradient Accumulation: Simulates a larger batch size. 
+    # Effective batch = 16 * 40 = 640
+    gradient_accumulation_steps: int = 40 
+    
+    #--- 5. Learning Rate Scheduler ---#
+    lr_decay: bool = True           # Activates the variable learning rate decay
+    lr_warmup_iters: int = 2_000    # Steps to ramp up LR from 0 to max
+    lr_decay_iters: int = 80_000    # Steps to decay LR down to min
+    lr_min: float = 6e-5            # Minimum LR (usually 10% of max)
+
+    #--- 6. Logging & Checkpointing ---#
+    eval_interval: int = 1_000              # How often to validate
+    eval_batches: int = 100                 # How many batches to use for validation
+    log_interval: int = 200                 # How often to print to console/WandB
+    checkpoint_interval: int = 2_000        # How often to save .pt files
+    always_save_checkpoint: bool = False    # If True, save every interval regardless of improvement
+
+    #--- 7. System & Backend ---#
+    device: str = "cuda"            # CPU/GPU device interface: cpu, cuda or mps
+    dtype: str = "bfloat16"         # 'bfloat16' is best for A100 GPUs
+    compile: bool = True            # PyTorch 2.0 compiler
+    backend: str = "nccl"           # Communication backend for DDP
+
+    #--- 8. External Monitoring ---#
+    log_via_wandb: bool = False             # Weight and bias (wandb) logging
+    wandb_project: str = "AstroPT-Arrow"    # wandb project name
+    wandb_run_name: Optional[str] = None    # Training name
+    log_emissions: bool = False             # CodeCarbon logging
+
+
+def get_config_from_args() -> TrainingConfig:
+    """
+    Parses command line arguments to override default TrainingConfig values.
+
+    Instead of manually defining flags, this function inspects the TrainingConfig 
+    dataclass and automatically generates command-line arguments for every field.
+
+    Example:
+        python train.py --batch_size 32 --no-compile --wandb_project "New-Test"
+
+    Returns:
+        TrainingConfig: A new configuration object populated with CLI overrides.
+    """
+    
+    # Creating the parser argument object
+    parser = argparse.ArgumentParser(description="AstroPT Training Script")
+    
+    # Obtaining the defeault configuration
+    default_config = TrainingConfig()
+    
+    # Iterate over the configuration parameters
+    for key, value in asdict(default_config).items():
+        arg_type = type(value)
+        
+        # Booleans (Flags)
+        if arg_type == bool:
+            
+            # Create paired flags: --feature (True) and --no-feature (False)
+            parser.add_argument(f"--{key}", action="store_true", default=value, help=f"Enable {key}")
+            parser.add_argument(f"--no-{key}", dest=key, action="store_false", help=f"Disable {key}")
+        
+        # None defaults values
+        elif value is None:
+            # If default is None it expects a string
+            parser.add_argument(f"--{key}", type=str, default=None, help="Default: None")
+            
+        # Standard Case: Int, Float, Str
+        else:
+            parser.add_argument(f"--{key}", type=arg_type, default=value, help=f"Default: {value}")
+
+    # Argument parsed from terminal
+    args = parser.parse_args()
+    
+    # Overriding default configuration
+    return TrainingConfig(**vars(args))
 
 
 def normalise(x):
