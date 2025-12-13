@@ -9,7 +9,7 @@ from typing import Any, Iterator, List
 
 # PATH Configuration
 INPUT_DIR = "/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data"
-OUTPUT_ARROW_DIR = "/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_numpy"
+OUTPUT_ARROW_DIR = "/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
 
 # Dataset configuration
 SPLITS = ["train", "test"]
