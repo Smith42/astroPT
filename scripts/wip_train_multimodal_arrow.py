@@ -1,51 +1,45 @@
 """
-This training script can be run both on a single gpu in debug mode,
-and also in a larger training run with distributed data parallel (ddp).
+AstroPT Multimodal Training Scripts.
 
-To run on a single GPU, example:
-$ python train.py --batch_size=32 --compile=False
+This script implements a Distributed Data Parallel (DDP) training loop for the 
+AstroPT model, utilising the Euclid-DESI multimodal dataset (Arrow format).
 
-To run with DDP on 4 gpus on 1 node, example:
-$ torchrun --standalone --nproc_per_node=4 train.py
-
-To run with DDP on 4 gpus across 2 nodes, example:
-- Run on the first (master) node with example IP 123.456.123.456:
-$ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=0 --master_addr=123.456.123.456 --master_port=1234 train.py
-- Run on the worker node:
-$ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=1 --master_addr=123.456.123.456 --master_port=1234 train.py
-(If your cluster does not have Infiniband interconnect prepend NCCL_IB_DISABLE=1)
+Author: Victor Alonso Rodriguez
+Date: December 2025
 """
 
+from __future__ import annotations
+
+import argparse
 import math
 import os
 import time
 from contextlib import nullcontext
+from dataclasses import dataclass, asdict
+from typing import Optional, Tuple, Dict, Any
 
-import einops
-import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import torch
-from torch.distributed import destroy_process_group, init_process_group
+from torch.distributed import init_process_group, destroy_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, random_split
-from torchvision import transforms
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
 try:
     import wandb
-
-    log_via_wandb = True
+    _WANDB_AVAILABLE = True
 except ImportError:
-    log_via_wandb = False
+    _WANDB_AVAILABLE = False
+
 try:
     from codecarbon import EmissionsTracker
-
-    log_emissions = False
+    _CODECARBON_AVAILABLE = True
 except ImportError:
-    log_emissions = False
+    _CODECARBON_AVAILABLE = False
 
-from astropt.wip_euclid_desi_arrow_dataloader import EuclidDESIDatasetArrow
+
 from astropt.model import GPT, GPTConfig, ModalityConfig, ModalityRegistry
+from astropt.euclid_desi_arrow_dataloader import EuclidDESIDatasetArrow
 
 
 def normalise(x):
