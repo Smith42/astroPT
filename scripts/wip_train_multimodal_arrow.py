@@ -116,6 +116,7 @@ class TrainingConfig:
     device: str = "cuda"            # CPU/GPU device interface: cpu, cuda or mps
     dtype: str = "bfloat16"         # 'bfloat16' is best for A100 GPUs
     compile: bool = True            # PyTorch 2.0 compiler
+    compile_mode: str = "default"   # Compilation mode
     backend: str = "nccl"           # Communication backend for DDP
 
     #--- 8. External Monitoring ---#
@@ -438,6 +439,57 @@ def create_dataloaders(
     )
 
     return train_loader, val_loader, registry
+
+def create_model(
+    config: TrainingConfig, 
+    registry: ModalityRegistry, 
+    device: torch.device, 
+    ddp: bool
+) -> torch.nn.Module:
+    """
+    Instantiates the GPT model, moves it to the target device, compiles it,
+    and wraps it in DDP if distributed training is active.
+
+    Args:
+        config (TrainingConfig): Hyperparameters for the model architecture.
+        registry (ModalityRegistry): Configuration of input modalities (img, spectra).
+        device (torch.device): The GPU (or CPU) where the model will live.
+        ddp (bool): Whether Distributed Data Parallelism is enabled.
+
+    Returns:
+        torch.nn.Module: The ready-to-train model.
+    """
+    
+    # Activating the logger object
+    logger = logging.getLogger("AstroPT")
+    
+    # Instantiate the Model (CPU): Configuration and registry modality
+    model = GPT(config, registry)
+    logger.info(f"Initializing GPT Model with {config.n_layer} layers")
+
+    # Move to Selected Device
+    model.to(device)
+
+    # Pythorch Compilation
+    if config.compile:
+        logger.info("Compiling model with torch.compile...")
+        model = torch.compile(model, mode=config.compile_mode) 
+
+    # DDP Wrapping
+    if ddp:
+        
+        # Loal RANK for each process
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        
+        # Model configuration for DDP
+        model = DDP(
+            model, 
+            device_ids=[local_rank], 
+            output_device=local_rank,
+            find_unused_parameters=False 
+        )
+
+    return model
 
 
 if __name__ == "__main__":
