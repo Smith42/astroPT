@@ -396,7 +396,7 @@ class EuclidDESIDatasetArrow(Dataset):
         return {"X": X, "Y": Y}
         
     
-    def __getitem__(self, idx: int) -> Optional[Dict[str, Any]]:
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
         """
         Retrieve a single sample from the arrow dataset by index.
 
@@ -414,30 +414,29 @@ class EuclidDESIDatasetArrow(Dataset):
                 - 'spectra_positions': Tensor (Wavelengths) (Optional)
                 - 'targetid': int (Unique Object ID)
                 - 'idx': int (Original index)
-            
-            Returns None if there is neither Images nor Spectra to train with.
         """
         # Ensure index is a standard Python type for Astropy compatibility
         if torch.is_tensor(idx):
             idx = idx.tolist()
-
-        #--- 1. ARROW ACCESS ---#
         try:
-            item = self.ds[idx]
-            targetid = int(item['targetid']) 
-        except Exception as e:
-            logging.error(f"Error reading index {idx} from Arrow: {e}")
-            return None
-        
-        # Base returning dictionary
-        sample = {
-            "idx": idx,
-            "targetid": int(targetid)
-        }
-        
+            #--- 1. ARROW ACCESS ---#
+            try:
+                item = self.ds[idx]
+                targetid = int(item['targetid']) 
+            except Exception as e:
+                logging.error(f"Error reading index {idx} from Arrow: {e}")
+                new_idx = np.random.randint(0, len(self))
+                return self.__getitem__(new_idx)
+            
+            # Base returning dictionary
+            sample = {
+                "idx": idx,
+                "targetid": int(targetid)
+            }
+            
 
-        #--- 2. LOAD VIS & NISP IMAGES ---#
-        try:
+            #--- 2. LOAD VIS & NISP IMAGES ---#
+            
             # Check for existence of VIS images (mandatory)
             if item['image_vis'] is not None:
                 
@@ -502,13 +501,10 @@ class EuclidDESIDatasetArrow(Dataset):
                 logging.warning(f"Target {targetid}: VIS image is None in Arrow dataset. Skipping.")
                 pass
 
-        except Exception as e:
-            logging.error(f"Target {targetid}: Error processing images: {e}")
+            
 
-        
-
-        #--- 3. LOAD SPECTRA ---#
-        try:
+            #--- 3. LOAD SPECTRA ---#
+            
             # Only proceed if we have valid flux data
             if item['spectrum_flux'] is not None and len(item['spectrum_flux']) > 0:
                 
@@ -545,15 +541,20 @@ class EuclidDESIDatasetArrow(Dataset):
                         # Adding values to sample dictionary
                         sample["spectra"] = patch_spectra
                         sample["spectra_positions"] = patch_wl
-                        
-        except Exception as e:
-            logging.warning(f"Target {targetid}: Error processing spectrum: {e}")
-            
+                
 
-        #--- 4. FINAL VALIDATION ---#
-        # Ensure we are not returning a sample with only metadata
-        if "images" not in sample and "spectra" not in sample:
-            logging.debug(f"Target {targetid}: Sample ended up empty.")
-            return None
-        
-        return sample
+            #--- 4. FINAL VALIDATION ---#
+            # Ensure we are not returning a sample with only metadata
+            if "images" not in sample and "spectra" not in sample:
+                logging.debug(f"Target {targetid}: Sample ended up empty.")
+            
+                new_idx = np.random.randint(0, len(self))
+                return self.__getitem__(new_idx)
+            
+            return sample
+    
+        except Exception as e:
+            logging.error(f"Critical error loading idx {idx}: {e}. Retrying with random sample...")
+            
+            new_idx = np.random.randint(0, len(self))
+            return self.__getitem__(new_idx)
