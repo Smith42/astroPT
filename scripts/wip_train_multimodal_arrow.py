@@ -24,7 +24,10 @@ from typing import Optional, List, Tuple, Dict, Any
 import numpy as np
 import torch
 import torch.distributed as dist
-from torch.distributed import init_process_group, destroy_process_group
+from torch.distributed import (
+    init_process_group, 
+    destroy_process_group
+)
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, default_collate
 from torch.utils.data.distributed import DistributedSampler
