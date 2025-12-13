@@ -18,13 +18,13 @@ import sys
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass, asdict
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, List, Tuple, Dict, Any
 
 import numpy as np
 import torch
 from torch.distributed import init_process_group, destroy_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, default_collate
 from torch.utils.data.distributed import DistributedSampler
 
 try:
@@ -58,11 +58,12 @@ class TrainingConfig:
     data_dir: str = "/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
     
     #--- 2. Data Loading ---#
-    batch_size: int = 16        # Micro-batch size per GPU (what fits in VRAM)
-    num_workers: int = 16       # Optimized for Arrow (CPU cores for loading)
-    prefetch_factor: int = 2    # How many batches to preload per worker
-    pin_memory: bool = True     # Faster transfer RAM -> VRAM
-    spiral: bool = True         # Whether to apply spiral readout to galaxy images
+    batch_size: int = 16            # Micro-batch size per GPU (what fits in VRAM)
+    num_workers: int = 16           # Optimized for Arrow (CPU cores for loading)
+    persistent_workers: bool = True # Keep workers active
+    prefetch_factor: int = 2        # How many batches to preload per worker
+    pin_memory: bool = True         # Faster transfer RAM -> VRAM
+    spiral: bool = True             # Whether to apply spiral readout to galaxy images
     
     #--- 3. Model Architecture for the 100M Parameter Setup ---#
     n_layer: int = 12           # Depth of the Transformer
@@ -79,10 +80,12 @@ class TrainingConfig:
     images_size: int = 224          # Images side size in pixels
     images_patch_size: int = 16     # Side size in pixels of each patch in an image
     images_channels: int = 4        # Channels per image (VIS + NISP Y,J,H)
+    images_loss_weight: float = 1.0 # Image importante for training
     
     # Spectra
-    spectra_size: int = 7781        # Spectra total size
-    spectra_patch_size: int = 10    # Patch size for each spectrum
+    spectra_size: int = 7781            # Spectra total size
+    spectra_patch_size: int = 10        # Patch size for each spectrum
+    spectra_loss_weight: float = 1.0    # Spectra importance for training 
     
     #--- 4. Optimization of the Learning Process) ---#
     learning_rate: float = 6e-4     # Learning rate per weight update
@@ -275,42 +278,166 @@ def logging_setup(
     return logger
 
 
-def normalise(x):
-    std, mean = torch.std_mean(x, dim=1, keepdim=True)
-    x_norm = (x - mean) / (std + 1e-8)
-    return x_norm.to(torch.float16)
+def normalise(x: torch.Tensor) -> torch.Tensor:
+    """
+    Standardizes the input tensor (Mean 0, Std 1) while preserving the original dtype.
+    
+    Calculations are performed in float32 for numerical stability, 
+    then cast back to the input dtype (e.g., bfloat16).
 
-def data_transforms():
-    transform = transforms.Compose(
-        [
-            transforms.Lambda(normalise),
-        ]
-    )
-    return transform
+    Args:
+        x (torch.Tensor): Input tensor of shape (N, ...).
+
+    Returns:
+        torch.Tensor: Normalized tensor with the same dtype as input.
+    """
+    # Cast to float32 for precise mean/std calculation (avoids bfloat16 underflow)
+    x_32 = x.float()
+    
+    # Calculate standard deviation and mean across the feature dimension (dim=1)
+    std, mean = torch.std_mean(x_32, dim=1, keepdim=True)
+    
+    # Apply Z-score normalization: (Value - Mean) / Std
+    # Added epsilon (1e-8) to prevent division by zero
+    x_norm = (x_32 - mean) / (std + 1e-8)
+    
+    # Cast back to the original data type (e.g., bfloat16) to save memory
+    return x_norm.to(x.dtype)
 
 
-def process_galaxy_wrapper(galdict, func):
-    patch_galaxy = func(np.array(galdict["image"]).swapaxes(0, 2))
+def data_transforms() -> Dict[str, Any]:
+    """
+    Returns the dictionary of transformations expected by the Dataset.
+    
+    Defines specific preprocessing pipelines for 'images' and 'spectra'.
+
+    Returns:
+        Dict[str, Any]: Keys match the modality names, values are torchvision Transforms.
+    """
     return {
-        "images": patch_galaxy.to(torch.float),
-        "images_positions": torch.arange(
-            0, len(patch_galaxy), dtype=torch.long
-        ),
+        "images": transforms.Compose([
+            transforms.Lambda(normalise)
+        ]),
+        "spectra": transforms.Compose([
+            transforms.Lambda(normalise)
+        ])
     }
-    
-def robust_collate_fn(batch):
+
+
+def create_dataloaders(
+    config: TrainingConfig, 
+    ddp: bool
+) -> Tuple[DataLoader, DataLoader, ModalityRegistry]:
     """
-    Remove None values in batch
+    Initializes Datasets and DataLoaders for the training pipeline.
+
+    This function acts as a bridge, translating the flat 'TrainingConfig'
+    hyperparameters into the structured 'ModalityRegistry' objects required by 
+    both the Model and the Dataset.
+
+    Args:
+        config (TrainingConfig): The global configuration object containing paths and params.
+        ddp (bool): Flag indicating if Distributed Data Parallelism is active.
+
+    Returns:
+        Tuple[DataLoader, DataLoader, ModalityRegistry]: A tuple containing:
+            - train_loader: The DataLoader for the training set.
+            - val_loader: The DataLoader for the validation/test set.
+            - registry: The configured ModalityRegistry (needed to initialize the GPT model).
     """
-    # Filter None
-    batch = list(filter(lambda x: x is not None, batch))
     
-    # If the batch is empty
-    if len(batch) == 0:
-        return None
+    # Configure ModalityRegistry
+    # Calculate the flattened input image size for the Linear Encoder
+    img_input_batch_size = config.images_patch_size * config.images_patch_size * config.images_channels
     
-    # Creating the new batch
-    return torch.utils.data.dataloader.default_collate(batch)
+    # Define configuration for each modality
+    modalities = [
+        ModalityConfig(
+            name="images",
+            input_size=img_input_batch_size,
+            patch_size=config.images_patch_size,
+            pos_input_size=1,  
+            loss_weight=config.images_loss_weight,
+            embed_pos=True,
+        ),
+        ModalityConfig(
+            name="spectra",
+            input_size=config.spectra_patch_size,
+            patch_size=config.spectra_patch_size,
+            pos_input_size=config.spectra_patch_size, 
+            loss_weight=config.spectra_loss_weight,
+            embed_pos=False,
+        ),
+    ]
+    
+    # Instantiate the Registry
+    registry = ModalityRegistry(modalities)
+    
+    # Prepare data transformations
+    data_tf = data_transforms()
+    
+    # Activating the logger object
+    logger = logging.getLogger("AstroPT")
+    
+    # Informational log (Only printed by the Master Process to avoid spam)
+    if not ddp or (ddp and int(os.environ.get("RANK", 0)) == 0):
+        logger.info(f"Loading data from: {config.data_dir}")
+
+    # Instantiate Train Dataset 
+    train_dataset = EuclidDESIDatasetArrow(
+        arrow_folder_root=config.data_dir,
+        split="train",
+        modality_registry=registry, 
+        spiral=config.spiral,
+        stochastic=True,
+        transform=data_tf
+    )
+    
+    # Instantiate Validation/Test Dataset 
+    val_dataset = EuclidDESIDatasetArrow(
+        arrow_folder_root=config.data_dir,
+        split="test", 
+        modality_registry=registry,
+        spiral=config.spiral,
+        stochastic=False,
+        transform=data_tf
+    )
+
+    # Configure DDP Samplers
+    if ddp:
+        # In DDP the sampler splits the data among GPUs
+        train_sampler = DistributedSampler(train_dataset, shuffle=True)
+        val_sampler = DistributedSampler(val_dataset, shuffle=False)
+    else:
+        train_sampler = None
+        val_sampler = None
+
+    # Create Final DataLoaders
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config.batch_size,
+        shuffle=(train_sampler is None), 
+        sampler=train_sampler,
+        num_workers=config.num_workers,
+        pin_memory=config.pin_memory,
+        prefetch_factor=config.prefetch_factor,
+        persistent_workers=config.persistent_workers,
+        drop_last=True
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config.batch_size,
+        shuffle=False,
+        sampler=val_sampler,
+        num_workers=config.num_workers,
+        pin_memory=config.pin_memory,
+        prefetch_factor=config.prefetch_factor,
+        persistent_workers=config.persistent_workers,
+        drop_last=True
+    )
+
+    return train_loader, val_loader, registry
 
 
 if __name__ == "__main__":
