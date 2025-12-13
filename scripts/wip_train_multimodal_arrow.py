@@ -11,6 +11,7 @@ Date: December 2025
 from __future__ import annotations
 
 import argparse
+import inspect
 import math
 import logging
 import os
@@ -490,6 +491,108 @@ def create_model(
         )
 
     return model
+
+
+def create_optimizer(
+    model: torch.nn.Module, 
+    config: TrainingConfig
+) -> torch.optim.Optimizer:
+    """
+    Creates the AdamW optimizer with weight decay handling.
+
+    It separates parameters into two groups:
+    1. Decay Group: Weights of Linear and Embedding layers (2D tensors).
+    2. No-Decay Group: Biases, LayerNorms, and 1D tensors.
+
+    Args:
+        model (torch.nn.Module): The loaded GPT model.
+        config (TrainingConfig): Configuration containing lr, weight_decay, and betas.
+
+    Returns:
+        torch.optim.Optimizer: Configured AdamW optimizer.
+    """
+    
+    # Activating the logger object
+    logger = logging.getLogger("AstroPT")
+    
+    # Filter parameters that require gradients
+    param_dict = {pn: p for pn, p in model.named_parameters() if p.requires_grad}
+    
+    # Separate parameters into Decay and No-Decay groups
+    decay_params = []
+    nodecay_params = []
+    
+    for n, p in param_dict.items():
+        if p.dim() >= 2:
+            # Tensors with 2 or more dimensions GET decay
+            decay_params.append(p)
+        else:
+            # Tensors with 1 dimension DO NOT GET decay
+            nodecay_params.append(p)
+            
+    # Calculate total parameters for logging
+    num_decay_params = sum(p.numel() for p in decay_params)
+    num_nodecay_params = sum(p.numel() for p in nodecay_params)
+    
+    logger.info(f"Optimizer Config: {len(decay_params)} tensors ({num_decay_params:,} params) with decay.")
+    logger.info(f"Optimizer Config: {len(nodecay_params)} tensors ({num_nodecay_params:,} params) without decay.")
+
+    # Create the param_groups list for PyTorch
+    optim_groups = [
+        {'params': decay_params, 'weight_decay': config.weight_decay},
+        {'params': nodecay_params, 'weight_decay': 0.0}
+    ]
+
+    # Check for Fused AdamW (faster CUDA kernel)
+    use_fused = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+    extra_args = dict(fused=True) if use_fused and torch.cuda.is_available() else dict()
+    
+    if use_fused:
+        logger.info("Using Fused AdamW implementation (faster).")
+
+    # Instantiate AdamW
+    optimizer = torch.optim.AdamW(
+        optim_groups, 
+        lr=config.learning_rate, 
+        betas=config.betas, 
+        **extra_args
+    )
+
+    return optimizer
+
+
+def get_learning_rate(it: int, config: TrainingConfig) -> float:
+    """
+    Calculates the learning rate for the current iteration
+    using a Cosine Decay schedule with Warmup.
+    
+    Args:
+        it (int): The current training step number.
+        config (TrainingConfig): Configuration containing lr, min_lr, warmup_iters, etc.
+        
+    Returns:
+        float: The calculated learning rate for this specific step.
+    """
+    
+    # Linear Warmup Phase
+    if it < config.warmup_iters:
+        # Linear increase from 0 to learning_rate
+        return config.learning_rate * (it + 1) / (config.warmup_iters + 1)
+    
+    # Post-Decay Phase (Constant Min LR)
+    if it > config.lr_decay_iters:
+        return config.min_lr
+    
+    # Cosine Decay Phase
+    decay_ratio = (it - config.warmup_iters) / (config.lr_decay_iters - config.warmup_iters)
+    assert 0 <= decay_ratio <= 1
+    
+    # Calculate the cosine coefficient
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+    
+    # Apply the coefficient to the range [min_lr, learning_rate]
+    return config.min_lr + coeff * (config.learning_rate - config.min_lr)
+
 
 
 if __name__ == "__main__":
