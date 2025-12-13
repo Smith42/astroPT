@@ -81,6 +81,9 @@ class TrainingConfig:
     dropout: float = 0.0        # Regularization (0.0 for pretraining is standard)
     bias: bool = False          # Learnable bias in Linear layers (False is modern/faster)
     attn_type: str = "causal"   # Attention mechanism type
+    backbone: str = "native"    # Model bakcbone: native or llm
+    tokeniser: str = "aim"      # Model tokeniser method
+    use_qlora: bool = False     # Use Quantized Low-Rank Adaptation
     
     #--- Multimodality Specifics ---#
     # Images
@@ -470,11 +473,25 @@ def create_model(
     # Activating the logger object
     logger = logging.getLogger("AstroPT")
     
-    # Instantiate the Model (CPU): Configuration and registry modality
-    model = GPT(config, registry)
+    # Model configuration
+    gpt_config = GPTConfig(
+        block_size=config.block_size,
+        n_layer=config.n_layer,
+        n_head=config.n_head,
+        n_embd=config.n_embd,
+        bias=config.bias,
+        dropout=config.dropout,
+        attn_type=config.attn_type,
+        tokeniser=config.tokeniser,
+        use_qlora=config.use_qlora,
+        backbone=config.backbone,
+    )
+    
+    # Instantiate the Model
+    model = GPT(gpt_config, registry)
     logger.info(f"Initializing GPT Model with {config.n_layer} layers")
 
-    # Move to Selected Device
+    # Move Model to Selected Device
     model.to(device)
 
     # Pythorch Compilation
@@ -560,7 +577,7 @@ def create_optimizer(
     optimizer = torch.optim.AdamW(
         optim_groups, 
         lr=config.learning_rate, 
-        betas=config.betas, 
+        betas=(config.beta1,config.beta2), 
         **extra_args
     )
 
@@ -581,23 +598,23 @@ def get_learning_rate(it: int, config: TrainingConfig) -> float:
     """
     
     # Linear Warmup Phase
-    if it < config.warmup_iters:
+    if it < config.lr_warmup_iters:
         # Linear increase from 0 to learning_rate
-        return config.learning_rate * (it + 1) / (config.warmup_iters + 1)
+        return config.learning_rate * (it + 1) / (config.lr_warmup_iters + 1)
     
     # Post-Decay Phase (Constant Min LR)
     if it > config.lr_decay_iters:
-        return config.min_lr
+        return config.lr_min
     
     # Cosine Decay Phase
-    decay_ratio = (it - config.warmup_iters) / (config.lr_decay_iters - config.warmup_iters)
+    decay_ratio = (it - config.lr_warmup_iters) / (config.lr_decay_iters - config.lr_warmup_iters)
     assert 0 <= decay_ratio <= 1
     
     # Calculate the cosine coefficient
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
     
     # Apply the coefficient to the range [min_lr, learning_rate]
-    return config.min_lr + coeff * (config.learning_rate - config.min_lr)
+    return config.lr_min + coeff * (config.learning_rate - config.lr_min)
 
 def main():
     """
