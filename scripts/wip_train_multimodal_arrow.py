@@ -642,7 +642,11 @@ def main():
     # Log basic treaining info
     if ddp_rank == 0:
         logger.info(f"Starting AstroPT training on {device} (DDP: {ddp})")
-        logger.info(f"Config: {asdict(config)}")
+        
+        # Logging training configuration
+        config_dict = asdict(config)
+        config_str = "\n".join([f"    {k}: {v}" for k, v in config_dict.items()])
+        logger.info(f"Training config: {config_str}")
 
     # Set reproducibility seeds
     seed_offset = ddp_rank 
@@ -682,9 +686,6 @@ def main():
         # State variables
         iter_num = 0
         best_val_loss = 1e9
-        
-        # Check if we should resume from an existing file
-        resume = os.path.exists(ckpt_path)
         
         if config.init_from == 'resume' and os.path.exists(ckpt_path):
             logger.info(f"Resuming training from checkpoint: {ckpt_path}")
@@ -728,6 +729,7 @@ def main():
         # Initialize timers and counters
         t0 = time.time()
         epoch_num = 0
+        running_mfu = -1.0
         
         # Wait for all GPUs synchronization
         if ddp:
@@ -753,31 +755,30 @@ def main():
             loss_accum_for_log = 0.0
                 
             # GRADIENT ACCUMULATION LOOP
-            # We accumulate gradients over N micro-steps to simulate a larger batch size
             for micro_step in range(config.gradient_accumulation_steps):
                 
-                # Fetch Batch
+                # Fetch Raw Batch (CPU)
                 try:
-                    batch = next(train_iter)
-                    
+                    raw_batch = next(train_iter)
                 except StopIteration:
                     epoch_num += 1
                     if ddp_rank == 0:
-                        logger.info(f"--> End of Epoch {epoch_num}. Restarting DataLoader.")
+                        logger.info(f"--> Iter {iter_num}: End of Epoch {epoch_num}. Restarting DataLoader.")
                     
                     if ddp:
                         train_loader.sampler.set_epoch(epoch_num)
                     
                     train_iter = iter(train_loader)
-                    batch = next(train_iter)
+                    raw_batch = next(train_iter)
                 
-                # Move to Device (GPU)
-                images = batch['images'].to(device, non_blocking=True)
-                spectra = batch['spectra'].to(device, non_blocking=True)
-                y = batch['y'].to(device, non_blocking=True)
+                # Process Batch
+                B = EuclidDESIDatasetArrow.process_modes(
+                    batch_data=raw_batch, 
+                    modality_registry=registry, 
+                    device=torch.device(device)
+                )
                 
-                # DDP Synchronization Logic
-                # Sync gradients ONLY on the last micro-step to save bandwidth
+                # DDP Context
                 if ddp:
                     
                     is_last_micro_step = (micro_step == config.gradient_accumulation_steps - 1)
@@ -793,8 +794,9 @@ def main():
                     
                     # Automatic Mixed Precision (AMP)
                     with ctx: 
+                        
                         # Forward pass
-                        _, loss = model(images, spectra, y)
+                        _, loss = model(B["X"], targets=B["Y"])
                         
                         # Scale loss
                         loss = loss / config.gradient_accumulation_steps
@@ -823,17 +825,29 @@ def main():
                 
                 if iter_num % config.log_interval == 0:
                     
+                    raw_model = model.module if ddp else model
+                    if hasattr(raw_model, "_orig_mod"):
+                        raw_model = raw_model._orig_mod
+
+                    if hasattr(raw_model, "estimate_mfu"):
+                        sequences_per_iter = config.batch_size * config.gradient_accumulation_steps * ddp_world_size
+                        mfu = raw_model.estimate_mfu(sequences_per_iter, dt)
+                        running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
+                    else:
+                        running_mfu = -1.0
+                    
                     # Recover the real average loss of the batch
                     lossf = loss_accum_for_log
                     
-                    logger.info(f"Iter {iter_num}: loss {lossf:.4f} | time {dt*1000:.2f}ms | lr {lr:.4e}")
+                    logger.info(f"Iter {iter_num}: loss {loss_accum_for_log:.4f} | time {dt*1000:.2f}ms | mfu {running_mfu*100:.2f}% | lr {lr:.4e}")
                     
                     if config.log_via_wandb and _WANDB_AVAILABLE:
                         wandb.log({
                             "iter": iter_num,
                             "train/loss": lossf,
                             "train/lr": lr,
-                            "train/time_ms": dt * 1000
+                            "train/time_ms": dt * 1000,
+                            "train/mfu": running_mfu * 100
                         })
 
             # VALIDATION & CHECKPOINTING
@@ -858,12 +872,14 @@ def main():
                                 val_iter = iter(val_loader)
                                 vbatch = next(val_iter)
                                 
-                            v_img = vbatch['images'].to(device)
-                            v_spec = vbatch['spectra'].to(device)
-                            v_y = vbatch['y'].to(device)
+                            B_val = EuclidDESIDatasetArrow.process_modes(
+                                batch_data=vbatch, 
+                                modality_registry=registry, 
+                                device=torch.device(device)
+                            )
                             
                             with ctx:
-                                _, v_loss = model(v_img, v_spec, v_y)
+                                _, v_loss = model(B_val["X"], targets=B_val["Y"])
                             val_losses.append(v_loss.item())
                     
                     val_loss = sum(val_losses) / len(val_losses)
