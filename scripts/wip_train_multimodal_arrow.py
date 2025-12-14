@@ -11,6 +11,7 @@ Date: December 2025
 from __future__ import annotations
 
 import argparse
+import datetime
 import inspect
 import math
 import logging
@@ -847,9 +848,12 @@ def main():
                 if iter_num % config.log_interval == 0:
                     
                     # Time since last iter log
-                    curren_log_time = time.time()
-                    time_since_last_log = curren_log_time - last_log_time
-                    last_log_time = curren_log_time
+                    current_log_time = time.time()
+                    time_since_last_log = current_log_time - last_log_time
+                    last_log_time = current_log_time
+                    
+                    # Average time between logging iteractions
+                    avg_dt = time_since_last_log / config.log_interval
                     
                     # Computing MFU
                     raw_model = model.module if ddp else model
@@ -864,9 +868,6 @@ def main():
                         if iter_num == 0:
                             mfu_display = 0.0
                         else:
-                            # Average time between logging iteractions
-                            avg_dt = time_since_last_log / config.log_interval
-                            
                             # Computing the total seen samples per GPU on each iter
                             fwdbwd_per_gpu = config.batch_size * config.gradient_accumulation_steps
                             mfu_display = raw_model.estimate_mfu(fwdbwd_per_gpu, avg_dt)
@@ -876,7 +877,22 @@ def main():
                     # Recover the real average loss of the batch
                     lossf = loss_accum_for_log
                     
-                    logger.info(f"Iter {iter_num}: loss {loss_accum_for_log:.4f} | lr {lr:.4e} | time {avg_dt*1000:.2f}ms (avg) | mfu {mfu_display*100:.2f}% (avg)")
+                    # Compute the ETA for finishing training
+                    remaining_iters = config.max_iters - iter_num
+                    eta_seconds = remaining_iters * avg_dt
+                    eta_str = str(datetime.timedelta(seconds=int(eta_seconds)))
+                    
+                    # Training progress
+                    train_prog = iter_num / config.max_iters
+                    
+                    logger.info(
+                        f"Iter {iter_num}/{config.max_iters} ({train_prog:.2%}) | "
+                        f"loss {loss_accum_for_log:.4f} | "
+                        f"lr {lr:.4e} | "
+                        f"dt {avg_dt*1000:.2f}ms (avg) | "
+                        f"mfu {mfu_display*100:.2f}% (avg) | "
+                        f"ETA {eta_str} (H:M:S)" 
+                    )
                     
                     if config.log_via_wandb and _WANDB_AVAILABLE:
                         wandb.log({
@@ -884,7 +900,8 @@ def main():
                             "train/loss": lossf,
                             "train/lr": lr,
                             "train/time_ms": avg_dt * 1000,
-                            "train/mfu": mfu_display * 100
+                            "train/mfu": mfu_display * 100,
+                            "train/eta_hours": eta_seconds / 3600
                         })
 
             # VALIDATION & CHECKPOINTING
