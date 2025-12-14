@@ -66,7 +66,7 @@ class TrainingConfig:
     
     #--- 2. Data Loading ---#
     batch_size: int = 16            # Micro-batch size per GPU (what fits in VRAM)
-    num_workers: int = 16           # Optimized for Arrow (CPU cores for loading)
+    num_workers: int = 8            # Optimized for Teide HPC (CPU cores for loading)
     persistent_workers: bool = True # Keep workers active
     prefetch_factor: int = 2        # How many batches to preload per worker
     pin_memory: bool = True         # Faster transfer RAM -> VRAM
@@ -649,8 +649,10 @@ def main():
         config_str = "\n".join([f"    {k}: {v}" for k, v in config_dict.items()])
         logger.info(f"Training config:\n{config_str}")
 
-    # Automatic gradient accumulation iteractions change for DDP
+    # Changing configuration for DDP mode
     if ddp: 
+        
+        # Automatic gradient acucumulation steps
         if config.gradient_accumulation_steps % ddp_world_size != 0:
             if ddp_rank == 0:
                 logger.warning(f"Grad Accum {config.gradient_accumulation_steps} is not divisible by {ddp_world_size}. It will be rounded down.")
@@ -664,10 +666,31 @@ def main():
         # Effective batch size
         eff_batch_size = config.batch_size * config.gradient_accumulation_steps * ddp_world_size
         
+        
+        # Automatic workers number
+        try:
+            total_available_cpus = len(os.sched_getaffinity(0))
+        except AttributeError:
+            total_available_cpus = os.cpu_count() or 1
+        
+        # Computing how maney CPU can be assigned to each GPU
+        cpus_per_gpu = total_available_cpus // ddp_world_size
+        
+        # Assigning the half of the total
+        suggested_workers = int(cpus_per_gpu * 0.5)
+        
+        # Selecting the suggested worker number
+        suggested_workers = max(2, min(4, suggested_workers))
+        
+        # Changing the configuration
+        config.num_workers = suggested_workers
+        
+        # Only master shows
         if ddp_rank == 0:
-            logger.info(f"DDP Detected ({ddp_world_size} GPUs).")
-            logger.info(f"   Adjusting Gradient Accumulation: {original_accum} -> {config.gradient_accumulation_steps} per GPU.")
-            logger.info(f"   Effective Batch Size maintained at: {eff_batch_size}")
+            logger.info(f"DDP Detected: {ddp_world_size} GPUs. {total_available_cpus} CPUs")
+            logger.info(f"  -> Adjusting Gradient Accumulation: {original_accum} -> {config.gradient_accumulation_steps} per GPU.")
+            logger.info(f"  -> Effective Batch Size maintained at: {eff_batch_size}")
+            logger.info(f"  -> Assigning {suggested_workers} workers per DataLoader.")
         
                 
     # Set reproducibility seeds
