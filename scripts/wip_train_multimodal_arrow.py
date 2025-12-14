@@ -646,8 +646,29 @@ def main():
         # Logging training configuration
         config_dict = asdict(config)
         config_str = "\n".join([f"    {k}: {v}" for k, v in config_dict.items()])
-        logger.info(f"Training config: {config_str}")
+        logger.info(f"Training config:\n{config_str}")
 
+    # Automatic gradient accumulation iteractions change for DDP
+    if ddp: 
+        if config.gradient_accumulation_steps % ddp_world_size != 0:
+            if ddp_rank == 0:
+                logger.warning(f"Grad Accum {config.gradient_accumulation_steps} is not divisible by {ddp_world_size}. It will be rounded down.")
+        
+        # Original configuration        
+        original_accum = config.gradient_accumulation_steps
+        
+        # New value
+        config.gradient_accumulation_steps = config.gradient_accumulation_steps // ddp_world_size
+        
+        # Effective batch size
+        eff_batch_size = config.batch_size * config.gradient_accumulation_steps * ddp_world_size
+        
+        if ddp_rank == 0:
+            logger.info(f"DDP Detected ({ddp_world_size} GPUs).")
+            logger.info(f"   Adjusting Gradient Accumulation: {original_accum} -> {config.gradient_accumulation_steps} per GPU.")
+            logger.info(f"   Effective Batch Size maintained at: {eff_batch_size}")
+        
+                
     # Set reproducibility seeds
     seed_offset = ddp_rank 
     torch.manual_seed(61 + seed_offset)
@@ -728,8 +749,8 @@ def main():
         
         # Initialize timers and counters
         t0 = time.time()
+        last_log_time = time.time()
         epoch_num = 0
-        running_mfu = -1.0
         
         # Wait for all GPUs synchronization
         if ddp:
@@ -825,29 +846,45 @@ def main():
                 
                 if iter_num % config.log_interval == 0:
                     
+                    # Time since last iter log
+                    curren_log_time = time.time()
+                    time_since_last_log = curren_log_time - last_log_time
+                    last_log_time = curren_log_time
+                    
+                    # Computing MFU
                     raw_model = model.module if ddp else model
                     if hasattr(raw_model, "_orig_mod"):
                         raw_model = raw_model._orig_mod
+                        
+                    mfu_display = 0.0
 
+                    # Searching for estimate_mfu()
                     if hasattr(raw_model, "estimate_mfu"):
-                        sequences_per_iter = config.batch_size * config.gradient_accumulation_steps * ddp_world_size
-                        mfu = raw_model.estimate_mfu(sequences_per_iter, dt)
-                        running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
+                        
+                        if iter_num == 0:
+                            mfu_display = 0.0
+                        else:
+                            # Average time between logging iteractions
+                            avg_dt = time_since_last_log / config.log_interval
+                            
+                            # Computing the total seen samples per GPU on each iter
+                            fwdbwd_per_gpu = config.batch_size * config.gradient_accumulation_steps
+                            mfu_display = raw_model.estimate_mfu(fwdbwd_per_gpu, avg_dt)
                     else:
-                        running_mfu = -1.0
+                        mfu_display = -1.0
                     
                     # Recover the real average loss of the batch
                     lossf = loss_accum_for_log
                     
-                    logger.info(f"Iter {iter_num}: loss {loss_accum_for_log:.4f} | time {dt*1000:.2f}ms | mfu {running_mfu*100:.2f}% | lr {lr:.4e}")
+                    logger.info(f"Iter {iter_num}: loss {loss_accum_for_log:.4f} | lr {lr:.4e} | time {avg_dt*1000:.2f}ms (avg) | mfu {mfu_display*100:.2f}% (avg)")
                     
                     if config.log_via_wandb and _WANDB_AVAILABLE:
                         wandb.log({
                             "iter": iter_num,
                             "train/loss": lossf,
                             "train/lr": lr,
-                            "train/time_ms": dt * 1000,
-                            "train/mfu": running_mfu * 100
+                            "train/time_ms": avg_dt * 1000,
+                            "train/mfu": mfu_display * 100
                         })
 
             # VALIDATION & CHECKPOINTING
