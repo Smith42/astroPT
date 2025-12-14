@@ -61,7 +61,7 @@ class TrainingConfig:
     """
 
     #--- 1. I/O & Paths ---#
-    out_dir: str = "logs/astropt_100M_arrow_v1"
+    out_dir: str = "logs/astropt_100M_arrow"
     data_dir: str = "/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
     
     #--- 2. Data Loading ---#
@@ -750,6 +750,7 @@ def main():
         
         # Initialize timers and counters
         t0 = time.time()
+        run_start_time = time.time()
         last_log_time = time.time()
         epoch_num = 0
         
@@ -877,6 +878,10 @@ def main():
                     # Recover the real average loss of the batch
                     lossf = loss_accum_for_log
                     
+                    # Compute Running Time
+                    running_seconds = time.time() - run_start_time
+                    running_str = str(datetime.timedelta(seconds=int(running_seconds)))
+                    
                     # Compute the ETA for finishing training
                     remaining_iters = config.max_iters - iter_num
                     eta_seconds = remaining_iters * avg_dt
@@ -889,8 +894,9 @@ def main():
                         f"Iter {iter_num}/{config.max_iters} ({train_prog:.2%}) | "
                         f"loss {loss_accum_for_log:.4f} | "
                         f"lr {lr:.4e} | "
-                        f"dt {avg_dt*1000:.2f}ms (avg) | "
                         f"mfu {mfu_display*100:.2f}% (avg) | "
+                        f"dt {avg_dt*1000:.2f}ms (avg) | "
+                        f"RT {running_str} (H:M:S) | "
                         f"ETA {eta_str} (H:M:S)" 
                     )
                     
@@ -899,8 +905,9 @@ def main():
                             "iter": iter_num,
                             "train/loss": lossf,
                             "train/lr": lr,
-                            "train/time_ms": avg_dt * 1000,
                             "train/mfu": mfu_display * 100,
+                            "train/time_ms": avg_dt * 1000,
+                            "train/rt_hours": running_seconds / 3600,
                             "train/eta_hours": eta_seconds / 3600
                         })
 
