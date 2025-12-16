@@ -740,15 +740,16 @@ def main():
             
             # Load Model Weights
             state_dict = checkpoint['model']
-            unwanted_prefix = '_orig_mod.'
             
+            new_state_dict = {}
             # Clean the state_dict keys
             for k, v in list(state_dict.items()):
-                if k.startswith(unwanted_prefix):
-                    new_key = k[len(unwanted_prefix):]
-                    state_dict[new_key] = state_dict.pop(k)
+                clean_k = k.replace("module.", "").replace("_orig_mod.", "")
+                new_k = f"module._orig_mod.{clean_k}"
+                new_state_dict[new_k] = v
                     
-            model.load_state_dict(state_dict)
+            msg = model.load_state_dict(new_state_dict, strict=False)
+            logger.info(f"Load state result: {msg}")
             
             # Load Optimizer State
             optimizer.load_state_dict(checkpoint['optimizer'])
