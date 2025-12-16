@@ -732,6 +732,7 @@ def main():
         iter_num = 0
         best_val_loss = 1e9
         
+        # Resume a training
         if config.init_from == 'resume' and os.path.exists(ckpt_path):
             logger.info(f"Resuming training from checkpoint: {ckpt_path}")
             
@@ -979,6 +980,7 @@ def main():
                         if iter_num > 0:
                             checkpoint = {
                                 'model': model.module.state_dict() if ddp else model.state_dict(),
+                                'modality_registry': registry,
                                 'optimizer': optimizer.state_dict(),
                                 'iter_num': iter_num,
                                 'best_val_loss': best_val_loss,
