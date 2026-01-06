@@ -1,0 +1,32 @@
+# /bin/bash
+# ----------------Parameters---------------------- #
+#$ -S /bin/bash
+#$ -pe mthread 32
+#$ -q lTgpu.q
+#$ -cwd
+#$ -j y
+#$ -N affine_job
+#$ -o affine_job.log
+#$ -m bea
+#$ -M sogolsanjaripour@gmail.com
+#$ -l gpu,ngpus=1
+#
+# ----------------Modules------------------------- #
+#
+
+module load tools/conda
+start-conda
+conda activate astropt
+
+# ----------------Your Commands------------------- #
+#
+echo + `date` job $JOB_NAME started in $QUEUE with jobID=$JOB_ID on $HOSTNAME
+echo + NSLOTS = $NSLOTS
+#
+
+cd astroPT
+uv sync
+uv run scripts/train.py --batch_size=32 --compile=False
+
+#
+echo = `date` job $JOB_NAME done

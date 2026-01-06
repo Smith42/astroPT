@@ -81,8 +81,7 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a 100M parameter model on DESI galaxy imagery
     # look at `config/astropt*.py` for a prod run example
-    tokeniser= "aim"
-    out_dir = "logs/astropt0100M"
+    out_dir = "logs/AFFINE"
     eval_interval = 1000
     log_interval = 100
     checkpoint_interval = 5000
@@ -96,12 +95,12 @@ if __name__ == "__main__":
     use_hf = True  # use the huggingface dataset version of our galz
     stream_hf_dataset = True  # stream the galaxies from huggingface
     # data
-    gradient_accumulation_steps = 5 # used to simulate larger batch sizes
-    batch_size = 8#16  # if gradient_accumulation_steps > 1, this is the micro-batch size
+    gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
+    batch_size = 16  # if gradient_accumulation_steps > 1, this is the micro-batch size
     spiral = True  # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     image_size = 256
-    num_workers = 16#32  # 64
+    num_workers = 32  # 64
     # astroPT model
     n_layer = 12
     n_head = 12
@@ -124,12 +123,12 @@ if __name__ == "__main__":
     # Create modality registry
     modality_registry = ModalityRegistry(modalities)
     # Choose tokenisers from "affine" and "aim"
-    tokeniser = "aim"
+    tokeniser = "affine"
     # adamw optimizer
     # we follow the same schedule here as Chinchilla
     learning_rate = 6e-4  # max learning rate
     max_iters = (
-        50000  # total number of training iterations for one pass over our dataset
+        1_000_000  # total number of training iterations for one pass over our dataset
     )
     weight_decay = 1e-1
     beta1 = 0.9
