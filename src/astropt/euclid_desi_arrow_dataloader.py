@@ -146,29 +146,29 @@ class EuclidDESIDatasetArrow(Dataset):
     
     @staticmethod
     def normalise(x: torch.Tensor) -> torch.Tensor:
-    """
-    Standardizes the input tensor (Mean 0, Std 1) while preserving the original dtype.
-    
-    Calculations are performed in float32 for numerical stability, 
-    then cast back to the input dtype (e.g., bfloat16).
+        """
+        Standardizes the input tensor (Mean 0, Std 1) while preserving the original dtype.
+        
+        Calculations are performed in float32 for numerical stability, 
+        then cast back to the input dtype (e.g., bfloat16).
 
-    Args:
-        x (torch.Tensor): Input tensor of shape (N, ...).
+        Args:
+            x (torch.Tensor): Input tensor of shape (N, ...).
 
-    Returns:
-        torch.Tensor: Normalized tensor with the same dtype as input.
-    """
-    # float32 for precise
-    x_32 = x.float()
-    
-    # Standard deviation and mean 
-    std, mean = torch.std_mean(x_32, dim=1, keepdim=True)
-    
-    # Apply Z-score normalization: (Value - Mean) / Std
-    # Added epsilon (1e-8) to prevent division by zero
-    x_norm = (x_32 - mean) / (std + 1e-8)
-    
-    return x_norm.to(x.dtype)
+        Returns:
+            torch.Tensor: Normalized tensor with the same dtype as input.
+        """
+        # float32 for precise
+        x_32 = x.float()
+        
+        # Standard deviation and mean 
+        std, mean = torch.std_mean(x_32, dim=1, keepdim=True)
+        
+        # Apply Z-score normalization: (Value - Mean) / Std
+        # Added epsilon (1e-8) to prevent division by zero
+        x_norm = (x_32 - mean) / (std + 1e-8)
+        
+        return x_norm.to(x.dtype)
 
     @staticmethod
     def data_transforms() -> Dict[str, Any]:
