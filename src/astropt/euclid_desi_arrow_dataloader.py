@@ -12,6 +12,7 @@ import os
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
+from torchvision import transforms
 from typing import Optional, Dict, Any, List, Tuple
 
 
@@ -182,10 +183,10 @@ class EuclidDESIDatasetArrow(Dataset):
         """
         return {
             "images": transforms.Compose([
-                transforms.Lambda(normalise)
+                transforms.Lambda(EuclidDESIDatasetArrow.normalise)
             ]),
             "spectra": transforms.Compose([
-                transforms.Lambda(normalise)
+                transforms.Lambda(EuclidDESIDatasetArrow.normalise)
             ])
         }
     
