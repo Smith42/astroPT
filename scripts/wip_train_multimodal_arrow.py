@@ -30,9 +30,8 @@ from torch.distributed import (
     destroy_process_group
 )
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, default_collate
+from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
-from torchvision import transforms
 
 try:
     import wandb
@@ -88,15 +87,23 @@ class TrainingConfig:
     
     #--- Multimodality Specifics ---#
     # Images
-    images_size: int = 224          # Images side size in pixels
-    images_patch_size: int = 16     # Side size in pixels of each patch in an image
-    images_channels: int = 4        # Channels per image (VIS + NISP Y,J,H)
-    images_loss_weight: float = 1.0 # Image importante for training
+    images_size: int = 224              # Images side size in pixels
+    images_patch_size: int = 16         # Side size in pixels of each patch in an image
+    images_channels: int = 4            # Channels per image (VIS + NISP Y,J,H)
+    images_loss_weight: float = 1.0     # Images importante for training
+    images_embed_pos: bool = True       # Images embedding positions learning
+    image_pos_input_size: int = 1       # Images position input size
+    img_norm_type: str = "constant"     # Normalization method for images (or z_score)
+    img_norm_const: float = 1.0         # Normalization constant for images
     
     # Spectra
     spectra_size: int = 7781            # Spectra total size
     spectra_patch_size: int = 10        # Patch size for each spectrum
     spectra_loss_weight: float = 1.0    # Spectra importance for training 
+    spectra_embed_pos: bool = True      # Spectra embedding positions learning
+    spectra_pos_input_size: int = 1     # Spectra position input size
+    spectra_norm_type: str = "constant" # Normalization method for spectra (or z_score)
+    spectra_norm_const: float = 1.0     # Normalization constant for spectra
     
     #--- 4. Optimization of the Learning Process) ---#
     learning_rate: float = 6e-4     # Learning rate per weight update
@@ -290,52 +297,6 @@ def logging_setup(
     return logger
 
 
-def normalise(x: torch.Tensor) -> torch.Tensor:
-    """
-    Standardizes the input tensor (Mean 0, Std 1) while preserving the original dtype.
-    
-    Calculations are performed in float32 for numerical stability, 
-    then cast back to the input dtype (e.g., bfloat16).
-
-    Args:
-        x (torch.Tensor): Input tensor of shape (N, ...).
-
-    Returns:
-        torch.Tensor: Normalized tensor with the same dtype as input.
-    """
-    # Cast to float32 for precise mean/std calculation (avoids bfloat16 underflow)
-    x_32 = x.float()
-    
-    # Calculate standard deviation and mean across the feature dimension (dim=1)
-    std, mean = torch.std_mean(x_32, dim=1, keepdim=True)
-    
-    # Apply Z-score normalization: (Value - Mean) / Std
-    # Added epsilon (1e-8) to prevent division by zero
-    x_norm = (x_32 - mean) / (std + 1e-8)
-    
-    # Cast back to the original data type (e.g., bfloat16) to save memory
-    return x_norm.to(x.dtype)
-
-
-def data_transforms() -> Dict[str, Any]:
-    """
-    Returns the dictionary of transformations expected by the Dataset.
-    
-    Defines specific preprocessing pipelines for 'images' and 'spectra'.
-
-    Returns:
-        Dict[str, Any]: Keys match the modality names, values are torchvision Transforms.
-    """
-    return {
-        "images": transforms.Compose([
-            transforms.Lambda(normalise)
-        ]),
-        "spectra": transforms.Compose([
-            transforms.Lambda(normalise)
-        ])
-    }
-
-
 def create_dataloaders(
     config: TrainingConfig, 
     ddp: bool
@@ -368,17 +329,17 @@ def create_dataloaders(
             name="images",
             input_size=img_input_batch_size,
             patch_size=config.images_patch_size,
-            pos_input_size=1,  
+            pos_input_size=config.image_pos_input_size,  
             loss_weight=config.images_loss_weight,
-            embed_pos=True,
+            embed_pos=config.images_embed_pos,
         ),
         ModalityConfig(
             name="spectra",
             input_size=config.spectra_patch_size,
             patch_size=config.spectra_patch_size,
-            pos_input_size=config.spectra_patch_size, 
+            pos_input_size=config.spectra_pos_input_size, 
             loss_weight=config.spectra_loss_weight,
-            embed_pos=False,
+            embed_pos=config.spectra_embed_pos,
         ),
     ]
     
@@ -386,7 +347,12 @@ def create_dataloaders(
     registry = ModalityRegistry(modalities)
     
     # Prepare data transformations
-    data_tf = data_transforms()
+    data_tf = EuclidDESIDatasetArrow.data_transforms(
+        norm_type_img=config.img_norm_type,
+        norm_const_img=config.img_norm_const,
+        norm_type_spec=config.spectra_norm_type,
+        norm_const_spec=config.spectra_norm_const
+    )
     
     # Activating the logger object
     logger = logging.getLogger("AstroPT")
@@ -717,6 +683,9 @@ def main():
         # Create the Automatic Mixed Precision context manager
         ctx = torch.amp.autocast(device_type="cuda", dtype=ptdtype)
         
+        # Scaler for the small grandient values
+        scaler = torch.amp.GradScaler("cuda", enabled=(ptdtype == torch.float16))
+        
         # Initialize Model
         model = create_model(config, registry, torch.device(device), ddp)
         
@@ -849,20 +818,24 @@ def main():
                         # Scale loss
                         loss = loss / config.gradient_accumulation_steps
                     
-                    # Backward
-                    loss.backward()
+                    # Sacaled Backward
+                    scaler.scale(loss).backward()
                     
                     # Accumulate the raw loss value for logging
                     loss_accum_for_log += loss.item()
             
             #--- END OF MICRO-BATCHES ---#
             
+            # Unscale gradiente values before update
+            scaler.unscale_(optimizer)
+            
             # OPTIMIZER STEP
             if config.grad_clip != 0.0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
                 
             # Update weights
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
             optimizer.zero_grad(set_to_none=True)
             
             # LOGGING Console & WandB (Master Only)

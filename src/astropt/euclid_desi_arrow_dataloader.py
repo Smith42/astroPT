@@ -146,6 +146,21 @@ class EuclidDESIDatasetArrow(Dataset):
         return result
     
     @staticmethod
+    def normalise_by_const(x: torch.Tensor, const: float) -> torch.Tensor:
+        """
+        Normalizes input by dividing by a fixed constant (e.g., global P99).
+        """
+        x_32 = x.float()
+        
+        # Avoid division by zero
+        div_val = const if const > 1e-8 else 1.0
+        
+        # Normalization
+        x_norm = x_32 / div_val
+        
+        return x_norm.to(x.dtype)
+    
+    @staticmethod
     def normalise(x: torch.Tensor) -> torch.Tensor:
         """
         Standardizes the input tensor (Mean 0, Std 1) while preserving the original dtype.
@@ -172,21 +187,47 @@ class EuclidDESIDatasetArrow(Dataset):
         return x_norm.to(x.dtype)
 
     @staticmethod
-    def data_transforms() -> Dict[str, Any]:
+    def data_transforms(
+        norm_type_img: str = "z_score",
+        norm_const_img: float = 1.0,
+        norm_type_spec: str = "z_score",
+        norm_const_spec: float = 1.0
+    ) -> Dict[str, Any]:
         """
-        Returns the dictionary of transformations expected by the Dataset.
-        
-        Defines specific preprocessing pipelines for 'images' and 'spectra'.
+        Generates the dictionary of data transformations dynamically based on the configuration.
+
+        This method configures the preprocessing pipelines for 'images' and 'spectra'
+        independently, allowing for Z-score normalization, normalization by a fixed constant
+        (e.g., a pre-calculated percentile), or Identity (no normalization).
+
+        Args:
+            norm_type_img (str): Normalization strategy for images. Options: "z_score", "constant", "none".
+            norm_const_img (float): The divisor constant used if norm_type_img is "constant".
+            norm_type_spec (str): Normalization strategy for spectra. Options: "z_score", "constant", "none".
+            norm_const_spec (float): The divisor constant used if norm_type_spec is "constant".
 
         Returns:
-            Dict[str, Any]: Keys match the modality names, values are torchvision Transforms.
+            Dict[str, Any]: Dictionary where keys are modality names ('images', 'spectra')
+                            and values are the composed torchvision Transforms.
         """
+        
+        # Internal helper function to select the correct normalization method
+        def get_transform(n_type: str, n_const: float):
+            if n_type == "constant":
+                # Using lambda for parsing two arguments to Compose module
+                return transforms.Lambda(lambda x: EuclidDESIDatasetArrow.normalise_by_const(x, n_const))
+            elif n_type == "z_score":
+                return transforms.Lambda(EuclidDESIDatasetArrow.normalise_zscore)
+            else:
+                # Identity transform (no change)
+                return transforms.Lambda(lambda x: x)
+
         return {
             "images": transforms.Compose([
-                transforms.Lambda(EuclidDESIDatasetArrow.normalise)
+                get_transform(norm_type_img, norm_const_img)
             ]),
             "spectra": transforms.Compose([
-                transforms.Lambda(EuclidDESIDatasetArrow.normalise)
+                get_transform(norm_type_spec, norm_const_spec)
             ])
         }
     
@@ -366,37 +407,13 @@ class EuclidDESIDatasetArrow(Dataset):
         shuf: bool = False
     ) -> Dict[str, Dict[str, torch.Tensor]]:
         """
-        Prepares the batch for training by moving tensors to GPU and creating Input (X) 
-        and Target (Y) sequences with a Hybrid Autoregressive Shift.
-
-        This method solves the dimension mismatch issue by applying different slicing 
-        strategies based on the modality name, derived from empirical model behavior:
-
-        1. Target (Y): Always represents the 'next token' (t+1).
-           - Logic: Shift forward by 1 (drops the first token).
-           
-        2. Input (X): Depends on how the model processes each modality internally.
-           - 'images': The model internally consumes 1 token (likely during embedding).
-             Strategy: Feed the FULL sequence (N). Output will be N-1, matching Y.
-           - 'spectra': The model preserves the sequence length.
-             Strategy: Feed a TRIMMED sequence (N-1). Output will be N-1, matching Y.
-
-        Args:
-            batch_data (Dict[str, Any]): Dictionary containing raw tensors from the Dataloader.
-            modality_registry (Any): Object containing the configuration and order of modalities.
-            device (torch.device): The target device (CPU/CUDA) for tensor allocation.
-            shuf (bool, optional): Whether to shuffle the order of modalities (Data Augmentation). 
-                                   Defaults to False.
-
-        Returns:
-            Dict[str, Dict[str, torch.Tensor]]: A dictionary with two keys:
-                - "X": Inputs dictionary mapping {modality_name: tensor}.
-                - "Y": Targets dictionary mapping {modality_name: tensor}.
+        Prepares the batch compatible with AstroPT's native bridge logic.
+        
+        The model's _forward_native method automatically holds back the last token 
+        of the first modality to seed the next one. We must align inputs/targets accordingly.
         """
-        # 1. Determine the order of modalities (e.g., ['images', 'spectra'])
         modes = modality_registry.generate_sequence(shuf=shuf)
-
-        # 2. Move all data to the target device (GPU) efficiently
+        
         data_on_device = {
             k: v.to(device, non_blocking=True) if isinstance(v, torch.Tensor) else v 
             for k, v in batch_data.items()
@@ -405,39 +422,37 @@ class EuclidDESIDatasetArrow(Dataset):
         X = {}
         Y = {}
         
-        for mode in modes:
-            # Extract raw data and position tensors for the current modality
+        num_modes = len(modes)
+        
+        for i, mode in enumerate(modes):
             data = data_on_device[mode]
             pos = data_on_device[f"{mode}_positions"]
             
-            #--- TARGET (Y) GENERATION ---#
-            # The goal is always to predict the next step.
-            # We slice from index 1 to the end (removing the first token).
-            # Shape: (Batch, N-1, Dim)
-            Y[mode] = data[:, 1:]
+            # Check if this is the LAST modality
+            is_last_modality = (i == num_modes - 1)
             
-            #--- INPUT (X) GENERATION (HYBRID STRATEGY) ---#
-            if mode == 'images':
-                # CASE 1: IMAGES
-                # Empirical observation: Model output is 1 token shorter than input.
-                # Action: Provide FULL sequence (N) so output becomes (N-1).
-                # Matches Target Y (N-1).
+            if not is_last_modality:
+                # CASE: BRIDGE MODALITY (e.g., Images)
+                # Model logic: Consumes N inputs, produces N-1 outputs.
+                # The N-th input is used internally to start the next modality.
+                
+                # Input: full sequence
                 X[mode] = data
                 X[f"{mode}_positions"] = pos
                 
-            elif mode == 'spectra':
-                # CASE 2: SPECTRA
-                # Empirical observation: Model output length equals input length.
-                # Action: Manually TRIM the last token (N-1) so output stays (N-1).
-                # Matches Target Y (N-1).
+                # Target: SHIFTED [1, ..., N]
+                Y[mode] = data[:, 1:]
+                
+            else:
+                # CASE: FINAL MODALITY (e.g., Spectra)
+                # Model logic: Starts predicting from index 0 because it received 
+                # the "bridge" token from the previous modality.
+                
+                # Input: TRIMMED END [0, ..., N-1]
                 X[mode] = data[:, :-1]
                 X[f"{mode}_positions"] = pos[:, :-1]
                 
-            else:
-                # Fallback for unknown modalities
-                # Standard autoregressive behavior (Input is t, Target is t+1)
-                X[mode] = data[:, :-1]
-                X[f"{mode}_positions"] = pos[:, :-1]
+                Y[mode] = data
 
         return {"X": X, "Y": Y}
         
