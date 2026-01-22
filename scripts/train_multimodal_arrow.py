@@ -5,7 +5,7 @@ This script implements a Distributed Data Parallel (DDP) training loop for the
 AstroPT model, utilising the Euclid-DESI multimodal dataset (Arrow format).
 
 Author: Victor Alonso Rodriguez
-Date: December 2025
+Date: January 2026
 """
 
 from __future__ import annotations
@@ -13,9 +13,11 @@ from __future__ import annotations
 import argparse
 import datetime
 import inspect
-import math
+import json
 import logging
+import math
 import os
+import subprocess
 import sys
 import time
 from contextlib import nullcontext
@@ -30,6 +32,7 @@ from torch.distributed import (
     destroy_process_group
 )
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.profiler import profile, record_function, ProfilerActivity, schedule, tensorboard_trace_handler
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
@@ -90,7 +93,7 @@ class TrainingConfig:
     images_size: int = 224              # Images side size in pixels
     images_patch_size: int = 16         # Side size in pixels of each patch in an image
     images_channels: int = 4            # Channels per image (VIS + NISP Y,J,H)
-    images_loss_weight: float = 1.0     # Images importante for training
+    images_loss_weight: float = 1.0     # Images importance for training
     images_embed_pos: bool = True       # Images embedding positions learning
     image_pos_input_size: int = 1       # Images position input size
     img_norm_type: str = "constant"     # Normalization method for images (or z_score)
@@ -128,20 +131,23 @@ class TrainingConfig:
     eval_batches: int = 100                 # How many batches to use for validation
     log_interval: int = 200                 # How often to print to console/WandB
     checkpoint_interval: int = 2_000        # How often to save .pt files
-    always_save_checkpoint: bool = False    # If True, save every interval regardless of improvement
+    checkpoint_save_type: str = "both"      # Checkpoint saving mode: best, last or both
+    early_stopping_patience: int = 10       # Stop if no improvement after N evals
 
     #--- 7. System & Backend ---#
-    device: str = "cuda"            # CPU/GPU device interface: cpu, cuda or mps
-    dtype: str = "bfloat16"         # 'bfloat16' is best for A100 GPUs
-    compile: bool = True            # PyTorch 2.0 compiler
-    compile_mode: str = "default"   # Compilation mode
-    backend: str = "nccl"           # Communication backend for DDP
+    device: str = "cuda"                    # CPU/GPU device interface: cpu, cuda or mps
+    dtype: str = "bfloat16"                 # 'bfloat16' is best for A100 GPUs
+    compile: bool = True                    # PyTorch 2.0 compiler
+    compile_mode: str = "default"           # Compilation mode
+    backend: str = "nccl"                   # Communication backend for DDP
+    max_run_hours: Optional[float] = None   # Force stop after N hours
 
     #--- 8. External Monitoring ---#
     log_via_wandb: bool = False             # Weight and bias (wandb) logging
     wandb_project: str = "AstroPT-Arrow"    # wandb project name
     wandb_run_name: Optional[str] = None    # Training name
     log_emissions: bool = False             # CodeCarbon logging
+    profile: bool = False                   # Enable PyTorch Profiler (Trace analysis)
 
 
 def get_config_from_args() -> TrainingConfig:
@@ -189,6 +195,74 @@ def get_config_from_args() -> TrainingConfig:
     
     # Overriding default configuration
     return TrainingConfig(**vars(args))
+
+def get_git_commit_hash() -> str:
+    """Returns the current git commit hash or 'unknown' if not in a git repo."""
+    try:
+        return subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('ascii').strip()
+    except Exception:
+        return "unknown"
+    
+
+def get_dataset_info(data_dir: str) -> dict:
+    """
+    Scans the data directory to create an informative version based on 
+    filesystem metadata: latest modification time and total size.
+    """
+    try:
+        max_mtime = 0.0
+        total_size = 0
+        file_count = 0
+
+        # Walk through the directory
+        for root, _, files in os.walk(data_dir):
+            for name in files:
+                # Filter arrow files
+                if not name.endswith('.arrow') and not name.endswith('.json'):
+                    continue
+                
+                full_path = os.path.join(root, name)
+                stats = os.stat(full_path)
+                
+                # Update max modification time
+                if stats.st_mtime > max_mtime:
+                    max_mtime = stats.st_mtime
+                
+                # Accumulate size
+                total_size += stats.st_size
+                file_count += 1
+
+        # Convert timestamp
+        if max_mtime > 0:
+            last_modified_str = datetime.datetime.fromtimestamp(max_mtime).strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            last_modified_str = "Unknown"
+
+        # Returning a dictionary for adding it to the configuration file
+        return {
+            "data_last_modified": last_modified_str,
+            "data_total_size_mb": round(total_size / (1024 * 1024), 2), # Size in MB
+            "data_file_count": file_count
+        }
+        
+    except Exception as e:
+        return {"data_version_error": str(e)}
+    
+def save_config_json(config: TrainingConfig, rank: int):
+    """Saves the configuration to a JSON file for reproducibility."""
+    if rank == 0:
+        config_dict = asdict(config)
+        
+        # Adding Git hash
+        config_dict["git_hash"] = get_git_commit_hash()
+        
+        # Adding dataset information
+        data_stats = get_dataset_info(config.data_dir)
+        config_dict.update(data_stats)
+        
+        config_path = os.path.join(config.out_dir, "config.json")
+        with open(config_path, "w") as f:
+            json.dump(config_dict, f, indent=4)
 
 def ddp_setup() -> Tuple[bool, int, int, str]:
     """
@@ -469,7 +543,7 @@ def create_model(
     # DDP Wrapping
     if ddp:
         
-        # Loal RANK for each process
+        # Local RANK for each process
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
         
         # Model configuration for DDP
@@ -606,7 +680,7 @@ def main():
     # Setup Logger (only Master Process logs to file/console)
     logger = logging_setup(config, ddp_rank)
     
-    # Log basic treaining info
+    # Log basic training info
     if ddp_rank == 0:
         logger.info(f"Starting AstroPT training on {device} (DDP: {ddp})")
         
@@ -618,7 +692,7 @@ def main():
     # Changing configuration for DDP mode
     if ddp: 
         
-        # Automatic gradient acucumulation steps
+        # Automatic gradient accumulation steps
         if config.gradient_accumulation_steps % ddp_world_size != 0:
             if ddp_rank == 0:
                 logger.warning(f"Grad Accum {config.gradient_accumulation_steps} is not divisible by {ddp_world_size}. It will be rounded down.")
@@ -639,7 +713,7 @@ def main():
         except AttributeError:
             total_available_cpus = os.cpu_count() or 1
         
-        # Computing how maney CPU can be assigned to each GPU
+        # Computing how many CPU can be assigned to each GPU
         cpus_per_gpu = total_available_cpus // ddp_world_size
         
         # Assigning the half of the total
@@ -683,7 +757,7 @@ def main():
         # Create the Automatic Mixed Precision context manager
         ctx = torch.amp.autocast(device_type="cuda", dtype=ptdtype)
         
-        # Scaler for the small grandient values
+        # Scaler for small grandient values
         scaler = torch.amp.GradScaler("cuda", enabled=(ptdtype == torch.float16))
         
         # Initialize Model
@@ -695,47 +769,70 @@ def main():
         #--- CHECKPOINT MANAGEMENT ---#
         
         # Define where the checkpoint file should be
-        ckpt_path = os.path.join(config.out_dir, 'ckpt.pt')
+        ckpt_path_best = os.path.join(config.out_dir, 'ckpt_best.pt')
+        ckpt_path_last = os.path.join(config.out_dir, 'ckpt_last.pt')
         
         # State variables
         iter_num = 0
         best_val_loss = 1e9
+        accumulated_time = 0.0
+        early_stop_counter = 0
         
         # Resume a training
-        if config.init_from == 'resume' and os.path.exists(ckpt_path):
-            logger.info(f"Resuming training from checkpoint: {ckpt_path}")
+        if config.init_from == 'resume':
             
-            # Load the file to the current device (CPU or GPU)
-            checkpoint = torch.load(ckpt_path, map_location=device)
+            # 1. Try lo load the LAST checkpoint file
+            if os.path.exists(ckpt_path_last):
+                ckpt_path = ckpt_path_last
+                logger.info(f"Resuming from LAST checkpoint: {ckpt_path}")
             
-            # Load Model Weights
-            state_dict = checkpoint['model']
+            # 2. Try BEST if LAST is not found
+            elif os.path.exists(ckpt_path_best):
+                ckpt_path = ckpt_path_best
+                logger.info(f"Resuming from BEST checkpoint: {ckpt_path}")
             
-            new_state_dict = {}
-            # Clean the state_dict keys
-            for k, v in list(state_dict.items()):
-                clean_k = k.replace("module.", "").replace("_orig_mod.", "")
-                new_k = f"module._orig_mod.{clean_k}"
-                new_state_dict[new_k] = v
-                    
-            msg = model.load_state_dict(new_state_dict, strict=False)
-            logger.info(f"Load state result: {msg}")
+            # 3. If neither exists: From Scratch
+            else:
+                ckpt_path = None
+                logger.warning(f"Resume requested but no checkpoints found. Starting from SCRATCH.")
             
-            # Load Optimizer State
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            
-            # Restore Training Counters
-            iter_num = checkpoint['iter_num']
-            best_val_loss = checkpoint['best_val_loss']
-            
-            logger.info(f"Resumed successfully at iteration {iter_num} (Best Loss: {best_val_loss:.4f})")
-            
-        elif config.init_from == 'resume' and not os.path.exists(ckpt_path):
-            logger.warning(f"Resume requested but no checkpoint found at {ckpt_path}. Starting from SCRATCH.")
-            
-        else:
-            logger.info("Starting training from scratch.")
+            if ckpt_path:
+                # Load the file to the current device (CPU or GPU)
+                checkpoint = torch.load(ckpt_path, map_location=device)
+                
+                # Load Model Weights
+                state_dict = checkpoint['model']
+                
+                new_state_dict = {}
+                # Clean the state_dict keys
+                for k, v in list(state_dict.items()):
+                    clean_k = k.replace("module.", "").replace("_orig_mod.", "")
+                    new_k = f"module._orig_mod.{clean_k}"
+                    new_state_dict[new_k] = v
+                        
+                msg = model.load_state_dict(new_state_dict, strict=False)
+                logger.info(f"Load state result: {msg}")
+                
+                # Load Optimizer State
+                optimizer.load_state_dict(checkpoint['optimizer'])
+                
+                # Restore Training Counters
+                iter_num = checkpoint['iter_num']
+                best_val_loss = checkpoint['best_val_loss']
+                accumulated_time = checkpoint.get('total_run_time', 0.0)
+                
+                # Changing time to hours
+                prev_hours = accumulated_time / 3600
+                
+                logger.info(f"Resumed successfully at iteration {iter_num} - Best Loss: {best_val_loss:.4f} - Previous run time: {prev_hours:.2f} hours.")
 
+            else:
+                logger.info("Starting training from scratch.")
+            
+            # If a training is resume, patience to zero again
+            early_stop_counter = 0
+            
+                
 
         #--- TRAINING LOOP SETUP ---#
         
@@ -751,7 +848,16 @@ def main():
         # Wait for all GPUs synchronization
         if ddp:
             dist.barrier()
-            
+        
+        # CSV Logging setup
+        if ddp_rank == 0:
+            csv_path = os.path.join(config.out_dir, "metrics.csv")
+            if config.init_from == 'scratch' or not os.path.exists(csv_path):
+                with open(csv_path, "w") as f:
+                    # Headers for the CSV
+                    f.write("iter,progress,timestamp,train_loss,val_loss,grad_norm,clipped,lr,mfu,mem_gb,dt_ms,rt_hms,eta_hms\n")
+        
+        # WANDB Configuration
         if ddp_rank == 0:
             logger.info(f"Starting training loop from iteration {iter_num}...")
             if config.log_via_wandb and _WANDB_AVAILABLE:
@@ -759,10 +865,38 @@ def main():
                         name=config.wandb_run_name, 
                         config=asdict(config))
 
-        #--- THE INFINITE LOOP ---#
+
+        # Pytorch profiler setup
+        prof = nullcontext()
+
+        if config.profile:
+            # Schedule: 
+            # - wait=10: Avoid 10 first iters
+            # - warmup=2: Starting the tracer
+            # - active=4: Saving iters 12, 13, 14 and 15
+            # - repeat=1: Just one time
+            wait, warmup, active = 10, 2, 4
+            
+            prof = profile(
+                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                schedule=schedule(wait=wait, warmup=warmup, active=active, repeat=1),
+                on_trace_ready=tensorboard_trace_handler(os.path.join(config.out_dir, "profiler_trace")),
+                record_shapes=True,
+                profile_memory=True,
+                with_stack=True
+            )
+            
+            if ddp_rank == 0:
+                logger.info(f"Profiler enabled. Recording iterations {wait+warmup} to {wait+warmup+active}...")
+            
+            # Starting the profiler
+            prof.start()
+
+
+        #--- THE TRAINING LOOP ---#
         while iter_num < config.max_iters:
             
-            # SET LEARNING RATE for this iteraction
+            # SET LEARNING RATE for this iteration
             lr = get_learning_rate(iter_num, config)
             for param_group in optimizer.param_groups:
                 param_group['lr'] = lr
@@ -815,10 +949,23 @@ def main():
                         # Forward pass
                         _, loss = model(B["X"], targets=B["Y"])
                         
+                        # Skipping the batch if the loss is NaN
+                        if torch.isnan(loss) or torch.isinf(loss):
+                            skip_step = True
+                            if ddp_rank == 0:
+                                logger.warning(f"NaN/Inf detected in loss at iter {iter_num}, micro-step {micro_step}. Skipping batch.")
+                            break
+                        
                         # Scale loss
                         loss = loss / config.gradient_accumulation_steps
+                        
                     
-                    # Sacaled Backward
+                    # If there is a NaN, backward is avoided
+                    if not skip_step:
+                        scaler.scale(loss).backward()
+                        loss_accum_for_log += loss.item()
+                    
+                    # Scaled Backward
                     scaler.scale(loss).backward()
                     
                     # Accumulate the raw loss value for logging
@@ -826,16 +973,41 @@ def main():
             
             #--- END OF MICRO-BATCHES ---#
             
-            # Unscale gradiente values before update
-            scaler.unscale_(optimizer)
-            
-            # OPTIMIZER STEP
-            if config.grad_clip != 0.0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+            # Not NaNs found
+            if not skip_step:
                 
-            # Update weights
-            scaler.step(optimizer)
-            scaler.update()
+                # Unscaling the gradient
+                scaler.unscale_(optimizer)
+                
+                # Control variables
+                grad_norm = 0.0
+                is_clipped = 0.0
+                
+                if config.grad_clip != 0.0:
+                    
+                    # This fonction (finished in _) computes the gradient norm, 
+                    # returns it and compares with the gradient clipping value
+                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+                    
+                    # Logging if gradient is clipped
+                    if grad_norm > config.grad_clip:
+                        is_clipped = 1.0
+                    
+                    
+                # Updating the weights
+                scaler.step(optimizer)
+                scaler.update()
+                
+            else:
+                # NaNs found
+                grad_norm = 0.0
+                is_clipped = 0.0
+                optimizer.zero_grad(set_to_none=True)
+                
+                # Loss value for logging
+                loss_accum_for_log = float('nan')
+            
+            # Always set gradient to none
             optimizer.zero_grad(set_to_none=True)
             
             # LOGGING Console & WandB (Master Only)
@@ -843,6 +1015,10 @@ def main():
                 t1 = time.time()
                 dt = t1 - t0
                 t0 = t1
+                
+                # Training progress
+                train_prog = iter_num / config.max_iters
+                    
                 
                 if iter_num % config.log_interval == 0:
                     
@@ -872,27 +1048,33 @@ def main():
                             mfu_display = raw_model.estimate_mfu(fwdbwd_per_gpu, avg_dt)
                     else:
                         mfu_display = -1.0
+                        
+                    # VRAM Computation
+                    mem_usage = torch.cuda.max_memory_allocated() / (1024 ** 3) 
+                    torch.cuda.reset_peak_memory_stats()   
+                    
                     
                     # Recover the real average loss of the batch
                     lossf = loss_accum_for_log
                     
                     # Compute Running Time
-                    running_seconds = time.time() - run_start_time
-                    running_str = str(datetime.timedelta(seconds=int(running_seconds)))
+                    current_session_seconds = time.time() - run_start_time
+                    total_seconds = current_session_seconds + accumulated_time
+                    
+                    running_str = str(datetime.timedelta(seconds=int(total_seconds)))
                     
                     # Compute the ETA for finishing training
                     remaining_iters = config.max_iters - iter_num
                     eta_seconds = remaining_iters * avg_dt
                     eta_str = str(datetime.timedelta(seconds=int(eta_seconds)))
                     
-                    # Training progress
-                    train_prog = iter_num / config.max_iters
-                    
                     logger.info(
                         f"Iter {iter_num}/{config.max_iters} ({train_prog:.2%}) | "
-                        f"loss {loss_accum_for_log:.4f} | "
-                        f"lr {lr:.4e} | "
-                        f"mfu {mfu_display*100:.2f}% (avg) | "
+                        f"Loss {loss_accum_for_log:.4f} | "
+                        f"LR {lr:.4e} | "
+                        f"Norm {grad_norm:.2f} |"
+                        f"MFU {mfu_display*100:.2f}% (avg) | "
+                        f"Mem {mem_usage:.2f}GB | "
                         f"dt {avg_dt*1000:.2f}ms (avg) | "
                         f"RT {running_str} (H:M:S) | "
                         f"ETA {eta_str} (H:M:S)" 
@@ -903,14 +1085,34 @@ def main():
                             "iter": iter_num,
                             "train/loss": lossf,
                             "train/lr": lr,
+                            "train/grad_norm": grad_norm,
                             "train/mfu": mfu_display * 100,
+                            "train/mem_gb": mem_usage,
                             "train/time_ms": avg_dt * 1000,
-                            "train/rt_hours": running_seconds / 3600,
+                            "train/rt_hours": total_seconds / 3600,
                             "train/eta_hours": eta_seconds / 3600
                         })
+                        
+                        # CSV Writing
+                        try:
+                            with open(csv_path, "a") as f:
+                                # Obtaining the current timestamp
+                                timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                
+                                # Writing into the CSV
+                                f.write(f"{iter_num},{train_prog},{timestamp_str},{loss_accum_for_log:.6f},,"
+                                        f"{grad_norm:.4f},{is_clipped:.0f},{lr:.4e},{mfu_display*100:.2f},{mem_usage:.2f},"
+                                        f"{avg_dt*1000:.2f},{running_str},{eta_str}\n"
+                                )
+                                
+                        except Exception as e:
+                            logger.error(f"CSV Write Error: {e}")
 
-            # VALIDATION & CHECKPOINTING
+            # VALIDATION & CHECKPOINT
             if iter_num > 0 and iter_num % config.eval_interval == 0:
+                
+                # Stopping training variable
+                stop_training = False
                 
                 # Master performs validation
                 if ddp_rank == 0:
@@ -946,41 +1148,154 @@ def main():
                     
                     if config.log_via_wandb and _WANDB_AVAILABLE:
                         wandb.log({"val/loss": val_loss, "iter": iter_num})
+                        
+                    # CSV Write: Just Validation properties
+                    try:
+                        with open(csv_path, "a") as f:
+                            timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            
+                            # iter, prog, time, t_loss(empty), val_loss, grad(empty)...
+                            f.write(f"{iter_num},{train_prog:.4f},{timestamp_str},,{val_loss:.6f},,,,,,,,\n")
+                    except Exception as e:
+                        logger.error(f"Val CSV Write Error: {e}")
                     
-                    # Save Checkpoint
-                    if val_loss < best_val_loss or config.always_save_checkpoint:
+                    
+                    # EARLY STOPPING MECHANISM
+                    
+                    # If loss improve
+                    if val_loss < best_val_loss:
+                        # Reset the stop counter
                         best_val_loss = val_loss
-                        if iter_num > 0:
-                            checkpoint = {
-                                'model': model.module.state_dict() if ddp else model.state_dict(),
-                                'modality_registry': registry,
-                                'optimizer': optimizer.state_dict(),
-                                'iter_num': iter_num,
-                                'best_val_loss': best_val_loss,
-                                'config': asdict(config),
-                            }
-                            logger.info(f"Saving checkpoint to {ckpt_path}")
-                            torch.save(checkpoint, ckpt_path)
+                        early_stop_counter = 0
+                        is_best = True
+                        
+                    else:
+                        # Increasing the counter
+                        early_stop_counter += 1
+                        is_best = False
+                        logger.info(f"Early Stopping Counter: {early_stop_counter}/{config.early_stopping_patience}")
+                        
+                        # If counter eaches the patience limit
+                        if early_stop_counter >= config.early_stopping_patience:
+                            logger.info(f"Early stopping triggered! No improvement for {early_stop_counter} checks.")
+                            stop_training = True
+                    
+                    
+                    # CHECKPOINT SAVING
+                    if iter_num > 0:
+                        
+                        # 1. Calculate current total time
+                        current_total_time = (time.time() - run_start_time) + accumulated_time
+                        
+                        # 2. Prepare Base Checkpoint Dictionary
+                        checkpoint = {
+                            'model': model.module.state_dict() if ddp else model.state_dict(),
+                            'modality_registry': registry,
+                            'optimizer': optimizer.state_dict(),
+                            'iter_num': iter_num,
+                            'best_val_loss': best_val_loss, # Current record (may be updated below)
+                            'config': asdict(config),
+                            'total_run_time': current_total_time,
+                            'early_stop_counter': early_stop_counter,
+                        }
+
+                        # 3. Save "LAST" - Periodic save
+                        if config.checkpoint_save_type in ["last", "both"]:
+                            checkpoint['best_val_loss'] = best_val_loss
+                            torch.save(checkpoint, ckpt_path_last)
+
+                        # 4. Save "BEST"
+                        if is_best and config.checkpoint_save_type in ["best", "both"]:
+                            checkpoint['best_val_loss'] = best_val_loss 
+                            logger.info(f"New best model found ({val_loss:.4f}). Saving to {ckpt_path_best}")
+                            torch.save(checkpoint, ckpt_path_best)
                 
-                # Sync Barrier: Wait for validation to finish
                 if ddp:
+                    
+                    # 1=Stop, 0=Continue
+                    stop_signal = torch.tensor(1 if stop_training else 0, device=device)
+                    
+                    # Comunicating the decission to al GPUs
+                    dist.broadcast(stop_signal, src=0)
+                    
+                    # Update the stopping variable
+                    stop_training = stop_signal.item() == 1
+                    
+                    # Waiting to finish
                     dist.barrier()
                 
                 # Switch back to training modes
                 model.train() 
+                
+                # Early stopping
+                if stop_training:
+                    if ddp_rank == 0:
+                        logger.info("Stopping training loop due to Early Stopping.")
+                    break # Exit the while iter_num < max_iters loop
+                
+            # PROFILER STEP
+            if config.profile:
+                prof.step()
+                
+            
+            # AUTOSAVING
+            # In case the Slurm time comes to an end, finishing earlier
+            if config.max_run_hours is not None:
+                elapsed_hours = (time.time() - run_start_time) / 3600
+                
+                # If own limit time is reached
+                if elapsed_hours > config.max_run_hours:
+                    # Stop
+                    stop_signal = torch.tensor(1, device=device)
+                else:
+                    # Continue
+                    stop_signal = torch.tensor(0, device=device)
 
-            # Increment step counter
+                # Syncronizing all process
+                if ddp:
+                    dist.all_reduce(stop_signal, op=dist.ReduceOp.MAX)
+                
+                if stop_signal.item() == 1:
+                    if ddp_rank == 0:
+                        logger.info(f"Time limit reached ({elapsed_hours:.2f}h > {config.max_run_hours}h). Saving checkpoint and exiting...")
+                        
+                        # Saving checkpoint
+                        current_total_time = (time.time() - run_start_time) + accumulated_time
+                        checkpoint = {
+                            'model': model.module.state_dict() if ddp else model.state_dict(),
+                            'modality_registry': registry,
+                            'optimizer': optimizer.state_dict(),
+                            'iter_num': iter_num,
+                            'best_val_loss': best_val_loss,
+                            'config': asdict(config),
+                            'total_run_time': current_total_time,
+                            'early_stop_counter': early_stop_counter,
+                        }
+                        
+                        # Overwriting the LAST checkpoint
+                        torch.save(checkpoint, ckpt_path_last)
+                        logger.info(f"Emergency checkpoint saved to {ckpt_path_last}")
+
+                    break # Exit the loop
+            
+            # Increment iter counter
             iter_num += 1
+
 
     finally:
         
-        #--- CLEANUP ---#
+        # Stop profiler if active
+        if config.profile:
+            prof.stop()
+        
+        #--- CLEANUP DDP ---#
         if ddp:
             destroy_process_group()
             logger.info("Cleanup complete.")
         
         if ddp_rank == 0:
             logger.info("Training finished!")
+
 
 if __name__ == "__main__":
     main()
