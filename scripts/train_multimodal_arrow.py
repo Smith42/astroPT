@@ -855,7 +855,7 @@ def main():
             if config.init_from == 'scratch' or not os.path.exists(csv_path):
                 with open(csv_path, "w") as f:
                     # Headers for the CSV
-                    f.write("iter,progress,timestamp,train_loss,val_loss,grad_norm,clipped,lr,mfu,mem_gb,dt_ms,rt_hms,eta_hms\n")
+                    f.write("iter,epochp,rogress,timestamp,train_loss,val_loss,grad_norm,clipped,lr,mfu,mem_gb,dt_ms,rt_hms,eta_hms\n")
         
         # WANDB Configuration
         if ddp_rank == 0:
@@ -1100,7 +1100,7 @@ def main():
                                 timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                 
                                 # Writing into the CSV
-                                f.write(f"{iter_num},{train_prog},{timestamp_str},{loss_accum_for_log:.6f},,"
+                                f.write(f"{iter_num},{epoch_num},{train_prog},{timestamp_str},{loss_accum_for_log:.6f},,"
                                         f"{grad_norm:.4f},{is_clipped:.0f},{lr:.4e},{mfu_display*100:.2f},{mem_usage:.2f},"
                                         f"{avg_dt*1000:.2f},{running_str},{eta_str}\n"
                                 )
@@ -1155,7 +1155,7 @@ def main():
                             timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             
                             # iter, prog, time, t_loss(empty), val_loss, grad(empty)...
-                            f.write(f"{iter_num},{train_prog:.4f},{timestamp_str},,{val_loss:.6f},,,,,,,,\n")
+                            f.write(f"{iter_num},{epoch_num},{train_prog:.4f},{timestamp_str},,{val_loss:.6f},,,,,,,,\n")
                     except Exception as e:
                         logger.error(f"Val CSV Write Error: {e}")
                     
