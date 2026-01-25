@@ -811,7 +811,7 @@ def main():
             
             if ckpt_path:
                 # Load the file to the current device (CPU or GPU)
-                checkpoint = torch.load(ckpt_path, map_location=device)
+                checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
                 
                 # Load Model Weights
                 state_dict = checkpoint['model']
