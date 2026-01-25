@@ -2,10 +2,11 @@
 
 #--- SLURM option configuration ---#
 #SBATCH --job-name=Plot_Metrics
-#SBATCH --partition=batch
+#SBATCH --partition=gpu
 #SBATCH --nodes=1                
 #SBATCH --ntasks=1               
-#SBATCH --cpus-per-task=1          
+#SBATCH --cpus-per-task=1       
+#SBATCH --gpus-per-task=1        
 #SBATCH --mem=8G                
 #SBATCH --time=00:10:00         
 
