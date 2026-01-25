@@ -1,11 +1,11 @@
 #!/bin/bash
 
 #--- SLURM option configuration ---#
-#SBATCH --job-name=Extract_Embed
-#SBATCH --partition=cpu
+#SBATCH --job-name=Plot_Metrics
+#SBATCH --partition=batch
 #SBATCH --nodes=1                
 #SBATCH --ntasks=1               
-#SBATCH --cpus-per-task=2          
+#SBATCH --cpus-per-task=1          
 #SBATCH --mem=8G                
 #SBATCH --time=00:10:00         
 
@@ -22,7 +22,7 @@ echo "-----------------------------------------------"
 REPO_ROOT=${1:-"/home/valonso/iac18_mhuertas_shared/valonso/astroPT"}
 shift
 echo "Changing directory to: $REPO_ROOT"
-cd "$PROJ_ROOT" || exit 1
+cd "$REPO_ROOT" || exit 1
 source .venv/bin/activate
 
 # Arguments

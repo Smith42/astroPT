@@ -37,6 +37,7 @@ echo "[Step 2] Job sent (Train Resume).   ID: $JOB2 (Depends on $JOB1)"
 JOB3=$(sbatch --parsable --dependency=afterany:$JOB2 "$SCRIPT_DIR/plot_training_metrics.sh" "$REPO_ROOT" "$OUT_DIR")
 echo "[Step 3] Job sent (Plot Dashboard). ID: $JOB3 (Depends on $JOB2)"
 
+sleep 10
 
 #--- JOB INFORMATION ---#
 echo "-------------------------------------------------"
