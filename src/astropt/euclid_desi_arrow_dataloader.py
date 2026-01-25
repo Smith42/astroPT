@@ -407,52 +407,25 @@ class EuclidDESIDatasetArrow(Dataset):
         shuf: bool = False
     ) -> Dict[str, Dict[str, torch.Tensor]]:
         """
-        Prepares the batch compatible with AstroPT's native bridge logic.
-        
-        The model's _forward_native method automatically holds back the last token 
-        of the first modality to seed the next one. We must align inputs/targets accordingly.
+        Prepares the batch for targets and inputs sequences for each modality.
         """
         modes = modality_registry.generate_sequence(shuf=shuf)
-        
-        data_on_device = {
-            k: v.to(device, non_blocking=True) if isinstance(v, torch.Tensor) else v 
-            for k, v in batch_data.items()
-        }
+        data_on_device = {k: v.to(device, non_blocking=True) if isinstance(v, torch.Tensor) else v for k, v in batch_data.items()}
 
-        X = {}
-        Y = {}
-        
+        X, Y = {}, {}
         num_modes = len(modes)
         
         for i, mode in enumerate(modes):
             data = data_on_device[mode]
             pos = data_on_device[f"{mode}_positions"]
             
-            # Check if this is the LAST modality
-            is_last_modality = (i == num_modes - 1)
-            
-            if not is_last_modality:
-                # CASE: BRIDGE MODALITY (e.g., Images)
-                # Model logic: Consumes N inputs, produces N-1 outputs.
-                # The N-th input is used internally to start the next modality.
-                
-                # Input: full sequence
+            if i == 0 and num_modes > 1:
                 X[mode] = data
                 X[f"{mode}_positions"] = pos
-                
-                # Target: SHIFTED [1, ..., N-2]
-                Y[mode] = data[:, 1:-2]
-                
+                Y[mode] = data[:, 1:]
             else:
-                # CASE: FINAL MODALITY (e.g., Spectra)
-                # Model logic: Starts predicting from index 0 because it received 
-                # the "bridge" token from the previous modality.
-                
-                # Input: TRIMMED END [0, ..., N-1]
                 X[mode] = data[:, :-1]
                 X[f"{mode}_positions"] = pos[:, :-1]
-                
-                # Target: SHIFTED [1, ..., N]
                 Y[mode] = data[:, 1:]
 
         return {"X": X, "Y": Y}
