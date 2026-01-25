@@ -60,7 +60,7 @@ torchrun --standalone --nproc_per_node=4 scripts/train_multimodal_arrow.py \
     --data_dir "$DATA_DIR" \
     --init_from $MODE \
     --eval_interval 100 \
-    --log_interval 100 \
+    --log_interval 50 \
     --max_run_hours "00:55:00" \
     --checkpoint_interval 200
 

@@ -687,6 +687,9 @@ def main():
     # Load configuration from CLI arguments (overriding defaults)
     config = get_config_from_args()
     
+    # Saving configuration in a .json file
+    save_config_json(config, ddp_rank)
+    
     # Setup Logger (only Master Process logs to file/console)
     logger = logging_setup(config, ddp_rank)
     
@@ -926,6 +929,9 @@ def main():
             
             # Variable to accumulate loss
             loss_accum_for_log = 0.0
+            
+            # Variable for avoid NaNs
+            skip_step = False
                 
             # GRADIENT ACCUMULATION LOOP
             for micro_step in range(config.gradient_accumulation_steps):
@@ -953,8 +959,19 @@ def main():
                 
                 if 'spectra_positions' in B['X']:
                     pos = B['X']['spectra_positions']
-                    if pos.dim() == 3 and pos.shape[-1] > config.spectra_pos_input_size:
-                        B['X']['spectra_positions'] = pos.mean(dim=-1)
+                    spec_config = registry.get_config("spectra")
+
+                    if spec_config.embed_pos:                        
+                        seq_len = pos.shape[1]
+                        batch_size = pos.shape[0]
+                        
+                        B['X']['spectra_positions'] = torch.arange(
+                            seq_len, device=device, dtype=torch.long
+                        ).unsqueeze(0).expand(batch_size, -1)
+                        
+                    else:
+                        if pos.dim() == 3:
+                            B['X']['spectra_positions'] = pos.mean(dim=-1, keepdim=True)
                         
                 
                 # DDP Context
@@ -992,9 +1009,6 @@ def main():
                     if not skip_step:
                         scaler.scale(loss).backward()
                         loss_accum_for_log += loss.item()
-                    
-                    # Scaled Backward
-                    scaler.scale(loss).backward()
                     
                     # Accumulate the raw loss value for logging
                     loss_accum_for_log += loss.item()
@@ -1100,7 +1114,7 @@ def main():
                         f"Iter {iter_num}/{config.max_iters} ({train_prog:.2%}) | "
                         f"Loss {loss_accum_for_log:.4f} | "
                         f"LR {lr:.4e} | "
-                        f"Norm {grad_norm:.2f} |"
+                        f"Norm {grad_norm:.2f} | "
                         f"MFU {mfu_display*100:.2f}% (avg) | "
                         f"Mem {mem_usage:.2f}GB | "
                         f"dt {avg_dt*1000:.2f}ms (avg) | "
@@ -1166,6 +1180,22 @@ def main():
                                 modality_registry=registry, 
                                 device=torch.device(device)
                             )
+                            
+                            if 'spectra_positions' in B_val['X']:
+                                pos = B_val['X']['spectra_positions']
+                                spec_config = registry.get_config("spectra")
+
+                                if spec_config.embed_pos:                        
+                                    seq_len = pos.shape[1]
+                                    batch_size = pos.shape[0]
+                                    
+                                    B_val['X']['spectra_positions'] = torch.arange(
+                                        seq_len, device=device, dtype=torch.long
+                                    ).unsqueeze(0).expand(batch_size, -1)
+                                    
+                                else:
+                                    if pos.dim() == 3:
+                                        B_val['X']['spectra_positions'] = pos.mean(dim=-1, keepdim=True)
                             
                             with ctx:
                                 _, v_loss = model(B_val["X"], targets=B_val["Y"])
