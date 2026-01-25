@@ -404,29 +404,36 @@ class EuclidDESIDatasetArrow(Dataset):
         batch_data: Dict[str, Any], 
         modality_registry: Any, 
         device: torch.device, 
-        shuf: bool = False
+        shuf: bool = False # Ignorado para mantener sincronía alfabética
     ) -> Dict[str, Dict[str, torch.Tensor]]:
-        """
-        Prepares the batch for targets and inputs sequences for each modality.
-        """
-        modes = modality_registry.generate_sequence(shuf=shuf)
-        data_on_device = {k: v.to(device, non_blocking=True) if isinstance(v, torch.Tensor) else v for k, v in batch_data.items()}
-
-        X, Y = {}, {}
-        num_modes = len(modes)
+        """Prepares the batch for training by moving tensors to GPU and creating Input (X) 
+        and Target (Y) sequences with a Hybrid Autoregressive Shift."""
         
+        modes = modality_registry.generate_sequence(shuf=shuf)
+
+        data_on_device = {
+            k: v.to(device, non_blocking=True) if isinstance(v, torch.Tensor) else v 
+            for k, v in batch_data.items()
+        }
+
+        X = {}
+        Y = {}
+
+        num_modes = len(modes)
+
         for i, mode in enumerate(modes):
             data = data_on_device[mode]
             pos = data_on_device[f"{mode}_positions"]
-            
+
+            Y[mode] = data[:, 1:]
+
             if i == 0 and num_modes > 1:
-                X[mode] = data
+                X[mode] = data 
                 X[f"{mode}_positions"] = pos
-                Y[mode] = data[:, 1:]
+
             else:
-                X[mode] = data[:, :-1]
+                X[mode] = data[:, :-1] 
                 X[f"{mode}_positions"] = pos[:, :-1]
-                Y[mode] = data[:, 1:]
 
         return {"X": X, "Y": Y}
         
