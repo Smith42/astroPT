@@ -13,7 +13,7 @@ REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
 SCRIPT_DIR=$(dirname "$0")
 
 # Training output directory
-OUT_DIR="logs/astropt_100M_250K_arrow_T1_20260125_test"
+OUT_DIR="logs/astropt_100M_250K_arrow_20260126"
 echo "Target Output Directory: $OUT_DIR"
 
 # Dataset Directory (Arrow)
@@ -23,12 +23,11 @@ DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
 #--- PART 1: Model Training ---#
 
 # First part of the training from scratch
-#JOB1=$(sbatch --parsable "$SCRIPT_DIR/train_astropt_multiGPU.sh" "$REPO_ROOT" "$OUT_DIR" "$DATA_DIR" scratch)
-#echo "[Step 1] Job sent (Train Scratch).  ID: $JOB1"
+JOB1=$(sbatch --parsable "$SCRIPT_DIR/train_astropt_multiGPU.sh" "$REPO_ROOT" "$OUT_DIR" "$DATA_DIR" scratch)
+echo "[Step 1] Job sent (Train Scratch).  ID: $JOB1"
 
 # Second part of the training from resume
-#JOB2=$(sbatch --parsable --dependency=afterany:$JOB1 "$SCRIPT_DIR/train_astropt_multiGPU.sh" "$REPO_ROOT" "$OUT_DIR" "$DATA_DIR" resume)
-JOB2=$(sbatch --parsable "$SCRIPT_DIR/train_astropt_multiGPU.sh" "$REPO_ROOT" "$OUT_DIR" "$DATA_DIR" resume)
+JOB2=$(sbatch --parsable --dependency=afterany:$JOB1 "$SCRIPT_DIR/train_astropt_multiGPU.sh" "$REPO_ROOT" "$OUT_DIR" "$DATA_DIR" resume)
 echo "[Step 2] Job sent (Train Resume).   ID: $JOB2 (Depends on $JOB1)"
 
 

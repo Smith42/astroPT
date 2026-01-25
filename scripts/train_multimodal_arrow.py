@@ -130,7 +130,7 @@ class TrainingConfig:
     eval_interval: int = 1_000              # How often to validate
     eval_batches: int = 100                 # How many batches to use for validation
     log_interval: int = 200                 # How often to print to console/WandB
-    checkpoint_interval: int = 2_000        # How often to save .pt files
+    checkpoint_interval: int = 1_000        # How often to save .pt files
     checkpoint_save_type: str = "both"      # Checkpoint saving mode: best, last or both
     early_stopping_patience: int = 10       # Stop if no improvement after N evals
 
@@ -687,11 +687,11 @@ def main():
     # Load configuration from CLI arguments (overriding defaults)
     config = get_config_from_args()
     
-    # Saving configuration in a .json file
-    save_config_json(config, ddp_rank)
-    
     # Setup Logger (only Master Process logs to file/console)
     logger = logging_setup(config, ddp_rank)
+    
+    # Saving configuration in a .json file
+    save_config_json(config, ddp_rank)
     
     # Log basic training info
     if ddp_rank == 0:
@@ -1108,7 +1108,7 @@ def main():
                     # Compute the ETA for finishing training
                     remaining_iters = config.max_iters - iter_num
                     eta_seconds = remaining_iters * avg_dt
-                    eta_str = str(datetime.timedelta(seconds=int(eta_seconds)))
+                    eta_str = str(datetime.timedelta(seconds=int(eta_seconds))).replace(',', '')
                     
                     logger.info(
                         f"Iter {iter_num}/{config.max_iters} ({train_prog:.2%}) | "
