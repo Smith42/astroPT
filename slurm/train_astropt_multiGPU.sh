@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=64       # CPUs for task
 #SBATCH --gpus-per-task=4        # GPUs for task - DDP
 #SBATCH --mem=256G               # Requested RAM
-#SBATCH --time=24:00:00          # Requested time
+#SBATCH --time=01:00:00          # Requested time
 
 #--- LOGS FILES ---#
 #SBATCH --output=logs/astropt_train_DDP_%j.out   # Output logs file
@@ -26,7 +26,7 @@ mkdir -p logs
 REPO_ROOT=${1:-"/home/valonso/iac18_mhuertas_shared/valonso/astroPT"}
 shift
 echo "Changing directory to: $REPO_ROOT"
-cd "$PROJ_ROOT" || exit 1
+cd "$REPO_ROOT" || exit 1
 
 # Activating AstroPT enviroment
 source  .venv/bin/activate
@@ -55,10 +55,14 @@ echo "   DATA DIR:  $DATA_DIR"
 echo "   MODE:      $MODE"
 
 # Running Python Script with torch
-torchrun --standalone --nproc_per_node=4 scripts/wip_train_multimodal_arrow.py \
+torchrun --standalone --nproc_per_node=4 scripts/train_multimodal_arrow.py \
     --out_dir "$OUT_DIR" \
     --data_dir "$DATA_DIR" \
-    --init_from $MODE
+    --init_from $MODE \
+    --eval_interval 100 \
+    --log_interval 100 \
+    --max_run_hours "00:55:00" \
+    --checkpoint_interval 200
 
 echo "------------------------------------------------------"
 echo "Job finished"

@@ -140,7 +140,7 @@ class TrainingConfig:
     compile: bool = True                    # PyTorch 2.0 compiler
     compile_mode: str = "default"           # Compilation mode
     backend: str = "nccl"                   # Communication backend for DDP
-    max_run_hours: Optional[float] = None   # Force stop after N hours
+    max_run_hours: Optional[str] = None     # Force stop after "HH:MM:SS"
 
     #--- 8. External Monitoring ---#
     log_via_wandb: bool = False             # Weight and bias (wandb) logging
@@ -247,6 +247,16 @@ def get_dataset_info(data_dir: str) -> dict:
         
     except Exception as e:
         return {"data_version_error": str(e)}
+
+
+def parse_time_to_seconds(time_str: str) -> float:
+    """Converts a HH:MM:SS string to total seconds."""
+    try:
+        h, m, s = map(int, time_str.split(':'))
+        return h * 3600 + m * 60 + s
+    except ValueError:
+        raise ValueError(f"Invalid time format: {time_str}. Expected HH:MM:SS")
+    
     
 def save_config_json(config: TrainingConfig, rank: int):
     """Saves the configuration to a JSON file for reproducibility."""
@@ -855,7 +865,7 @@ def main():
             if config.init_from == 'scratch' or not os.path.exists(csv_path):
                 with open(csv_path, "w") as f:
                     # Headers for the CSV
-                    f.write("iter,epochp,rogress,timestamp,train_loss,val_loss,grad_norm,clipped,lr,mfu,mem_gb,dt_ms,rt_hms,eta_hms\n")
+                    f.write("iter,epoch,progress,timestamp,train_loss,val_loss,grad_norm,clipped,lr,mfu,mem_gb,dt_ms,rt_hms,eta_hms\n")
         
         # WANDB Configuration
         if ddp_rank == 0:
@@ -891,6 +901,18 @@ def main():
             
             # Starting the profiler
             prof.start()
+
+        # Max time running before autosaving and finishing
+        max_run_seconds = None
+        if config.max_run_hours is not None:
+            try:
+                max_run_seconds = parse_time_to_seconds(config.max_run_hours)
+                if ddp_rank == 0:
+                    logger.info(f"Time limit set to: {config.max_run_hours} ({max_run_seconds} seconds)")
+            except Exception as e:
+                if ddp_rank == 0:
+                    logger.error(f"Error parsing max_run_hours: {e}")
+                sys.exit(1)
 
 
         #--- THE TRAINING LOOP ---#
@@ -1240,11 +1262,11 @@ def main():
             
             # AUTOSAVING
             # In case the Slurm time comes to an end, finishing earlier
-            if config.max_run_hours is not None:
-                elapsed_hours = (time.time() - run_start_time) / 3600
+            if max_run_seconds is not None:
+                elapsed_seconds = (time.time() - run_start_time)
                 
                 # If own limit time is reached
-                if elapsed_hours > config.max_run_hours:
+                if elapsed_seconds > max_run_seconds:
                     # Stop
                     stop_signal = torch.tensor(1, device=device)
                 else:
@@ -1257,10 +1279,11 @@ def main():
                 
                 if stop_signal.item() == 1:
                     if ddp_rank == 0:
-                        logger.info(f"Time limit reached ({elapsed_hours:.2f}h > {config.max_run_hours}h). Saving checkpoint and exiting...")
+                        elapsed_str = str(datetime.timedelta(seconds=int(elapsed_seconds)))
+                        logger.info(f"Time limit reached ({elapsed_str} > {config.max_run_hours}). Saving checkpoint and exiting...")
                         
                         # Saving checkpoint
-                        current_total_time = (time.time() - run_start_time) + accumulated_time
+                        current_total_time = elapsed_seconds + accumulated_time
                         checkpoint = {
                             'model': model.module.state_dict() if ddp else model.state_dict(),
                             'modality_registry': registry,
@@ -1276,7 +1299,7 @@ def main():
                         torch.save(checkpoint, ckpt_path_last)
                         logger.info(f"Emergency checkpoint saved to {ckpt_path_last}")
 
-                    break # Exit the loop
+                    break # Exit the training loop
             
             # Increment iter counter
             iter_num += 1

@@ -2,7 +2,7 @@
 
 #--- SLURM option configuration ---#
 #SBATCH --job-name=Extract_Embed
-#SBATCH --partition=express
+#SBATCH --partition=cpu
 #SBATCH --nodes=1                
 #SBATCH --ntasks=1               
 #SBATCH --cpus-per-task=2          
