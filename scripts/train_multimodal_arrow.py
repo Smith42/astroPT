@@ -1135,20 +1135,20 @@ def main():
                             "train/eta_hours": eta_seconds / 3600
                         })
                         
-                        # CSV Writing
-                        try:
-                            with open(csv_path, "a") as f:
-                                # Obtaining the current timestamp
-                                timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                
-                                # Writing into the CSV
-                                f.write(f"{iter_num},{epoch_num},{train_prog},{timestamp_str},{loss_accum_for_log:.6f},,"
-                                        f"{grad_norm:.4f},{is_clipped:.0f},{lr:.4e},{mfu_display*100:.2f},{mem_usage:.2f},"
-                                        f"{avg_dt*1000:.2f},{running_str},{eta_str}\n"
-                                )
-                                
-                        except Exception as e:
-                            logger.error(f"CSV Write Error: {e}")
+                    # CSV Writing
+                    try:
+                        with open(csv_path, "a") as f:
+                            # Obtaining the current timestamp
+                            timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            
+                            # Writing into the CSV
+                            f.write(f"{iter_num},{epoch_num},{train_prog},{timestamp_str},{loss_accum_for_log:.6f},,"
+                                    f"{grad_norm:.4f},{is_clipped:.0f},{lr:.4e},{mfu_display*100:.2f},{mem_usage:.2f},"
+                                    f"{avg_dt*1000:.2f},{running_str},{eta_str}\n"
+                            )
+                            
+                    except Exception as e:
+                        logger.error(f"CSV Write Error: {e}")
 
             # VALIDATION & CHECKPOINT
             if iter_num > 0 and iter_num % config.eval_interval == 0:
