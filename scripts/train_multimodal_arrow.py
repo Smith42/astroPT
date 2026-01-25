@@ -951,6 +951,13 @@ def main():
                     device=torch.device(device)
                 )
                 
+                # Fitting positions dimensions
+                for key in B['X'].keys():
+                    if 'positions' in key:
+                        pos_tensor = B['X'][key]
+                        if pos_tensor.dim() == 3 and pos_tensor.shape[-1] > config.spectra_pos_input_size:
+                            B['X'][key] = pos_tensor.mean(dim=-1)
+                
                 
                 # X and Y alignment
                 for mode in B['Y'].keys():
@@ -958,25 +965,16 @@ def main():
                         x_len = B['X'][mode].shape[1]
                         y_len = B['Y'][mode].shape[1]
                         
-                        # Target > Input
-                        if y_len > x_len:
-                            diff = y_len - x_len
-                            B['Y'][mode] = B['Y'][mode][:, diff:, ...]
-                        
-                        # Input > Target
-                        elif x_len > y_len:
-                            diff = x_len - y_len
-                            B['X'][mode] = B['X'][mode][:, :-diff, ...]
+                        if y_len != x_len:
+                            
+                            min_len = min(x_len, y_len)
+                            
+                            B['X'][mode] = B['X'][mode][:, :min_len, ...]
+                            B['Y'][mode] = B['Y'][mode][:, :min_len, ...]
+                            
                             pos_key = f"{mode}_positions"
                             if pos_key in B['X']:
-                                B['X'][pos_key] = B['X'][pos_key][:, :-diff, ...]
-
-                # Fixing position dimensions
-                for key in B['X'].keys():
-                    if 'positions' in key:
-                        pos_tensor = B['X'][key]
-                        if pos_tensor.dim() == 3 and pos_tensor.shape[-1] > 1:
-                            B['X'][key] = pos_tensor.mean(dim=-1)
+                                B['X'][pos_key] = B['X'][pos_key][:, :min_len, ...]
                         
                 
                 # DDP Context
