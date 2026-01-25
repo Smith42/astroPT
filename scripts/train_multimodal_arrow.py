@@ -951,6 +951,22 @@ def main():
                     device=torch.device(device)
                 )
                 
+                # Fixing spectra dimensions error
+                if 'spectra_positions' in B['X']:
+                    pos = B['X']['spectra_positions']
+                    if pos.dim() == 3 and pos.shape[-1] > config.spectra_pos_input_size:
+                        B['X']['spectra_positions'] = pos.mean(dim=-1)
+                        
+                if 'spectra' in B['Y'] and 'spectra' in B['X']:
+                    target = B['Y']['spectra']
+                    input_len = B['X']['spectra'].shape[1]
+                    target_len = target.shape[1]
+                    
+                    if target_len > input_len:
+                        diff = target_len - input_len
+                        B['Y']['spectra'] = target[:, diff:, :]
+                        
+                
                 # DDP Context
                 if ddp:
                     

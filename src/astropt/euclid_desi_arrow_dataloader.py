@@ -452,7 +452,8 @@ class EuclidDESIDatasetArrow(Dataset):
                 X[mode] = data[:, :-1]
                 X[f"{mode}_positions"] = pos[:, :-1]
                 
-                Y[mode] = data
+                # Target: SHIFTED [1, ..., N]
+                Y[mode] = data[:, 1:]
 
         return {"X": X, "Y": Y}
         
