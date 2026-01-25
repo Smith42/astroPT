@@ -440,8 +440,8 @@ class EuclidDESIDatasetArrow(Dataset):
                 X[mode] = data
                 X[f"{mode}_positions"] = pos
                 
-                # Target: SHIFTED [1, ..., N]
-                Y[mode] = data[:, 1:]
+                # Target: SHIFTED [1, ..., N-2]
+                Y[mode] = data[:, 1:-2]
                 
             else:
                 # CASE: FINAL MODALITY (e.g., Spectra)
