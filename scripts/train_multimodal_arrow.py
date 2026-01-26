@@ -97,7 +97,7 @@ class TrainingConfig:
     images_embed_pos: bool = True       # Images embedding positions learning
     image_pos_input_size: int = 1       # Images position input size
     img_norm_type: str = "constant"     # Normalization method for images (or z_score)
-    img_norm_const: float = 1.0         # Normalization constant for images
+    img_norm_const: float = 10.0372     # Normalization constant for images
     
     # Spectra
     spectra_size: int = 7781            # Spectra total size
@@ -106,7 +106,7 @@ class TrainingConfig:
     spectra_embed_pos: bool = True      # Spectra embedding positions learning
     spectra_pos_input_size: int = 1     # Spectra position input size
     spectra_norm_type: str = "constant" # Normalization method for spectra (or z_score)
-    spectra_norm_const: float = 1.0     # Normalization constant for spectra
+    spectra_norm_const: float = 14.7768 # Normalization constant for spectra
     
     #--- 4. Optimization of the Learning Process) ---#
     learning_rate: float = 6e-4     # Learning rate per weight update
