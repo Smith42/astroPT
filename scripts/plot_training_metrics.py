@@ -65,7 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out_dir", type=str, required=True, help="Directory containing metrics.csv")
     parser.add_argument("--csv_name", type=str, default="metrics.csv", help="Name of the CSV file")
     parser.add_argument("--save_name", type=str, default="training_dashboard.png", help="Output image name")
-    parser.add_argument("--smooth_window", type=int, default=50, help="Smoothing window for training loss")
+    parser.add_argument("--smooth_window", type=int, default=10, help="Smoothing window for training loss")
     parser.add_argument("--run_name", type=str, default=None, help="Custom title for the plot (defaults to folder name)")
     
     return parser.parse_args()
@@ -129,25 +129,64 @@ def main():
     # PLOT 1: LOSS CURVES
     ax1 = axs[0, 0]
     
-    # Raw Train Loss
-    ax1.plot(train_df['iter'], train_df['train_loss'], color='black', alpha=0.35, label='Train (Raw)')
+    # Grid alignment
+    target_ticks = 6 
+    margin_fraction = 0.1 
     
-    # Smoothed Train Loss
+    # Train Loss
+    t_min = train_df['train_loss'].min()
+    t_max = train_df['train_loss'].max()
+    t_range = t_max - t_min
+    if t_range == 0: t_range = t_max * 0.1
+    
+    ax1.plot(train_df['iter'], train_df['train_loss'], color='black', alpha=0.35, label='Train (Raw)')
     ax1.plot(train_df['iter'], smooth_data(train_df['train_loss'], args.smooth_window), 
              color='dodgerblue', label=f'Train (Smooth {args.smooth_window})')
     
-    # Validation Loss
-    ax1.plot(val_df['iter'], val_df['val_loss'], color='red', marker='o', linestyle='--', 
-             linewidth=1, markersize=4, label='Validation')
-    
-    ax1.set_ylabel(r'\textbf{Cross Entropy Loss}')
+    ax1.set_ylabel(r'\textbf{Train Loss}', color='dodgerblue')
+    ax1.tick_params(axis='y', labelcolor='dodgerblue')
     ax1.set_xlabel(r'\textbf{Iterations}')
-    ax1.set_title(r'\textbf{Convergence}')
-    ax1.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15), ncol=3, frameon=True)
+    
+    # Left ticks
+    yticks_train = np.linspace(t_min, t_max, target_ticks)
+    ax1.set_yticks(yticks_train)
+    pad_train = t_range * margin_fraction
+    ax1.set_ylim(t_min - pad_train, t_max + pad_train)
+    
+    # Val Losss
+    ax1r = ax1.twinx()
+    
+    # Compute Limits
+    if not val_df.empty:
+        v_min = val_df['val_loss'].min()
+        v_max = val_df['val_loss'].max()
+        v_range = v_max - v_min
+        if v_range == 0: v_range = v_max * 0.1
+        
+        # Fix ticks for the grid
+        yticks_val = np.linspace(v_min, v_max, target_ticks)
+        ax1r.set_yticks(yticks_val)
+        pad_val = v_range * margin_fraction
+        ax1r.set_ylim(v_min - pad_val, v_max + pad_val)
+
+    ax1r.plot(val_df['iter'], val_df['val_loss'], color='red', marker='o', linestyle='--', 
+             linewidth=1, markersize=4, label='Validation')
+    ax1r.set_ylabel(r'\textbf{Validation Loss}', color='red')
+    ax1r.tick_params(axis='y', labelcolor='red')
+    
+    ax1r.grid(False) 
+    
+    # Legend
+    lines, labels = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax1r.get_legend_handles_labels()
+    ax1.legend(lines + lines2, labels + labels2, loc='upper center', bbox_to_anchor=(0.5, -0.15), ncol=3, frameon=True)
+    
+    # Title
+    ax1.set_title(r'\textbf{Convergence}', pad=15)
     
     if has_epoch:
         secax1 = ax1.secondary_xaxis('top', functions=(iter_to_epoch, epoch_to_iter))
-        secax1.set_xlabel(r'\textbf{Epochs}')
+        secax1.set_xlabel(r'\textbf{Epochs}', labelpad=10)
 
     # PLOT 2: GRADIENT DYNAMICS
     ax2 = axs[0, 1]
@@ -182,19 +221,19 @@ def main():
     if clipped_iter.empty:
         ax2.text(0.5, 0.9, "No Clipping Events", transform=ax2.transAxes, ha='center', color='green', fontweight='bold')
 
-    ax2.set_title(r'\textbf{Gradient Stability}')
+    ax2.set_title(r'\textbf{Gradient Stability}', pad=15)
     ax2.set_xlabel(r'\textbf{Iterations}')
     
     if has_epoch:
         secax2 = ax2.secondary_xaxis('top', functions=(iter_to_epoch, epoch_to_iter))
-        secax2.set_xlabel(r'\textbf{Epochs}')
+        secax2.set_xlabel(r'\textbf{Epochs}', labelpad=10)
 
     # PLOT 3: LEARNING RATE
     ax3 = axs[1, 0]
     ax3.plot(train_df['iter'], train_df['lr'], color='black', lw=2)
     ax3.set_ylabel(r'\textbf{Learning Rate}')
     ax3.set_xlabel(r'\textbf{Iterations}')
-    ax3.set_title(r'\textbf{LR Schedule}')
+    ax3.set_title(r'\textbf{LR Schedule}', pad=15)
     
     # Dynamic Offset Logic
     formatter = ticker.ScalarFormatter(useMathText=True)
@@ -212,7 +251,7 @@ def main():
     
     if has_epoch:
         secax3 = ax3.secondary_xaxis('top', functions=(iter_to_epoch, epoch_to_iter))
-        secax3.set_xlabel(r'\textbf{Epochs}')
+        secax3.set_xlabel(r'\textbf{Epochs}', labelpad=10)
 
 
     # PLOT 4: SYSTEM RESOURCES
@@ -265,7 +304,7 @@ def main():
         
         ax4r.grid(False) 
     
-    ax4.set_title(r'\textbf{Efficiency \& Resources}')
+    ax4.set_title(r'\textbf{Efficiency \& Resources}', pad=15)
     ax4.set_xlabel(r'\textbf{Iterations}')
     
     # Legends
@@ -275,7 +314,7 @@ def main():
 
     if has_epoch:
         secax4 = ax4.secondary_xaxis('top', functions=(iter_to_epoch, epoch_to_iter))
-        secax4.set_xlabel(r'\textbf{Epochs}')
+        secax4.set_xlabel(r'\textbf{Epochs}', labelpad=10)
 
     # SAVING
     plt.tight_layout(rect=[0, 0.03, 1, 0.95], w_pad=3.0, h_pad=0.5)

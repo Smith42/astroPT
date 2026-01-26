@@ -26,9 +26,12 @@ echo "Changing directory to: $REPO_ROOT"
 cd "$REPO_ROOT" || exit 1
 source .venv/bin/activate
 
+# Activating LaTeX
+export PATH="$HOME/.TinyTeX/bin/x86_64-linux:$PATH"
+
 # Arguments
 # Output Dir (Required)
-OUT_DIR=${1:-"logs/astropt_default"}
+OUT_DIR=${1:-"logs/astropt_100M_250K_arrow_20260126"}
 
 echo "Plotting metrics from:"
 echo "   OUT DIR:   $OUT_DIR"
