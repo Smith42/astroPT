@@ -96,8 +96,8 @@ class TrainingConfig:
     images_loss_weight: float = 1.0     # Images importance for training
     images_embed_pos: bool = True       # Images embedding positions learning
     image_pos_input_size: int = 1       # Images position input size
-    img_norm_type: str = "constant"     # Normalization method for images (or z_score)
-    img_norm_const: float = 10.0372     # Normalization constant for images
+    img_norm_type: str = "asinh"        # Normalization method: constant, z_score or asinh
+    img_norm_const: float = 1.0         # Normalization constant for images (for constant and asinh)
     
     # Spectra
     spectra_size: int = 7781            # Spectra total size
@@ -105,8 +105,8 @@ class TrainingConfig:
     spectra_loss_weight: float = 1.0    # Spectra importance for training 
     spectra_embed_pos: bool = True      # Spectra embedding positions learning
     spectra_pos_input_size: int = 1     # Spectra position input size
-    spectra_norm_type: str = "constant" # Normalization method for spectra (or z_score)
-    spectra_norm_const: float = 14.7768 # Normalization constant for spectra
+    spectra_norm_type: str = "asinh"    # Normalization method: constant, z_score or asinh
+    spectra_norm_const: float = 1.0     # Normalization constant for spectra (for constant and asinh)
     
     #--- 4. Optimization of the Learning Process) ---#
     learning_rate: float = 6e-4     # Learning rate per weight update
@@ -956,22 +956,6 @@ def main():
                     modality_registry=registry, 
                     device=torch.device(device)
                 )
-                
-                if 'spectra_positions' in B['X']:
-                    pos = B['X']['spectra_positions']
-                    spec_config = registry.get_config("spectra")
-
-                    if spec_config.embed_pos:                        
-                        seq_len = pos.shape[1]
-                        batch_size = pos.shape[0]
-                        
-                        B['X']['spectra_positions'] = torch.arange(
-                            seq_len, device=device, dtype=torch.long
-                        ).unsqueeze(0).expand(batch_size, -1)
-                        
-                    else:
-                        if pos.dim() == 3:
-                            B['X']['spectra_positions'] = pos.mean(dim=-1, keepdim=True)
                         
                 
                 # DDP Context
@@ -1180,22 +1164,6 @@ def main():
                                 modality_registry=registry, 
                                 device=torch.device(device)
                             )
-                            
-                            if 'spectra_positions' in B_val['X']:
-                                pos = B_val['X']['spectra_positions']
-                                spec_config = registry.get_config("spectra")
-
-                                if spec_config.embed_pos:                        
-                                    seq_len = pos.shape[1]
-                                    batch_size = pos.shape[0]
-                                    
-                                    B_val['X']['spectra_positions'] = torch.arange(
-                                        seq_len, device=device, dtype=torch.long
-                                    ).unsqueeze(0).expand(batch_size, -1)
-                                    
-                                else:
-                                    if pos.dim() == 3:
-                                        B_val['X']['spectra_positions'] = pos.mean(dim=-1, keepdim=True)
                             
                             with ctx:
                                 _, v_loss = model(B_val["X"], targets=B_val["Y"])

@@ -161,7 +161,7 @@ class EuclidDESIDatasetArrow(Dataset):
         return x_norm.to(x.dtype)
     
     @staticmethod
-    def normalise(x: torch.Tensor) -> torch.Tensor:
+    def normalise_zscore(x: torch.Tensor) -> torch.Tensor:
         """
         Standardizes the input tensor (Mean 0, Std 1) while preserving the original dtype.
         
@@ -185,6 +185,21 @@ class EuclidDESIDatasetArrow(Dataset):
         x_norm = (x_32 - mean) / (std + 1e-8)
         
         return x_norm.to(x.dtype)
+
+
+    @staticmethod
+    def normalise_asinh(x: torch.Tensor, a: float = 1.0) -> torch.Tensor:
+        """
+        Applies Inverse Hyperbolic Sine (asinh) transformation.
+        Linear near 0, Logarithmic for high values. Handles negatives gracefully.
+        
+        Args:
+            x: Input tensor
+            a: Softening parameter (scale). Default 1.0.
+        """
+        
+        return torch.asinh(x.float() / a).to(x.dtype)
+
 
     @staticmethod
     def data_transforms(
@@ -218,6 +233,8 @@ class EuclidDESIDatasetArrow(Dataset):
                 return transforms.Lambda(lambda x: EuclidDESIDatasetArrow.normalise_by_const(x, n_const))
             elif n_type == "z_score":
                 return transforms.Lambda(EuclidDESIDatasetArrow.normalise_zscore)
+            elif n_type == "asinh":
+                return transforms.Lambda(lambda x: EuclidDESIDatasetArrow.normalise_asinh(x, n_const))
             else:
                 # Identity transform (no change)
                 return transforms.Lambda(lambda x: x)
@@ -406,8 +423,11 @@ class EuclidDESIDatasetArrow(Dataset):
         device: torch.device, 
         shuf: bool = False # Ignorado para mantener sincronía alfabética
     ) -> Dict[str, Dict[str, torch.Tensor]]:
-        """Prepares the batch for training by moving tensors to GPU and creating Input (X) 
-        and Target (Y) sequences with a Hybrid Autoregressive Shift."""
+        """
+        Prepares the batch for training by moving tensors to GPU and creating Input (X) 
+        and Target (Y) sequences with a Hybrid Autoregressive Shift.
+        Automatically handles Position Types (Float vs Long indices) based on config.
+        """
         
         modes = modality_registry.generate_sequence(shuf=shuf)
 
@@ -424,18 +444,65 @@ class EuclidDESIDatasetArrow(Dataset):
         for i, mode in enumerate(modes):
             data = data_on_device[mode]
             pos = data_on_device[f"{mode}_positions"]
+            
+            # Check configuration for this modality
+            mod_config = modality_registry.get_config(mode)
+            
+            # If embed_pos=True
+            if getattr(mod_config, 'embed_pos', False):
+                b, s = pos.shape[:2]
+                # Overwrite 'pos' with indices
+                pos = torch.arange(s, device=device, dtype=torch.long).unsqueeze(0).expand(b, -1)
 
+            # Create Targets (Shifted by 1)
             Y[mode] = data[:, 1:]
 
+            # Create Inputs (X) and their Positions
             if i == 0 and num_modes > 1:
+                # First modality in sequence (context) -> Full sequence
                 X[mode] = data 
                 X[f"{mode}_positions"] = pos
-
             else:
+                # Subsequent modalities -> Autoregressive input (Shifted)
                 X[mode] = data[:, :-1] 
                 X[f"{mode}_positions"] = pos[:, :-1]
 
         return {"X": X, "Y": Y}
+    
+
+    @staticmethod
+    def prepare_batch(
+        batch_data: Dict[str, Any], 
+        modality_registry: Any, 
+        device: torch.device
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Prepares a batch for INFERENCE (Full Sequence, No Shifting).
+        Handles device movement and type corrections (Float -> Long for Positions).
+        """
+        X = {}
+        
+        # Move to device
+        data_on_device = {
+            k: v.to(device, non_blocking=True) if isinstance(v, torch.Tensor) else v 
+            for k, v in batch_data.items()
+        }
+
+        # Process keys
+        for key, val in data_on_device.items():
+            
+            # Spectra Position Fix
+            if key == "spectra_positions":
+                spec_config = modality_registry.get_config("spectra")
+                if getattr(spec_config, 'embed_pos', False):
+                    # Convert Float positions to Long Indices
+                    b, s = val.shape[:2]
+                    val = torch.arange(s, device=device, dtype=torch.long).unsqueeze(0).expand(b, -1)
+            
+            # Add to output dict
+            X[key] = val
+
+        return X
         
     
     def __getitem__(self, idx: int) -> Dict[str, Any]:

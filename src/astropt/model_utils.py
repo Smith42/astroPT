@@ -121,7 +121,7 @@ def load_local_model(
         raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
     
     # Load Checkpoint
-    checkpoint = torch.load(ckpt_path, map_location=device)
+    checkpoint = torch.load(ckpt_path, weights_only=False, map_location=device)
     
     # Resolve Configuration (JSON > Checkpoint)
     raw_args = {}
