@@ -131,7 +131,7 @@ class TrainingConfig:
     eval_batches: int = 100                 # How many batches to use for validation
     log_interval: int = 200                 # How often to print to console/WandB
     checkpoint_interval: int = 1_000        # How often to save .pt files
-    checkpoint_save_type: str = "both"      # Checkpoint saving mode: best, last or both
+    checkpoint_save_type: str = "both"      # Checkpoint saving mode: best, last, both or all
     early_stopping_patience: int = 10       # Stop if no improvement after N evals
 
     #--- 7. System & Backend ---#
@@ -794,19 +794,33 @@ def main():
         # Resume a training
         if config.init_from == 'resume':
             
+            ckpt_path = None
+            
             # 1. Try lo load the LAST checkpoint file
             if os.path.exists(ckpt_path_last):
                 ckpt_path = ckpt_path_last
                 logger.info(f"Resuming from LAST checkpoint: {ckpt_path}")
+                
+            # 2. If 'last' is missing, look for the latest 'ckpt_iter_XXXXXX.pt' (Mode "all")
+            else:
+                # Get all files starting with 'ckpt_iter_' and ending in '.pt'
+                iter_checkpoints = [f for f in os.listdir(config.out_dir) 
+                                    if f.startswith('ckpt_iter_') and f.endswith('.pt')]
+                
+                if iter_checkpoints:
+                    # Sort them to find the latest iteration
+                    iter_checkpoints.sort()
+                    latest_iter_ckpt = iter_checkpoints[-1]
+                    ckpt_path = os.path.join(config.out_dir, latest_iter_ckpt)
+                    logger.info(f"Resuming from LATEST HISTORY checkpoint: {ckpt_path}")
             
-            # 2. Try BEST if LAST is not found
-            elif os.path.exists(ckpt_path_best):
+            # 3. Try BEST if neither LAST nor HISTORY exist
+            if ckpt_path is None and os.path.exists(ckpt_path_best):
                 ckpt_path = ckpt_path_best
                 logger.info(f"Resuming from BEST checkpoint: {ckpt_path}")
             
-            # 3. If neither exists: From Scratch
-            else:
-                ckpt_path = None
+            # 4. If nothing is found -> Scratch
+            if ckpt_path is None:
                 logger.warning(f"Resume requested but no checkpoints found. Starting from SCRATCH.")
             
             if ckpt_path:
@@ -1231,10 +1245,19 @@ def main():
                             torch.save(checkpoint, ckpt_path_last)
 
                         # 4. Save "BEST"
-                        if is_best and config.checkpoint_save_type in ["best", "both"]:
+                        if is_best and config.checkpoint_save_type in ["best", "both", "all"]:
                             checkpoint['best_val_loss'] = best_val_loss 
                             logger.info(f"New best model found ({val_loss:.4f}). Saving to {ckpt_path_best}")
                             torch.save(checkpoint, ckpt_path_best)
+                            
+                        if config.checkpoint_save_type == "all":
+                            ckpt_iter_name = f"ckpt_iter_{iter_num:06d}.pt"
+                            ckpt_path_iter = os.path.join(config.out_dir, ckpt_iter_name)
+                            
+                            # Update dictionary with current val loss for this snapshot
+                            checkpoint['best_val_loss'] = val_loss 
+                            torch.save(checkpoint, ckpt_path_iter)
+                            logger.info(f"Snapshot saved: {ckpt_path_iter}")
                 
                 if ddp:
                     
