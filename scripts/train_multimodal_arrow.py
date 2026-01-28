@@ -800,6 +800,7 @@ def main():
         
         # State variables
         iter_num = 0
+        epoch_num = 0
         best_val_loss = 1e9
         accumulated_time = 0.0
         early_stop_counter = 0
@@ -858,7 +859,31 @@ def main():
                 
                 # Restore Training Counters
                 iter_num = checkpoint['iter_num']
-                best_val_loss = checkpoint['best_val_loss']
+                epoch_num = checkpoint.get('epoch_num', 0)
+                
+                # Loading the correct loss
+                loaded_best_loss = checkpoint['best_val_loss']
+                
+                if os.path.exists(ckpt_path_best):
+                    try:
+                        # Load metadata
+                        best_ckpt_data = torch.load(ckpt_path_best, map_location=device, weights_only=False)
+                        disk_best_loss = best_ckpt_data.get('best_val_loss', 1e9)
+                        
+                        # Select the best loss
+                        if disk_best_loss < loaded_best_loss:
+                            logger.info(f"Correction: Disk loss {disk_best_loss} better than {loaded_best_loss}. Updating.")
+                            best_val_loss = disk_best_loss
+                        else:
+                            best_val_loss = loaded_best_loss
+                    except Exception as e:
+                        logger.warning(f"Could not verify ckpt_best.pt on disk: {e}. Trusting loaded checkpoint.")
+                        best_val_loss = loaded_best_loss
+                else:
+                    best_val_loss = loaded_best_loss
+                
+                
+                
                 accumulated_time = checkpoint.get('total_run_time', 0.0)
                 
                 # Changing time to hours
@@ -944,6 +969,9 @@ def main():
                     logger.error(f"Error parsing max_run_hours: {e}")
                 sys.exit(1)
 
+        # Update correct epoch
+        if ddp and train_loader.sampler is not None:
+            train_loader.sampler.set_epoch(epoch_num)
 
         #--- THE TRAINING LOOP ---#
         while iter_num < config.max_iters:
@@ -1246,6 +1274,7 @@ def main():
                             'modality_registry': registry,
                             'optimizer': optimizer.state_dict(),
                             'iter_num': iter_num,
+                            'epoch_num': epoch_num,
                             'best_val_loss': best_val_loss, # Current record (may be updated below)
                             'config': asdict(config),
                             'total_run_time': current_total_time,
@@ -1329,6 +1358,7 @@ def main():
                             'modality_registry': registry,
                             'optimizer': optimizer.state_dict(),
                             'iter_num': iter_num,
+                            'epoch_num': epoch_num,
                             'best_val_loss': best_val_loss,
                             'config': asdict(config),
                             'total_run_time': current_total_time,
