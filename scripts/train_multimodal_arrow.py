@@ -87,6 +87,7 @@ class TrainingConfig:
     backbone: str = "native"    # Model bakcbone: native or llm
     tokeniser: str = "aim"      # Model tokeniser method
     use_qlora: bool = False     # Use Quantized Low-Rank Adaptation
+    loss_type: str = "huber"    # Opciones: l1, mse, huber
     
     #--- Multimodality Specifics ---#
     # Images
@@ -535,6 +536,7 @@ def create_model(
         attn_type=config.attn_type,
         tokeniser=config.tokeniser,
         use_qlora=config.use_qlora,
+        loss_type=config.loss_type,
         backbone=config.backbone,
     )
     

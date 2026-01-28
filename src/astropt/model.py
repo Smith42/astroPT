@@ -638,6 +638,15 @@ class GPT(nn.Module):
                 seq_len = target.size(1)
                 mod_config = self.modality_registry.get_config(mod_name)
                 pred = outputs[mod_name]
+                
+                # Dynamic selection of loss function
+                if hasattr(self.config, "loss_type") and self.config.loss_type == "l1":
+                    loss_fn = F.l1_loss
+                elif hasattr(self.config, "loss_type") and self.config.loss_type == "mse":
+                    loss_fn = F.mse_loss
+                else:
+                    loss_fn = F.huber_loss
+                
                 if self.config.attn_type == "prefix":
                     # TODO fix this and debug
                     raise NotImplementedError(
@@ -667,7 +676,7 @@ class GPT(nn.Module):
                             target.reshape(-1),
                         )
                     else:
-                        unmasked_loss = F.huber_loss(pred, target, reduction="none")
+                        unmasked_loss = loss_fn(pred, target, reduction="none")
                     mask = mod_mask.unsqueeze(-1)
                     masked_loss = (unmasked_loss * mask).sum() / mask.sum()
                     loss += masked_loss * mod_config.loss_weight
@@ -678,7 +687,7 @@ class GPT(nn.Module):
                             target.reshape(-1),
                         ) * mod_config.loss_weight
                     else:
-                        loss += F.huber_loss(pred, target) * mod_config.loss_weight
+                        loss += F.loss_fn(pred, target) * mod_config.loss_weight
                 current_idx += seq_len
             loss /= len(self.modality_registry.names())
         else:
@@ -779,9 +788,12 @@ class GPT(nn.Module):
                         f"Assertion error: {pred_info['data']}, {target_info['data']}"
                     )
                     mod_config = self.modality_registry.get_config(pred_name)
-                    unweighted_loss = F.huber_loss(
-                        pred_data.squeeze(), target_data.squeeze()
-                    )
+                    if self.config.loss_type == "l1":
+                        unweighted_loss = F.l1_loss(pred_data.squeeze(), target_data.squeeze())
+                    elif self.config.loss_type == "mse":
+                        unweighted_loss = F.mse_loss(pred_data.squeeze(), target_data.squeeze())
+                    else:
+                        unweighted_loss = F.huber_loss(pred_data.squeeze(), target_data.squeeze())
                     pred_modality_infos[batch_idx]["losses"].append(
                         unweighted_loss.detach().item()
                     )
