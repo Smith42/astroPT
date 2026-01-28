@@ -431,13 +431,24 @@ def create_dataloaders(
     # Instantiate the Registry
     registry = ModalityRegistry(modalities)
     
-    # Prepare data transformations
-    data_tf = EuclidDESIDatasetArrow.data_transforms(
+    # Prepare data transformations for training 
+    train_tf = EuclidDESIDatasetArrow.data_transforms(
         norm_type_img=config.img_norm_type,
         norm_const_img=config.img_norm_const,
         norm_type_spec=config.spectra_norm_type,
-        norm_const_spec=config.spectra_norm_const
+        norm_const_spec=config.spectra_norm_const,
+        stage='train'
     )
+    
+    # Prepare data transformations for validation 
+    val_tf = EuclidDESIDatasetArrow.data_transforms(
+        norm_type_img=config.img_norm_type,
+        norm_const_img=config.img_norm_const,
+        norm_type_spec=config.spectra_norm_type,
+        norm_const_spec=config.spectra_norm_const,
+        stage='val'
+    )
+    
     
     # Activating the logger object
     logger = logging.getLogger("AstroPT")
@@ -453,7 +464,7 @@ def create_dataloaders(
         modality_registry=registry, 
         spiral=config.spiral,
         stochastic=True,
-        transform=data_tf
+        transform=train_tf
     )
     
     # Instantiate Validation/Test Dataset 
@@ -463,7 +474,7 @@ def create_dataloaders(
         modality_registry=registry,
         spiral=config.spiral,
         stochastic=False,
-        transform=data_tf
+        transform=val_tf
     )
 
     # Configure DDP Samplers

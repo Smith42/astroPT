@@ -9,6 +9,7 @@ import logging
 import numpy as np
 from numpy.typing import NDArray
 import os
+import random
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
@@ -199,6 +200,30 @@ class EuclidDESIDatasetArrow(Dataset):
         """
         
         return torch.asinh(x.float() / a).to(x.dtype)
+    
+    @staticmethod
+    def _get_augmentation_pipeline() -> Any:
+        """
+        Returns the composition of data augmentations for training images.
+        Includes:
+        1. Discrete Rotation (0, 90, 180, 270 degrees) - Lossless.
+        2. Horizontal Flip - 50% probability.
+        """
+
+        # Transformation list
+        aug_list = []
+        
+        # Discrete rotation (0, 90, 180, 270) degrees
+        def random_rot90(x):
+            k = random.randint(0, 3)
+            return torch.rot90(x, k, dims=[-2, -1])
+            
+        aug_list.append(transforms.Lambda(random_rot90))
+
+        # Horizontal flip (50% probability)
+        aug_list.append(transforms.RandomHorizontalFlip(p=0.5))
+
+        return transforms.Compose(aug_list)
 
 
     @staticmethod
@@ -206,7 +231,8 @@ class EuclidDESIDatasetArrow(Dataset):
         norm_type_img: str = "z_score",
         norm_const_img: float = 1.0,
         norm_type_spec: str = "z_score",
-        norm_const_spec: float = 1.0
+        norm_const_spec: float = 1.0,
+        stage: str = "val"
     ) -> Dict[str, Any]:
         """
         Generates the dictionary of data transformations dynamically based on the configuration.
@@ -220,6 +246,7 @@ class EuclidDESIDatasetArrow(Dataset):
             norm_const_img (float): The divisor constant used if norm_type_img is "constant".
             norm_type_spec (str): Normalization strategy for spectra. Options: "z_score", "constant", "none".
             norm_const_spec (float): The divisor constant used if norm_type_spec is "constant".
+            stage (str): 'train' applies augmentations. 'val'/'test' do not.
 
         Returns:
             Dict[str, Any]: Dictionary where keys are modality names ('images', 'spectra')
@@ -227,7 +254,7 @@ class EuclidDESIDatasetArrow(Dataset):
         """
         
         # Internal helper function to select the correct normalization method
-        def get_transform(n_type: str, n_const: float):
+        def get_norm_transform(n_type: str, n_const: float):
             if n_type == "constant":
                 # Using lambda for parsing two arguments to Compose module
                 return transforms.Lambda(lambda x: EuclidDESIDatasetArrow.normalise_by_const(x, n_const))
@@ -239,13 +266,19 @@ class EuclidDESIDatasetArrow(Dataset):
                 # Identity transform (no change)
                 return transforms.Lambda(lambda x: x)
 
+        # Image transformations
+        img_transforms_list = [get_norm_transform(norm_type_img, norm_const_img)]
+
+        # Modifiying images only during training
+        if stage == 'train':
+            img_transforms_list.append(EuclidDESIDatasetArrow._get_augmentation_pipeline())
+
+        # Spectra transformations
+        spec_transforms_list = [get_norm_transform(norm_type_spec, norm_const_spec)]
+
         return {
-            "images": transforms.Compose([
-                get_transform(norm_type_img, norm_const_img)
-            ]),
-            "spectra": transforms.Compose([
-                get_transform(norm_type_spec, norm_const_spec)
-            ])
+            "images": transforms.Compose(img_transforms_list),
+            "spectra": transforms.Compose(spec_transforms_list)
         }
     
     
