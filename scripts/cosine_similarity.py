@@ -1,43 +1,40 @@
 """
-AstroPT Alignment Validator.
+AstroPT Alignment Analyst.
 
-This script performs a full validation of the cross-modal alignment capabilities
-of a trained AstroPT model. It executes the following pipeline:
+This script loads pre-computed embeddings from disk (Numpy Memmap) and 
+performs a full alignment analysis without loading the model.
 
-1. Loads Model & Dataset (Test Split).
-2. Generates embeddings for Images and Spectra on-the-fly.
-3. Calculates Cosine Similarity statistics (Mean, Median).
-4. Performs Retrieval Analysis (Top-1 and Top-5 Accuracy).
-5. Generates a distribution histogram.
+Pipeline:
+1. Loads images.npy and spectra.npy (Memmap).
+2. Computes diagonal Cosine Similarity (Self-Similarity).
+3. Computes Retrieval Metrics (Top-1, Top-5) using batched GPU operations.
+4. Generates publication-quality plots.
 
 Author: Victor Alonso Rodriguez
 Date: January 2026
 """
 
 import argparse
+import glob
 import logging
 import os
 import sys
-from typing import List, Tuple, Dict, Any
+from typing import Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from astropt.euclid_desi_arrow_dataloader import EuclidDESIDatasetArrow
-from astropt.model_utils import load_local_model
-
-# --- Logging Configuration ---
+# Logger Configuration
 logging.basicConfig(
     format="[%(asctime)s] [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     level=logging.INFO,
     stream=sys.stdout
 )
-logger = logging.getLogger("AstroPT-Validator")
+logger = logging.getLogger("AstroPT-Analyst")
 
 # Plotting Global Configuration
 plt.rcParams['text.latex.preamble'] = r'''
@@ -72,168 +69,214 @@ plt.rcParams.update({
     'figure.titleweight': 'bold',
 })
 
-
 def parse_args() -> argparse.Namespace:
     """Parses command line arguments."""
-    parser = argparse.ArgumentParser(description="AstroPT Alignment Validation")
+    parser = argparse.ArgumentParser(description="AstroPT Alignment Analyst")
     
-    parser.add_argument("--out_dir", type=str, required=True, help="Directory containing the checkpoint")
-    parser.add_argument("--ckpt_name", type=str, default="ckpt_best.pt", help="Checkpoint filename")
-    parser.add_argument("--data_dir", type=str, default=None, help="Override data directory")
-    parser.add_argument("--save_dir", type=str, default=None, help="Directory to save plots")
-    parser.add_argument("--batch_size", type=int, default=64, help="Inference batch size")
-    parser.add_argument("--num_workers", type=int, default=8, help="DataLoader workers")
-    parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
-    parser.add_argument("--limit_samples", type=int, default=None, help="Limit number of samples for quick testing")
+    parser.add_argument("--out_dir", type=str, required=True, help="Directory containing the checkpoint (e.g., logs/run_name)")
+    parser.add_argument("--emb_dir", type=str, required=True, 
+                        help="Directory containing the .npy files (e.g., embeddings_runX_ckptY)")
+    parser.add_argument("--device", type=str, default="cuda", help="Device for matrix operations")
+    parser.add_argument("--batch_size", type=int, default=1000, 
+                        help="Batch size for retrieval calculation (adjust based on GPU VRAM)")
+    parser.add_argument("--run_name", type=str, default=None, help="Custom title for the plot (defaults to folder name)")
     
     return parser.parse_args()
 
-
-def calculate_retrieval_accuracy(
-    img_emb: torch.Tensor, 
-    spec_emb: torch.Tensor, 
+def calculate_retrieval_metrics(
+    img_mmap: np.memmap, 
+    spec_mmap: np.memmap, 
+    device: torch.device,
     batch_size: int = 1000
 ) -> Tuple[float, float]:
     """
-    Calculates Top-1 and Top-5 retrieval accuracy.
-    
-    Args:
-        img_emb: Normalized image embeddings [N, D]
-        spec_emb: Normalized spectra embeddings [N, D]
-        batch_size: Batch size for matrix multiplication to avoid OOM.
-        
-    Returns:
-        Tuple (Top-1 Acc, Top-5 Acc)
+    Calculates Top-1 and Top-5 retrieval accuracy using batched processing.
+    We iterate through the query images in batches, but we need to compare 
+    against ALL spectra (the gallery).
     """
-    n_samples = img_emb.shape[0]
+    n_samples = img_mmap.shape[0]
     top1_correct = 0
     top5_correct = 0
-    device = img_emb.device
-
-    logger.info(f"Calculating Retrieval Metrics for {n_samples} samples...")
     
-    # We iterate in matrix chunks
+    logger.info(f"Computing Retrieval Metrics for {n_samples} samples...")
+    
+    # Pre-load ALL spectra to GPU if VRAM
+    try:
+        # Normalize Spectra
+        logger.info("Loading Spectra to GPU...")
+        gallery_spec = torch.from_numpy(spec_mmap[:]).to(device)
+        gallery_spec = F.normalize(gallery_spec, p=2, dim=1)
+    except RuntimeError:
+        logger.warning("VRAM full loading Spectra. Falling back to CPU-heavy batched search (Slower).")
+        gallery_spec = None
+
+    if gallery_spec is not None:
+        for i in tqdm(range(0, n_samples, batch_size), desc="Retrieval"):
+            end = min(i + batch_size, n_samples)
+            
+            # Load Query Batch (Images)
+            img_batch = torch.from_numpy(img_mmap[i:end]).to(device)
+            img_batch = F.normalize(img_batch, p=2, dim=1)
+            
+            # Similarity Matrix
+            sim_matrix = torch.matmul(img_batch, gallery_spec.T)
+            
+            # Get Top-K
+            _, top_indices = sim_matrix.topk(5, dim=1)
+            
+            # Ground Truth (GT) targets for this batch
+            targets = torch.arange(i, end, device=device).view(-1, 1)
+            
+            # Check hits
+            top1_correct += (top_indices[:, 0].unsqueeze(1) == targets).sum().item()
+            top5_correct += (top_indices == targets).sum().item()
+            
+            # Free VRAM
+            del img_batch, sim_matrix, targets, top_indices
+
+    return top1_correct / n_samples, top5_correct / n_samples
+
+def compute_diagonal_stats(
+    img_mmap: np.memmap, 
+    spec_mmap: np.memmap, 
+    device: torch.device,
+    batch_size: int = 5000
+) -> np.ndarray:
+    """
+    Computes the cosine similarity between the image and ITS OWN spectrum (diagonal).
+    Low memory footprint.
+    """
+    n_samples = img_mmap.shape[0]
+    all_sims = []
+    
+    logger.info("Computing Self-Similarity Statistics...")
+    
     for i in range(0, n_samples, batch_size):
         end = min(i + batch_size, n_samples)
         
-        # Current batch of images [B, D]
-        img_batch = img_emb[i:end]
+        # Load small chunks
+        img_chunk = torch.from_numpy(img_mmap[i:end]).to(device)
+        spec_chunk = torch.from_numpy(spec_mmap[i:end]).to(device)
         
-        # Compare against ALL spectra
-        sim_matrix = torch.matmul(img_batch, spec_emb.T)
+        # Normalize
+        img_chunk = F.normalize(img_chunk, p=2, dim=1)
+        spec_chunk = F.normalize(spec_chunk, p=2, dim=1)
         
-        # Get Top-5 indices 
-        _, top_indices = sim_matrix.topk(5, dim=1)
+        # Compute Cosine Similarity (Element-wise)
+        sims = F.cosine_similarity(img_chunk, spec_chunk, dim=1)
         
-        # Correct targets for this batch
-        targets = torch.arange(i, end, device=device).view(-1, 1)
+        all_sims.append(sims.cpu().numpy())
         
-        # Check matches
-        # Top-1: First column matches target
-        top1_correct += (top_indices[:, 0].unsqueeze(1) == targets).sum().item()
-        
-        # Top-5: Target appears anywhere in the top 5 columns
-        top5_correct += (top_indices == targets).sum().item()
-        
-    return top1_correct / n_samples, top5_correct / n_samples
+    return np.concatenate(all_sims)
 
+def plot_histogram(sim_values: np.ndarray, out_dir: str, stats: dict, suffix: str = "", retrieval_stats: dict = None):
+    """Generates the distribution plot."""
+    logger.info("Generating plot...")
+    plt.figure(figsize=(18, 6))
+    
+    # Plotting data
+    plt.hist(sim_values, bins=200, color='royalblue', edgecolor='black', linewidth=0.2, alpha=1, range=(-1, 1), zorder=3)
+    
+    # Plotting mean and median lines
+    plt.axvline(stats['mean'], color='crimson', linestyle='--', linewidth=2, label=f"Mean: {stats['mean']:.2f}", zorder=4)
+    plt.axvline(stats['median'], color='darkorange', linestyle=':', linewidth=2, label=f"Median: {stats['median']:.2f}", zorder=4)
+    
+    # Top 1 and Top 5 information
+    if retrieval_stats is not None:
+        
+        textstr = '\n'.join((
+            r"\textbf{Retrieval Metrics}",
+            fr"Top-1: {retrieval_stats['top1']*100:.5f}\%",
+            fr"Top-5: {retrieval_stats['top5']*100:.5f}\%",
+            fr"Random: {retrieval_stats['random']*100:.5f}\%"
+        ))
+        
+        # Text box properties
+        props = dict(boxstyle='round', facecolor='white', alpha=0.9, edgecolor='gray', linewidth=0.5)
+        
+        # Text boz location
+        plt.gca().text(0.98, 0.95, textstr, transform=plt.gca().transAxes, fontsize=14,
+                       verticalalignment='top', horizontalalignment='right', bbox=props, zorder=5)
+
+    # Cutomizing the plot
+    plt.title(r"\textbf{Image-Spectrum Alignment Distribution}" + f"\n[{suffix}]", fontsize=16)
+    plt.xlabel(r"Cosine Similarity ($\cos\theta$)", fontsize=14)
+    plt.ylabel("Count", fontsize=14)
+    plt.legend(loc='upper left')
+    plt.grid(True, alpha=0.3, zorder='1')
+    
+    # Saving the plot
+    plot_path = os.path.join(out_dir, "alignment_histogram.png")
+    plt.savefig(plot_path, format='png', dpi=300, bbox_inches='tight')
+    logger.info(f"-> Plot saved to {plot_path}")
 
 def main():
-    
     args = parse_args()
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     
-    # Setup Output
-    save_dir = args.save_dir if args.save_dir else os.path.join(args.out_dir, "validation_plots")
-    os.makedirs(save_dir, exist_ok=True)
-
-    # Load Model
-    ckpt_path = os.path.join(args.out_dir, args.ckpt_name)
-    try:
-        model, config, registry, raw_config = load_local_model(ckpt_path, device)
-        logger.info("Model loaded successfully.")
-    except Exception as e:
-        logger.error(f"Failed to load model: {e}")
-        sys.exit(1)
-
-    # Setup Data
-    data_dir = args.data_dir if args.data_dir else raw_config.get('data_dir', "")
-    logger.info(f"Loading Test Data from: {data_dir}")
-
-    transforms = EuclidDESIDatasetArrow.data_transforms(
-        norm_type_img=raw_config.get('img_norm_type', 'constant'),
-        norm_const_img=raw_config.get('img_norm_const', 1.0),
-        norm_type_spec=raw_config.get('spectra_norm_type', 'constant'),
-        norm_const_spec=raw_config.get('spectra_norm_const', 1.0)
-    )
-
-    ds = EuclidDESIDatasetArrow(
-        arrow_folder_root=data_dir,
-        split="test",
-        modality_registry=registry,
-        spiral=False,
-        transform=transforms
-    )
+    # Locate Files from .npy
+    img_path = os.path.join(args.emb_dir, "images.npy")
+    spec_path = os.path.join(args.emb_dir, "spectra.npy")
     
-    # Optional subset for debugging
-    if args.limit_samples and len(ds) > args.limit_samples:
-        logger.warning(f"Limiting validation to first {args.limit_samples} samples.")
-        indices = list(range(args.limit_samples))
-        ds = torch.utils.data.Subset(ds, indices)
+    img_data = None
+    spec_data = None
+        
+    # Load with Memmap 
+    if os.path.exists(img_path) and os.path.exists(spec_path):
+        logger.info(f"Found unpacked .npy files in {args.emb_dir}")
+        logger.info("-> Using Memory Mapping (Low RAM mode)")
+        img_data = np.load(img_path, mmap_mode='r')
+        spec_data = np.load(spec_path, mmap_mode='r')
 
-    # Create the dataloader
-    dl = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
-
-    # Inference Loop
-    logger.info(f"Starting inference on {len(ds)} samples...")
-    
-    img_embeddings_list = []
-    spec_embeddings_list = []
-    
-    # Mixed precision for speed
-    ptdtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    ctx = torch.amp.autocast(device_type="cuda", dtype=ptdtype)
-
-    with torch.no_grad(), ctx:
-        for batch in tqdm(dl, desc="Inference"):
-            if batch is None: continue
+    # Fallback to .npz file
+    else:
+        logger.warning(f"Memmap files (.npy) not found in {args.emb_dir}")
+        logger.info("-> Searching for compressed .npz fallback...")
+        
+        npz_files = glob.glob(os.path.join(args.emb_dir, "*.npz"))
+        
+        if not npz_files:
+            logger.error(f"CRITICAL: No .npy files AND no .npz files found in {args.emb_dir}")
+            sys.exit(1)
             
-            # Move to device
-            X = {k: v.to(device) for k, v in batch.items() if k in ['images', 'spectra', 'images_positions', 'spectra_positions']}
+        # Taking the first file
+        npz_target = npz_files[0]
+        logger.info(f"-> Loading backup archive: {os.path.basename(npz_target)}")
+        logger.warning("-> CAUTION: Loading fully into RAM (Legacy Mode).")
+        
+        try:
+            # Load file
+            archive = np.load(npz_target)
             
-            # Get Embeddings
-            emb_dict = model.get_embeddings(X, draw_from_centre=True)
-            
-            if 'images' in emb_dict and 'spectra' in emb_dict:
+            # Verify keys
+            if 'images' in archive and 'spectra' in archive:
+                img_data = archive['images']
+                spec_data = archive['spectra']
+            else:
+                logger.error(f"The .npz file exists but keys are missing. Found: {list(archive.keys())}")
+                sys.exit(1)
                 
-                # Mean Pooling
-                img_pool = emb_dict['images'].mean(dim=1).float()
-                spec_pool = emb_dict['spectra'].mean(dim=1).float()
-                
-                img_embeddings_list.append(img_pool)
-                spec_embeddings_list.append(spec_pool)
-
-    # Concatenate results
-    if not img_embeddings_list:
-        logger.error("No embeddings extracted. Check dataset/model keys.")
-        sys.exit(1)
-
-    all_img = torch.cat(img_embeddings_list, dim=0)
-    all_spec = torch.cat(spec_embeddings_list, dim=0)
+        except Exception as e:
+            logger.error(f"Failed to read .npz file: {e}")
+            sys.exit(1)
     
-    # Analysis
-    logger.info("Computing metrics...")
+    # Validate dimensions
+    n_samples = img_data.shape[0]
+    dim = img_data.shape[1]
     
-    # Normalize 
-    all_img = F.normalize(all_img, p=2, dim=1)
-    all_spec = F.normalize(all_spec, p=2, dim=1)
+    logger.info("-" * 40)
+    logger.info(f"Data Loaded Successfully")
+    logger.info(f"Samples:    {n_samples}")
+    logger.info(f"Dimensions: {dim}")
+    logger.info(f"Backend:    {'Numpy Memmap' if isinstance(img_data, np.memmap) else 'Numpy Array (RAM)'}")
+    logger.info("-" * 40)
     
-    # Cosine Similarity 
-    self_sim = F.cosine_similarity(all_img, all_spec, dim=1).cpu().numpy()
+    # Compute Diagonal Stats
+    self_sims = compute_diagonal_stats(img_data, spec_data, device)
     
-    mean_sim = np.mean(self_sim)
-    median_sim = np.median(self_sim)
-    std_sim = np.std(self_sim)
+    mean_sim = np.mean(self_sims)
+    median_sim = np.median(self_sims)
+    std_sim = np.std(self_sims)
     
     logger.info("-" * 40)
     logger.info(f"Mean Cosine Similarity:   {mean_sim:.4f}")
@@ -241,10 +284,17 @@ def main():
     logger.info(f"Std Dev:                  {std_sim:.4f}")
     logger.info("-" * 40)
     
-    # Retrieval Accuracy 
-    if len(ds) > 100:
-        top1, top5 = calculate_retrieval_accuracy(all_img, all_spec)
-        random_chance = 1.0 / len(ds)
+    # Compute Retrieval Top Accuracy
+    if n_samples > 100:
+        top1, top5 = calculate_retrieval_metrics(img_data, spec_data, device, args.batch_size)
+        random_chance = 1.0 / n_samples
+        
+        # Saving the results
+        retrieval_stats = {
+            'top1': top1,
+            'top5': top5,
+            'random': random_chance
+        }
         
         logger.info(f"Top-1 Accuracy: {top1:.2%} (Random: {random_chance:.5%})")
         logger.info(f"Top-5 Accuracy: {top5:.2%}")
@@ -252,26 +302,17 @@ def main():
         diagnosis = "POOR"
         if top1 > 0.5: diagnosis = "EXCELLENT"
         elif top1 > 0.1: diagnosis = "MODERATE"
-        
         logger.info(f"Diagnosis: {diagnosis}")
         logger.info("-" * 40)
-
-    # Plotting
-    plt.figure(figsize=(10, 6))
-    plt.hist(self_sim, bins=50, color='royalblue', edgecolor='black', alpha=0.7, range=(-1, 1))
     
-    plt.axvline(mean_sim, color='crimson', linestyle='--', linewidth=2, label=f'Mean: {mean_sim:.2f}')
-    plt.axvline(median_sim, color='orange', linestyle=':', linewidth=2, label=f'Median: {median_sim:.2f}')
+    # Saving plot
+    save_dir = args.out_dir if hasattr(args, 'out_dir') and args.out_dir else args.emb_dir
+    stats = {'mean': mean_sim, 'median': median_sim}
     
-    plt.title(r"\textbf{Image-Spectrum Alignment Distribution}", fontsize=16)
-    plt.xlabel(r"Cosine Similarity ($\cos\theta$)", fontsize=14)
-    plt.ylabel("Count", fontsize=14)
-    plt.legend(loc='upper left')
-    plt.grid(True, alpha=0.3)
+    train_name = os.path.basename(os.path.normpath(save_dir))
     
-    out_file = os.path.join(save_dir, "alignment_histogram.png")
-    plt.savefig(out_file, dpi=300, bbox_inches='tight')
-    logger.info(f"Plot saved to {out_file}")
+    # Plotting the histogram
+    plot_histogram(self_sims, save_dir, stats, suffix=train_name, retrieval_stats=retrieval_stats)
 
 if __name__ == "__main__":
     main()
