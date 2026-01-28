@@ -13,7 +13,7 @@ REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
 SCRIPT_DIR=$(dirname "$0")
 
 # Training output directory
-OUT_DIR="logs/astropt_100M_250K_arrow_20260128"
+OUT_DIR="logs/astropt_100M_250K_arrow_20260129"
 echo "Target Output Directory: $OUT_DIR"
 
 # Dataset Directory (Arrow)
