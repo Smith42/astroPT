@@ -88,6 +88,7 @@ class TrainingConfig:
     tokeniser: str = "aim"      # Model tokeniser method
     use_qlora: bool = False     # Use Quantized Low-Rank Adaptation
     loss_type: str = "huber"    # Opciones: l1, mse, huber
+    use_aug: bool = True        # Active data augmentation by using image rotation
     
     #--- Multimodality Specifics ---#
     # Images
@@ -431,13 +432,16 @@ def create_dataloaders(
     # Instantiate the Registry
     registry = ModalityRegistry(modalities)
     
+    # Use data augmentation for training
+    train_stage = 'train' if config.use_augmentation else 'val'
+    
     # Prepare data transformations for training 
     train_tf = EuclidDESIDatasetArrow.data_transforms(
         norm_type_img=config.img_norm_type,
         norm_const_img=config.img_norm_const,
         norm_type_spec=config.spectra_norm_type,
         norm_const_spec=config.spectra_norm_const,
-        stage='train'
+        stage=train_stage
     )
     
     # Prepare data transformations for validation 
