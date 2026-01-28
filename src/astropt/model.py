@@ -343,6 +343,7 @@ class GPTConfig:
     lora_r: int = 0  # rank, 0 disables LoRA
     lora_alpha: float = 2.0
     use_qlora: bool = False
+    loss_type: str = "huber"
     modalities: list[ModalityConfig] = None
     # LLM specific parameters
     backbone: str = "native"  # native or llm
@@ -687,7 +688,7 @@ class GPT(nn.Module):
                             target.reshape(-1),
                         ) * mod_config.loss_weight
                     else:
-                        loss += F.loss_fn(pred, target) * mod_config.loss_weight
+                        loss += loss_fn(pred, target) * mod_config.loss_weight
                 current_idx += seq_len
             loss /= len(self.modality_registry.names())
         else:
