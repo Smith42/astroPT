@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=16       
 #SBATCH --gpus-per-task=1        
 #SBATCH --mem=64G                
-#SBATCH --time=02:00:00          
+#SBATCH --time=01:00:00          
 
 #--- LOGS FILES ---#
 #SBATCH --output=logs/astropt_extract_embed_%j.out
@@ -23,9 +23,7 @@ echo "-----------------------------------------------"
 REPO_ROOT=${1:-"/home/valonso/iac18_mhuertas_shared/valonso/astroPT"}
 shift
 echo "Changing directory to: $REPO_ROOT"
-cd "$PROJ_ROOT" || exit 1
-
-# Activating AstroPT enviroment
+cd "$REPO_ROOT" || exit 1
 source .venv/bin/activate
 
 # Exports cache
@@ -34,26 +32,20 @@ export HF_HOME="/home/valonso/iac18_mhuertas_shared/valonso/cache/huggingface"
 
 # Arguments
 # Input/Output Dir (Required):
-TRAIN_OUT_DIR=${1:-"logs/astropt_100M_arrow"}
+OUT_DIR=${1:-"logs/astropt_100M_250K_arrow_20260128"}
 
 # Dataset Directory (Arrow)
 DATA_DIR=${2:-"/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"}
 
-# Checkpoint Name (Optional): Default ckpt_best.pt
-CKPT_NAME=${3:-"ckpt_best.pt"}
-
-echo "Extracting from:"
-echo "   DIR:  $TRAIN_OUT_DIR"
-echo "   CHECKPOINT: $CKPT_NAME"
+echo "Embedding Extraction:"
+echo "   DIR:        $OUT_DIR"
+echo "   DATA DIR:   $DATA_DIR"
 
 # Run Python Script
 python scripts/extract_embeddings.py \
-    --out_dir "$TRAIN_OUT_DIR" \
-    --data_dir "$DATA_DIR" \
-    --ckpt_name "$CKPT_NAME" \
-    --batch_size 64 \
-    --num_workers 8
+    --out_dir "$OUT_DIR" \
+    --data_dir "$DATA_DIR"
 
 echo "-----------------------------------------------"
-echo "Extraction Finished"
+echo "Embedding Extraction Finished"
 echo "-----------------------------------------------"

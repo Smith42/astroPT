@@ -1,11 +1,11 @@
 """
-AstroPT Embedding Extraction Script.
+AstroPT Production Embedding Extractor.
 
-This script loads a trained AstroPT model and extracts the embeddings using 
-the model's specific `get_embeddings` method (preserving center logic).
-
-It aligns with the training pipeline by using the same data transforms and 
-configuration loading strategies.
+Features:
+- Uses Numpy Memmap to write directly to disk (Low RAM usage).
+- Dynamic folder naming based on run and checkpoint.
+- Extracts: Images, Spectra, Joint, and TargetIDs.
+- Generates both individual .npy files (fast access) and .npz (portable).
 
 Author: Victor Alonso Rodriguez
 Date: January 2026
@@ -14,10 +14,10 @@ Date: January 2026
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import sys
+import gc
 
 import numpy as np
 import torch
@@ -34,30 +34,37 @@ logging.basicConfig(
     level=logging.INFO,
     stream=sys.stdout
 )
-logger = logging.getLogger("AstroPT-Extract")
+logger = logging.getLogger("AstroPT-ProdExtract")
 
 
 def parse_args() -> argparse.Namespace:
     """Parses command line arguments."""
+    parser = argparse.ArgumentParser(description="AstroPT Production Embedding Extractor")
     
-    parser = argparse.ArgumentParser(description="AstroPT Embedding Extractor")
-    
-    # Parsing Arguments
-    parser.add_argument("--out_dir", type=str, required=True, help="Directory containing the checkpoint")
+    parser.add_argument("--out_dir", type=str, required=True, help="Directory containing the checkpoint (e.g., logs/run_name)")
     parser.add_argument("--ckpt_name", type=str, default="ckpt_best.pt", help="Checkpoint filename")
     parser.add_argument("--data_dir", type=str, default=None, help="Override data directory if needed")
-    parser.add_argument("--batch_size", type=int, default=32, help="Inference batch size")
+    parser.add_argument("--batch_size", type=int, default=64, help="Inference batch size")
     parser.add_argument("--num_workers", type=int, default=8, help="DataLoader workers")
     parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
     
     return parser.parse_args()
 
-def main():
+def get_output_folder_name(out_dir: str, ckpt_name: str) -> str:
+    """Generates the folder name: embeddings_{parent_suffix}_{ckpt_suffix}"""
+    # Get directory suffix
+    parent_suffix = os.path.basename(os.path.normpath(out_dir))
     
-    # Parsing argumentss
+    # Get Checkpoint Suffix
+    ckpt_suffix = ckpt_name.replace(".pt", "").replace("ckpt_", "")
+    
+    folder_name = f"embeddings_{parent_suffix}_{ckpt_suffix}"
+    return folder_name
+
+def main():
     args = parse_args()
     
-    # Setup
+    # Load Model
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     ckpt_path = os.path.join(args.out_dir, args.ckpt_name)
     
@@ -65,21 +72,19 @@ def main():
         logger.error(f"Checkpoint not found: {ckpt_path}")
         sys.exit(1)
 
-    logger.info(f"Loading checkpoint from {ckpt_path}...")
-
-    # Load Config and Registry
+    logger.info(f"Loading checkpoint: {ckpt_path}")
+    
     try:
         model, config, registry, raw_config_dict = load_local_model(ckpt_path, device)
-        logger.info("Model loaded successfully.")
+        model.eval() # Enforcement
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
         sys.exit(1)
 
-    # Setup Data
-    data_dir = args.data_dir if args.data_dir else raw_config_dict.get('data_dir', "/default/path")
-    logger.info(f"Loading Test Data from: {data_dir}")
-
-    # Data transformations
+    # Data Setup
+    data_dir = args.data_dir if args.data_dir else raw_config_dict.get('data_dir')
+    
+    # Prepare transforms (Same as training)
     data_tf = EuclidDESIDatasetArrow.data_transforms(
         norm_type_img=raw_config_dict.get('img_norm_type', 'constant'),
         norm_const_img=raw_config_dict.get('img_norm_const', 1.0),
@@ -87,17 +92,17 @@ def main():
         norm_const_spec=raw_config_dict.get('spectra_norm_const', 1.0)
     )
     
-    # Creating the dataset
+    logger.info(f"Initializing Dataset from: {data_dir}")
+    
     ds = EuclidDESIDatasetArrow(
         arrow_folder_root=data_dir,
         split="test",
         modality_registry=registry,
-        spiral=False,      
+        spiral=True,      
         stochastic=False,  
         transform=data_tf
     )
     
-    # Creating the dataloader
     dl = DataLoader(
         ds, 
         batch_size=args.batch_size, 
@@ -106,75 +111,133 @@ def main():
         pin_memory=True
     )
     
-    # Extraction Loop
-    logger.info(f"Starting extraction on {len(ds)} samples...")
-    
-    target_mods = ['images', 'spectra']
-    all_embeddings = {mod: [] for mod in target_mods}
-    all_ids = []
+    total_samples = len(ds)
+    emb_dim = config.n_embd
+    logger.info(f"Total samples to process: {total_samples}")
+    logger.info(f"Embedding dimension: {emb_dim}")
 
-    # Mixed Precision Context
+    # MEMMAP Format
+    folder_name = get_output_folder_name(args.out_dir, args.ckpt_name)
+    save_path = os.path.join(args.out_dir, folder_name)
+    os.makedirs(save_path, exist_ok=True)
+    logger.info(f"Output directory created: {save_path}")
+
+    # Initialize Memmap files
+    
+    # Images
+    mmap_images = np.lib.format.open_memmap(
+        os.path.join(save_path, 'images.npy'), mode='w+', dtype='float32', shape=(total_samples, emb_dim)
+    )
+    # Spectra
+    mmap_spectra = np.lib.format.open_memmap(
+        os.path.join(save_path, 'spectra.npy'), mode='w+', dtype='float32', shape=(total_samples, emb_dim)
+    )
+    # Joint
+    mmap_joint = np.lib.format.open_memmap(
+        os.path.join(save_path, 'joint.npy'), mode='w+', dtype='float32', shape=(total_samples, emb_dim)
+    )
+    # Target IDs
+    mmap_ids = np.lib.format.open_memmap(
+        os.path.join(save_path, 'ids.npy'), mode='w+', dtype='int64', shape=(total_samples,)
+    )
+
+    # Extraction loop
     ptdtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     ctx = torch.amp.autocast(device_type="cuda", dtype=ptdtype)
+    
+    start_idx = 0
+    target_mods = ['images', 'spectra']
 
     with torch.no_grad(), ctx:
-        for batch in tqdm(dl, desc="Extracting"):
+        for batch in tqdm(dl, desc="Extracting to Disk"):
             if batch is None: continue
             
-            # Prepare Input Dict
-            X = {}
-            for mod in target_mods:
-                if mod in batch:
-                    X[mod] = batch[mod].to(device)
-                    pos_key = f"{mod}_positions"
-                    if pos_key in batch:
-                        X[pos_key] = batch[pos_key].to(device)
-            
+            # Batch size
+            batch_len = len(batch['targetid'])
+            end_idx = start_idx + batch_len
 
+            # Prepare Batch
+            X = EuclidDESIDatasetArrow.prepare_batch(
+                batch_data=batch,
+                modality_registry=registry,
+                device=device
+            )
+
+            # Getting mebeddings
             emb_dict = model.get_embeddings(X, draw_from_centre=True)
-            
-            # Extracting modalities
-            for mod, tensor in emb_dict.items():
-                if tensor.ndim == 3:
-                    # [Batch, Seq, Dim] -> [Batch, Dim]
-                    pooled = tensor.mean(dim=1).float().cpu().numpy()
-                else:
-                    pooled = tensor.float().cpu().numpy()
-            
-            if mod in all_embeddings:
-                all_embeddings[mod].append(pooled)
-            
-            # Joint embeddings
-            valid_tensors = [t for t in emb_dict.values() if t.ndim == 3]
-            
-            if valid_tensors:
-                # [Batch, Total_Seq_Len, Dim]
-                joint_seq = torch.cat(valid_tensors, dim=1)
+
+            # Write Images
+            if 'images' in emb_dict:
+                # Mean Pool: [B, Seq, Dim] -> [B, Dim]
+                img_pool = emb_dict['images'].mean(dim=1).float().cpu().numpy()
+                mmap_images[start_idx:end_idx] = img_pool
+            else:
+                # Fallback zero fill if missing (unlikely in test set but safe)
+                mmap_images[start_idx:end_idx] = np.zeros((batch_len, emb_dim), dtype='float32')
+
+            # Write Spectra
+            if 'spectra' in emb_dict:
+                spec_pool = emb_dict['spectra'].mean(dim=1).float().cpu().numpy()
+                mmap_spectra[start_idx:end_idx] = spec_pool
+            else:
+                mmap_spectra[start_idx:end_idx] = np.zeros((batch_len, emb_dim), dtype='float32')
+
+            # Write Joint
+            valid_seqs = [emb_dict[m] for m in target_mods if m in emb_dict and emb_dict[m].ndim == 3]
+            if valid_seqs:
                 
-                # Global Mean Pooling
-                joint_pooled = joint_seq.mean(dim=1).float().cpu().numpy()
-                
-                all_embeddings['joint'].append(joint_pooled)
+                # Concat sequence length -> Mean Pool
+                joint_seq = torch.cat(valid_seqs, dim=1)
+                joint_pool = joint_seq.mean(dim=1).float().cpu().numpy()
+                mmap_joint[start_idx:end_idx] = joint_pool
+            else:
+                 mmap_joint[start_idx:end_idx] = np.zeros((batch_len, emb_dim), dtype='float32')
 
-            # Store IDs
-            if 'targetid' in batch:
-                all_ids.extend(batch['targetid'].numpy())
+            # Write IDs
+            mmap_ids[start_idx:end_idx] = batch['targetid'].numpy().astype('int64')
+
+            # Update pointer
+            start_idx = end_idx
 
 
-    # Saving the embeddigns
-    logger.info("Concatenating and saving...")
-    final_arrays = {k: np.concatenate(v, axis=0) for k, v in all_embeddings.items() if len(v) > 0}
+    # Flush changes to disk
+    mmap_images.flush()
+    mmap_spectra.flush()
+    mmap_joint.flush()
+    mmap_ids.flush()
     
-    if all_ids:
-        final_arrays['targetid'] = np.array(all_ids)
+    # Deleting the variables
+    del mmap_images, mmap_spectra, mmap_joint, mmap_ids
+    gc.collect()
+
+    logger.info("Raw .npy extraction complete.")
+
+    # Create a portable .npz file
+    logger.info("Generating portable .npz file from disk data...")
     
-    # Save Name: embeddings_{ckpt_name}.npz
-    out_name = f"embeddings_{args.ckpt_name.replace('.pt', '')}.npz"
-    out_path = os.path.join(args.out_dir, out_name)
+    npz_path = os.path.join(save_path, "embeddings_all.npz")
     
-    np.savez_compressed(out_path, **final_arrays)
-    logger.info(f"Saved successfully to {out_path}")
-    logger.info(f"Contains keys: {list(final_arrays.keys())}")
+    # Reading .npy to convert them to .npz
+    try:
+        arr_img = np.load(os.path.join(save_path, 'images.npy'), mmap_mode='r')
+        arr_spec = np.load(os.path.join(save_path, 'spectra.npy'), mmap_mode='r')
+        arr_joint = np.load(os.path.join(save_path, 'joint.npy'), mmap_mode='r')
+        arr_ids = np.load(os.path.join(save_path, 'ids.npy'), mmap_mode='r')
+        
+        np.savez_compressed(
+            npz_path,
+            images=arr_img,
+            spectra=arr_spec,
+            joint=arr_joint,
+            targetid=arr_ids
+        )
+        logger.info(f"Compressed archive created: {npz_path}")
+        
+    except Exception as e:
+        logger.error(f"Error creating .npz: {e}")
+
+    logger.info("Extraction Pipeline Finished Successfully.")
+    logger.info(f"Results stored in: {save_path}")
 
 if __name__ == "__main__":
     main()
