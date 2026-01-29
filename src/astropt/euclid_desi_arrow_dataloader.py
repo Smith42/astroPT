@@ -211,37 +211,21 @@ class EuclidDESIDatasetArrow(Dataset):
         """
 
         # Rotate images
-        def rotate_patch_sequence(x):
+        def rotate_image(x):
             k = random.randint(0, 3)
-            if k == 0: return x
-            
-            # Reshape grid
-            dim = int(x.shape[0] ** 0.5) # 14
-            grid = x.view(dim, dim, -1) 
-            
-            # Rotate k times 
-            rotated_grid = torch.rot90(grid, k, dims=[0, 1])
-            
-            # Reshape to original 
-            return rotated_grid.reshape(dim * dim, -1)
+            return torch.rot90(x, k, dims=[1, 2])
 
         # Horizontal flip images
-        def hflip_patch_sequence(x):
+        def hflip_image(x):
             # 50% probability of flip
             if random.random() < 0.5:
-                dim = int(x.shape[0] ** 0.5)
-                grid = x.view(dim, dim, -1)
-                
-                # Flip over W dimension
-                flipped_grid = torch.flip(grid, dims=[1])
-                
-                return flipped_grid.reshape(dim * dim, -1)
+                return torch.flip(x, dims=[2])
             return x
 
         # Transformations list
         aug_list = [
-            transforms.Lambda(rotate_patch_sequence),
-            transforms.Lambda(hflip_patch_sequence)
+            transforms.Lambda(rotate_image),
+            transforms.Lambda(hflip_image)
         ]
 
         return transforms.Compose(aug_list)
@@ -287,23 +271,20 @@ class EuclidDESIDatasetArrow(Dataset):
                 # Identity transform (no change)
                 return transforms.Lambda(lambda x: x)
 
-        # Image transformations list
-        img_transforms_list = []
-        
-        # Always normalizing
-        img_transforms_list.append(get_norm_transform(norm_type_img, norm_const_img))
+        # Transformation dictionary
+        transform_dict = {}
 
-        # Modifiying images only during training
+        # Image Rotation just in training
         if stage == 'train':
-            img_transforms_list.append(EuclidDESIDatasetArrow._get_augmentation_pipeline())
+            transform_dict["images_aug"] = EuclidDESIDatasetArrow._get_augmentation_pipeline()
+
+        # Image Normalization
+        transform_dict["images_norm"] = get_norm_transform(norm_type_img, norm_const_img)
 
         # Spectra transformations
-        spec_transforms_list = [get_norm_transform(norm_type_spec, norm_const_spec)]
+        transform_dict["spectra"] = transforms.Compose([get_norm_transform(norm_type_spec, norm_const_spec)])
 
-        return {
-            "images": transforms.Compose(img_transforms_list),
-            "spectra": transforms.Compose(spec_transforms_list)
-        }
+        return transform_dict
     
     
     def spiralise_image(self, 
@@ -399,11 +380,16 @@ class EuclidDESIDatasetArrow(Dataset):
         Returns:
             Sequence of patches of shape (Num_Patches, Flattened_Patch_Size).
         """
-        # 1. Obtaining patch size from configuration (ej. 16)
+        
+        # Global image rotation
+        if "images_aug" in self.transform:
+             raw_image = self.transform["images_aug"](raw_image)
+        
+        # Patchify
         cfg = self.modality_registry.get_config("images")
         patch_size = cfg.patch_size
         
-        # 2. EINOP tensor transformation
+        # EINOP tensor transformation
         # Input: (Chanels, Height, Width) -> Output: (N_Patchs, Vector_Patch)
         # h,w = total image pixel per side / patch size
         # p1 y p2 are patch size (16, 16)
@@ -414,11 +400,11 @@ class EuclidDESIDatasetArrow(Dataset):
             p2=patch_size,
         )
 
-        # 3. Applied transformations to images
-        if "images" in self.transform:
-            patch_image = self.transform["images"](patch_image)
+        # Images normalization
+        if "images_norm" in self.transform:
+            patch_image = self.transform["images_norm"](patch_image)
             
-        # 4. Spiral order
+        # Spiral order
         if self.spiral:
             patch_image = self.spiralise_image(patch_image)
 
@@ -445,29 +431,29 @@ class EuclidDESIDatasetArrow(Dataset):
             - patch_spectra: Tensor of shape (Num_Patches, Patch_Size).
             - patch_wl: Tensor of shape (Num_Patches, Patch_Size) with corresponding wavelengths.
         """
-        # 1. Get configuration
+        # Get configuration
         cfg = self.modality_registry.get_config("spectra")
         patch_size = cfg.patch_size
         
-        # 2. Calculate necessary padding
+        # Galculate necessary padding
         # We need the total length to be a multiple of patch_size
         seq_len = raw_spectra.shape[0]
         remainder = seq_len % patch_size
         pad_len = (patch_size - remainder) % patch_size
         
-        # 3. Apply padding (only if needed)
+        # Apply padding (only if needed)
         if pad_len > 0:
             # F.pad tuple format for 1D: (padding_left, padding_right)
             raw_spectra = F.pad(raw_spectra, (0, pad_len))
             wavelength = F.pad(wavelength, (0, pad_len))
 
-        # 4. Reshape into patches (Tokenization)
+        # Reshape into patches (Tokenization)
         # .view(-1, patch_size) automatically calculates the number of patches
         # Shape: (Total_Len) -> (Num_Patches, Patch_Size)
         patch_spectra = raw_spectra.view(-1, patch_size)
         patch_wl = wavelength.view(-1, patch_size)
 
-        # 5. Apply transformations (e.g., Normalization)
+        # Apply transformations (Normalization)
         if "spectra" in self.transform:
             patch_spectra = self.transform["spectra"](patch_spectra)
 
