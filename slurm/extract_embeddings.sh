@@ -14,35 +14,46 @@
 #SBATCH --output=logs/astropt_extract_embed_%j.out
 #SBATCH --error=logs/astropt_extract_embed_%j.err
 
-#--- Enviroment configuration ---#
+#--- DEFAULT VALUES ---#
+REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
+PYTHON_SCRIPT="scripts/extract_embeddings.py"
+OUT_DIR=""
+DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
+
+#--- ARGUMENT PARSING (FLAGS) ---#
+while getopts ":r:o:a:" opt; do
+  case $opt in
+    r) REPO_ROOT="$OPTARG" ;;
+    o) OUT_DIR="$OPTARG" ;;
+    a) DATA_DIR="$OPTARG" ;;
+    \?) echo "[ERROR] Invalid option -$OPTARG" >&2; exit 1 ;;
+  esac
+done
+
+#--- ENVIRONMENT SETUP ---#
 echo "-----------------------------------------------"
 echo "Starting Embedding Extraction Job $SLURM_JOB_ID"
 echo "-----------------------------------------------"
 
-# Changing directory to run astropt
-REPO_ROOT=${1:-"/home/valonso/iac18_mhuertas_shared/valonso/astroPT"}
-shift
+# 1. Change directory
 echo "Changing directory to: $REPO_ROOT"
-cd "$REPO_ROOT" || exit 1
+cd "$REPO_ROOT" || { echo "[ERROR]: Cannot find REPO_ROOT: $REPO_ROOT"; exit 1; }
+
+# 2. Activate Environment
 source .venv/bin/activate
 
-# Exports cache
+# 3. Exports cache
 export UV_CACHE_DIR="/home/valonso/iac18_mhuertas_shared/valonso/cache/uv_cache"
 export HF_HOME="/home/valonso/iac18_mhuertas_shared/valonso/cache/huggingface"
 
-# Arguments
-# Input/Output Dir (Required):
-OUT_DIR=${1:-"logs/astropt_100M_250K_arrow_20260128"}
-
-# Dataset Directory (Arrow)
-DATA_DIR=${2:-"/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"}
-
-echo "Embedding Extraction:"
+#--- EXECUTION ---#
+echo "Embedding Extraction Configuration:"
 echo "   DIR:        $OUT_DIR"
 echo "   DATA DIR:   $DATA_DIR"
 
+
 # Run Python Script
-python scripts/extract_embeddings.py \
+python "$PYTHON_SCRIPT" \
     --out_dir "$OUT_DIR" \
     --data_dir "$DATA_DIR"
 
