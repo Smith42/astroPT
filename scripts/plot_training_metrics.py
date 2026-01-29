@@ -15,6 +15,7 @@ Date: January 2026
 """
 
 import argparse
+import json
 import os
 import sys
 import pandas as pd
@@ -66,7 +67,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--csv_name", type=str, default="metrics.csv", help="Name of the CSV file")
     parser.add_argument("--save_name", type=str, default="training_dashboard.png", help="Output image name")
     parser.add_argument("--smooth_window", type=int, default=10, help="Smoothing window for training loss")
-    parser.add_argument("--run_name", type=str, default=None, help="Custom title for the plot (defaults to folder name)")
+    parser.add_argument("--train_name", type=str, default=None, help="Custom title for the plot (defaults to folder name)")
     
     return parser.parse_args()
 
@@ -100,11 +101,30 @@ def main():
 
     # PLOTTING SETUP
     
-    # Custom title for version control
-    run_id = args.run_name if args.run_name else os.path.basename(os.path.normpath(args.out_dir))
-    
     fig, axs = plt.subplots(2, 2, figsize=(18, 17))
-    fig.suptitle(r"\textbf{AstroPT Training Dashboard}" + f"\n[{run_id}]", fontsize=22, y=0.95)
+    
+    # Customizing the title
+    config_path = os.path.join(args.out_dir, "config.json")
+    json_name = None
+    
+    # Reading the json file
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                json_name = config.get("train_name", None)
+        except Exception:
+            pass
+    
+    # Subtitle priority
+    if args.train_name:
+        subtitle = args.train_name
+    elif json_name:
+        subtitle = json_name
+    else:
+        subtitle = os.path.basename(os.path.normpath(args.out_dir))
+    
+    fig.suptitle(r"\textbf{AstroPT Training Dashboard}" + f"\n[{subtitle}]", fontsize=22, y=0.95)
     
     # Epochs compute
     iter_max = df['iter'].max()

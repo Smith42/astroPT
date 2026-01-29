@@ -17,6 +17,7 @@ Date: January 2026
 """
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -92,7 +93,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num_plot", type=int, default=10, help="Number of random plots")
     parser.add_argument("--split", type=str, default="test", help="Data split (train/test)")
     parser.add_argument("--wl_range", nargs=2, type=float, default=None, help="Zoom wavelength (min max)")
-    parser.add_argument("--run_name", type=str, default=None, help="Custom title for the plot (defaults to folder name)")
+    parser.add_argument("--train_name", type=str, default=None, help="Custom title for the plot (defaults to folder name)")
     return parser.parse_args()
 
 
@@ -249,7 +250,25 @@ def main():
     logger.info(f"Run Suffix identified: {run_suffix}")
     
     # Extract training run name for plot titles
-    train_name = args.run_name if args.run_name else os.path.basename(os.path.normpath(args.out_dir))
+    config_path = os.path.join(args.out_dir, "config.json")
+    json_name = None
+    
+    # Reading the .json
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                json_name = config.get("train_name", None)
+        except Exception:
+            pass 
+
+    # # Subtitle priority
+    if args.train_name:
+        train_name = args.train_name
+    elif json_name:
+        train_name = json_name
+    else:
+        train_name = os.path.basename(os.path.normpath(args.out_dir))
     
     # Load Model
     ckpt_path = os.path.join(args.out_dir, args.ckpt_name)

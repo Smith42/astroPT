@@ -16,6 +16,7 @@ Date: January 2026
 
 import argparse
 import glob
+import json
 import logging
 import os
 import sys
@@ -73,13 +74,13 @@ def parse_args() -> argparse.Namespace:
     """Parses command line arguments."""
     parser = argparse.ArgumentParser(description="AstroPT Alignment Analyst")
     
-    parser.add_argument("--out_dir", type=str, required=True, help="Directory containing the checkpoint (e.g., logs/run_name)")
+    parser.add_argument("--out_dir", type=str, required=True, help="Directory containing the checkpoint (e.g., logs/train_name)")
     parser.add_argument("--emb_dir", type=str, required=True, 
                         help="Directory containing the .npy files (e.g., embeddings_runX_ckptY)")
     parser.add_argument("--device", type=str, default="cuda", help="Device for matrix operations")
     parser.add_argument("--batch_size", type=int, default=1000, 
                         help="Batch size for retrieval calculation (adjust based on GPU VRAM)")
-    parser.add_argument("--run_name", type=str, default=None, help="Custom title for the plot (defaults to folder name)")
+    parser.add_argument("--train_name", type=str, default=None, help="Custom title for the plot (defaults to folder name)")
     
     return parser.parse_args()
 
@@ -309,7 +310,26 @@ def main():
     save_dir = args.out_dir if hasattr(args, 'out_dir') and args.out_dir else args.emb_dir
     stats = {'mean': mean_sim, 'median': median_sim}
     
-    train_name = os.path.basename(os.path.normpath(save_dir))
+    # TITLE LOGIC
+    config_path = os.path.join(save_dir, "config.json")
+    json_name = None
+    
+    # Reading config.json
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                json_name = config.get("train_name", None)
+        except Exception:
+            pass 
+
+    # Select ID: CLI > JSON > Folder
+    if args.train_name:
+        train_name = args.train_name
+    elif json_name:
+        train_name = json_name
+    else:
+        train_name = os.path.basename(os.path.normpath(save_dir))
     
     # Plotting the histogram
     plot_histogram(self_sims, save_dir, stats, suffix=train_name, retrieval_stats=retrieval_stats)
