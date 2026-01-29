@@ -433,7 +433,7 @@ def create_dataloaders(
     registry = ModalityRegistry(modalities)
     
     # Use data augmentation for training
-    train_stage = 'train' if config.use_augmentation else 'val'
+    train_stage = 'train' if config.use_aug else 'val'
     
     # Prepare data transformations for training 
     train_tf = EuclidDESIDatasetArrow.data_transforms(
