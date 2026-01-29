@@ -20,8 +20,10 @@ import os
 import subprocess
 import sys
 import time
+import re
 from contextlib import nullcontext
 from dataclasses import dataclass, asdict
+from transformers import HfArgumentParser
 from typing import Optional, List, Tuple, Dict, Any
 
 import numpy as np
@@ -60,14 +62,17 @@ class TrainingConfig:
     
     This dataclass acts as the single source of truth for the experiment.
     Arguments can be overridden via command line (CLI).
+    
+    It is saved by save_config_json() into a .json file.
     """
     
     #--- Training Metadata ---#
-    train_name: str = "newtrain"    # Name of the training
-    train_date: str = None          # Date of the training
+    train_name: Optional[str] = None    # Name of the training
+    train_date: Optional[str] = None          # Date of the training
+    train_description: Optional[str] = None   # Description or comment abouth the training
 
     #--- I/O & Paths ---#
-    out_dir: str = None             # Output directory (built dynamically at the end of the class)
+    out_dir: Optional[str] = None             # Output directory (built dynamically at the end of the class)
     data_dir: str = "/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"   # Dataset directory
             
     #--- Data Loading ---#
@@ -157,60 +162,18 @@ class TrainingConfig:
     
     # Dynamic output directory with date
     def __post_init__(self):
+        print(f"DEBUG: train_name recibido = '{self.train_name}'")
+        print(f"DEBUG: sys.argv = {sys.argv}")
         # Date
         if self.train_date is None:
-            self.train_date = datetime.now().strftime("%Y%m%d")
+            self.train_date = datetime.datetime.now().strftime("%Y%m%d")
         # Output directory
         if self.out_dir is None:
-            train_date = datetime.now().strftime("%Y%m%d")
-            self.out_dir = f"logs/astropt_100M_arrow_{train_date}_{self.train_name}"
-
-
-def get_config_from_args() -> TrainingConfig:
-    """
-    Parses command line arguments to override default TrainingConfig values.
-
-    Instead of manually defining flags, this function inspects the TrainingConfig 
-    dataclass and automatically generates command-line arguments for every field.
-
-    Example:
-        python train.py --batch_size 32 --no-compile --wandb_project "New-Test"
-
-    Returns:
-        TrainingConfig: A new configuration object populated with CLI overrides.
-    """
-    
-    # Creating the parser argument object
-    parser = argparse.ArgumentParser(description="AstroPT Training Script")
-    
-    # Obtaining the defeault configuration
-    default_config = TrainingConfig()
-    
-    # Iterate over the configuration parameters
-    for key, value in asdict(default_config).items():
-        arg_type = type(value)
-        
-        # Booleans (Flags)
-        if arg_type == bool:
-            
-            # Create paired flags: --feature (True) and --no-feature (False)
-            parser.add_argument(f"--{key}", action="store_true", default=value, help=f"Enable {key}")
-            parser.add_argument(f"--no-{key}", dest=key, action="store_false", help=f"Disable {key}")
-        
-        # None defaults values
-        elif value is None:
-            # If default is None it expects a string
-            parser.add_argument(f"--{key}", type=str, default=None, help="Default: None")
-            
-        # Standard Case: Int, Float, Str
-        else:
-            parser.add_argument(f"--{key}", type=arg_type, default=value, help=f"Default: {value}")
-
-    # Argument parsed from terminal
-    args = parser.parse_args()
-    
-    # Overriding default configuration
-    return TrainingConfig(**vars(args))
+            clean_name = self.train_name.lower().replace(" ", "_")
+            clean_name = re.sub(r'[^a-z0-9]', ' ', clean_name)
+            tokens = clean_name.split()
+            suffix_name = "_".join(tokens)
+            self.out_dir = f"logs/astropt_100M_arrow_{self.train_date}_{suffix_name}"
 
 def get_git_commit_hash() -> str:
     """Returns the current git commit hash or 'unknown' if not in a git repo."""
@@ -777,8 +740,11 @@ def main():
     # Initialize Distributed Data Parallel (DDP) if applicable
     ddp, ddp_rank, ddp_world_size, device = ddp_setup()
     
+    # Huggingface Argument Parser
+    parser = HfArgumentParser((TrainingConfig,))
+    
     # Load configuration from CLI arguments (overriding defaults)
-    config = get_config_from_args()
+    config, _ = parser.parse_args_into_dataclasses(return_remaining_strings=True)
     
     # Setup Logger (only Master Process logs to file/console)
     logger = logging_setup(config, ddp_rank)
