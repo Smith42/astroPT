@@ -210,18 +210,39 @@ class EuclidDESIDatasetArrow(Dataset):
         2. Horizontal Flip - 50% probability.
         """
 
-        # Transformation list
-        aug_list = []
-        
-        # Discrete rotation (0, 90, 180, 270) degrees
-        def random_rot90(x):
+        # Rotate images
+        def rotate_patch_sequence(x):
             k = random.randint(0, 3)
-            return torch.rot90(x, k, dims=[-2, -1])
+            if k == 0: return x
             
-        aug_list.append(transforms.Lambda(random_rot90))
+            # Reshape grid
+            dim = int(x.shape[0] ** 0.5) # 14
+            grid = x.view(dim, dim, -1) 
+            
+            # Rotate k times 
+            rotated_grid = torch.rot90(grid, k, dims=[0, 1])
+            
+            # Reshape to original 
+            return rotated_grid.reshape(dim * dim, -1)
 
-        # Horizontal flip (50% probability)
-        aug_list.append(transforms.RandomHorizontalFlip(p=0.5))
+        # Horizontal flip images
+        def hflip_patch_sequence(x):
+            # 50% probability of flip
+            if random.random() < 0.5:
+                dim = int(x.shape[0] ** 0.5)
+                grid = x.view(dim, dim, -1)
+                
+                # Flip over W dimension
+                flipped_grid = torch.flip(grid, dims=[1])
+                
+                return flipped_grid.reshape(dim * dim, -1)
+            return x
+
+        # Transformations list
+        aug_list = [
+            transforms.Lambda(rotate_patch_sequence),
+            transforms.Lambda(hflip_patch_sequence)
+        ]
 
         return transforms.Compose(aug_list)
 
@@ -266,8 +287,11 @@ class EuclidDESIDatasetArrow(Dataset):
                 # Identity transform (no change)
                 return transforms.Lambda(lambda x: x)
 
-        # Image transformations
-        img_transforms_list = [get_norm_transform(norm_type_img, norm_const_img)]
+        # Image transformations list
+        img_transforms_list = []
+        
+        # Always normalizing
+        img_transforms_list.append(get_norm_transform(norm_type_img, norm_const_img))
 
         # Modifiying images only during training
         if stage == 'train':
