@@ -43,7 +43,7 @@ while getopts ":n:d:o:h" opt; do
 done
 
 # AUTOMATIC CONFIGURATION
-SUFIX_NAME=$(echo "$TRAIN_NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '_' | sed 's/[^a-z0-9_]//g')
+SUFIX_NAME=$(echo "$TRAIN_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/ /g' | xargs | tr ' ' '_')
 TRAIN_DATE="$(date +%Y%m%d)"
 DEFAULT_PATH="logs/astropt_100M_250K_arrow_${TRAIN_DATE}_${SUFIX_NAME}"
 
@@ -130,7 +130,7 @@ launch_analysis "$JOB_TRAIN_1" "Part 1 (SCRATCH)"
 # PART 2 - TRAIN FROM RESUME
 echo "-------------------------------------------------"
 echo "STEP 2: TRAINING FROM RESUME"
-JOB_TRAIN_1=$(sbatch --parsable "$TRAIN_SCRIPT" \
+JOB_TRAIN_2=$(sbatch --parsable --dependency=afterok:$JOB_TRAIN_1 "$TRAIN_SCRIPT" \
     -r "$REPO_ROOT" \
     -o "$OUT_DIR" \
     -a "$DATA_DIR" \

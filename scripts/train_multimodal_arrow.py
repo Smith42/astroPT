@@ -121,7 +121,7 @@ class TrainingConfig:
     
     #--- Optimization of the Learning Process ---#
     learning_rate: float = 6e-4     # Learning rate per weight update
-    max_iters: int = 100_000        # Total training steps (NOT epochs)
+    max_iters: int = 50_000        # Total training steps (NOT epochs)
     weight_decay: float = 1e-1      # Regularization to prevent overfitting
     beta1: float = 0.9              # AdamW parameter
     beta2: float = 0.95             # AdamW parameter
@@ -134,7 +134,7 @@ class TrainingConfig:
     #--- Learning Rate Scheduler ---#
     lr_decay: bool = True           # Activates the variable learning rate decay
     lr_warmup_iters: int = 2_000    # Steps to ramp up LR from 0 to max
-    lr_decay_iters: int = 80_000    # Steps to decay LR down to min
+    lr_decay_iters: int = 30_000    # Steps to decay LR down to min
     lr_min: float = 6e-5            # Minimum LR (usually 10% of max)
 
     #--- Logging & Checkpointing ---#
@@ -169,7 +169,7 @@ class TrainingConfig:
             self.train_date = datetime.datetime.now().strftime("%Y%m%d")
         # Output directory
         if self.out_dir is None:
-            clean_name = self.train_name.lower().replace(" ", "_")
+            clean_name = self.train_name.lower()
             clean_name = re.sub(r'[^a-z0-9]', ' ', clean_name)
             tokens = clean_name.split()
             suffix_name = "_".join(tokens)

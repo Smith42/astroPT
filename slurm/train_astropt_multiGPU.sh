@@ -33,7 +33,7 @@ TRAIN_MODE="resume"
 CHECK_MODE="both"
 
 #--- ARGUMENT PARSING (FLAGS) ---#
-while getopts ":r:o:d:n:c:m:k:" opt; do
+while getopts ":r:o:a:n:d:m:k:" opt; do
   case $opt in
     r) REPO_ROOT="$OPTARG" ;;
     o) OUT_DIR="$OPTARG" ;;
