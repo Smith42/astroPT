@@ -61,12 +61,16 @@ class TrainingConfig:
     This dataclass acts as the single source of truth for the experiment.
     Arguments can be overridden via command line (CLI).
     """
-
-    #--- 1. I/O & Paths ---#
-    out_dir: str = "logs/astropt_100M_arrow"
-    data_dir: str = "/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
     
-    #--- 2. Data Loading ---#
+    #--- Training Metadata ---#
+    train_name: str = "newtrain"    # Name of the training
+    train_date: str = None          # Date of the training
+
+    #--- I/O & Paths ---#
+    out_dir: str = None             # Output directory (built dynamically at the end of the class)
+    data_dir: str = "/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"   # Dataset directory
+            
+    #--- Data Loading ---#
     batch_size: int = 16            # Micro-batch size per GPU (what fits in VRAM)
     num_workers: int = 8            # Optimized for Teide HPC (CPU cores for loading)
     persistent_workers: bool = True # Keep workers active
@@ -75,7 +79,7 @@ class TrainingConfig:
     spiral: bool = True             # Whether to apply spiral readout to galaxy images
     init_from: str = "scratch"      # Training from scratch or resume training
     
-    #--- 3. Model Architecture for the 100M Parameter Setup ---#
+    #--- Model Architecture for the 100M Parameter Setup ---#
     n_layer: int = 12           # Depth of the Transformer
     n_head: int = 12            # Number of attention heads
     n_embd: int = 768           # Embedding dimension (width of the network)
@@ -110,7 +114,7 @@ class TrainingConfig:
     spectra_norm_type: str = "asinh"    # Normalization method: constant, z_score or asinh
     spectra_norm_const: float = 1.0     # Normalization constant for spectra (for constant and asinh)
     
-    #--- 4. Optimization of the Learning Process) ---#
+    #--- Optimization of the Learning Process ---#
     learning_rate: float = 6e-4     # Learning rate per weight update
     max_iters: int = 100_000        # Total training steps (NOT epochs)
     weight_decay: float = 1e-1      # Regularization to prevent overfitting
@@ -122,13 +126,13 @@ class TrainingConfig:
     # Effective batch = 16 * 40 = 640
     gradient_accumulation_steps: int = 40 
     
-    #--- 5. Learning Rate Scheduler ---#
+    #--- Learning Rate Scheduler ---#
     lr_decay: bool = True           # Activates the variable learning rate decay
     lr_warmup_iters: int = 2_000    # Steps to ramp up LR from 0 to max
     lr_decay_iters: int = 80_000    # Steps to decay LR down to min
     lr_min: float = 6e-5            # Minimum LR (usually 10% of max)
 
-    #--- 6. Logging & Checkpointing ---#
+    #--- Logging & Checkpointing ---#
     eval_interval: int = 1_000              # How often to validate
     eval_batches: int = 100                 # How many batches to use for validation
     log_interval: int = 200                 # How often to print to console/WandB
@@ -136,7 +140,7 @@ class TrainingConfig:
     checkpoint_save_type: str = "both"      # Checkpoint saving mode: best, last, both or all
     early_stopping_patience: int = 10       # Stop if no improvement after N evals
 
-    #--- 7. System & Backend ---#
+    #--- System & Backend ---#
     device: str = "cuda"                    # CPU/GPU device interface: cpu, cuda or mps
     dtype: str = "bfloat16"                 # 'bfloat16' is best for A100 GPUs
     compile: bool = True                    # PyTorch 2.0 compiler
@@ -144,12 +148,22 @@ class TrainingConfig:
     backend: str = "nccl"                   # Communication backend for DDP
     max_run_hours: Optional[str] = None     # Force stop after "HH:MM:SS"
 
-    #--- 8. External Monitoring ---#
+    #--- External Monitoring ---#
     log_via_wandb: bool = False             # Weight and bias (wandb) logging
     wandb_project: str = "AstroPT-Arrow"    # wandb project name
     wandb_run_name: Optional[str] = None    # Training name
     log_emissions: bool = False             # CodeCarbon logging
     profile: bool = False                   # Enable PyTorch Profiler (Trace analysis)
+    
+    # Dynamic output directory with date
+    def __post_init__(self):
+        # Date
+        if self.train_date is None:
+            self.train_date = datetime.now().strftime("%Y%m%d")
+        # Output directory
+        if self.out_dir is None:
+            train_date = datetime.now().strftime("%Y%m%d")
+            self.out_dir = f"logs/astropt_100M_arrow_{train_date}_{self.train_name}"
 
 
 def get_config_from_args() -> TrainingConfig:
@@ -275,6 +289,67 @@ def save_config_json(config: TrainingConfig, rank: int):
         config_path = os.path.join(config.out_dir, "config.json")
         with open(config_path, "w") as f:
             json.dump(config_dict, f, indent=4)
+            
+def smart_config_merge(current_config: Any, saved_config_dict: Dict[str, Any], logger: logging.Logger) -> Any:
+    """
+    Merges a saved configuration dictionary into the current configuration object,
+    respecting command-line interface (CLI) overrides.
+
+    Args:
+        current_config (Any): The current TrainingConfig dataclass instance 
+                              initialized by the script/CLI.
+        saved_config_dict (Dict[str, Any]): The configuration dictionary loaded 
+                                            from the checkpoint file.
+        logger (logging.Logger): Logger instance for tracking changes.
+
+    Returns:
+        Any: The updated configuration object with merged parameters.
+    """
+    
+    # Get raw CLI arguments
+    raw_argv = sys.argv[1:]
+    
+    # Iterate through the saved configuration keys
+    for key, old_value in saved_config_dict.items():
+        
+        # Never restore the following values 
+        if key in ['out_dir', 'init_from', 'run_name', 'train_date', 'wandb_run_name']:
+            continue
+            
+        # If the saved key no longer exists in the current code, skip it
+        if not hasattr(current_config, key):
+            continue
+            
+        # CLI Detection
+        kebab_key = key.replace('_', '-')
+        candidate_flags = [f"--{key}", f"--{kebab_key}"]
+        
+        # Searching for --no-{key} for Flase booleans
+        current_value = getattr(current_config, key)
+        if isinstance(current_value, bool) or isinstance(old_value, bool):
+            candidate_flags.append(f"--no-{key}")
+            candidate_flags.append(f"--no-{kebab_key}")
+            
+        # Check the match
+        user_override = False
+        for flag in candidate_flags:
+            # Check for exact match OR 'flag=' match
+            if any(arg == flag or arg.startswith(f"{flag}=") for arg in raw_argv):
+                user_override = True
+                break    
+        
+        # Taking arguments logic
+        if user_override:
+            # User explicitly provided the argument
+            if current_value != old_value:
+                logger.info(f" --> MANUAL OVERRIDE: '{key}' | Old: {old_value} -> New: {current_value} (Set by CLI)")
+        else:
+            # Not provided. Using the saved in the checkpoint
+            if current_value != old_value:
+                setattr(current_config, key, old_value)
+                logger.info(f" --> RESTORED: '{key}' | Script: {current_value} -> Saved: {old_value}")
+    
+    return current_config
 
 def ddp_setup() -> Tuple[bool, int, int, str]:
     """
@@ -306,7 +381,8 @@ def ddp_setup() -> Tuple[bool, int, int, str]:
         
         # Log initialization only on the master process to avoid spam
         if ddp_rank == 0:
-            print(f"[INFO]: DDP Initialized: Global Rank {ddp_rank}/{ddp_world_size} | Local Rank {ddp_local_rank} | Device {device}")
+            print(f"[INFO]: DDP Initialized: Global Rank {ddp_rank}/{ddp_world_size} | "
+                  f"Local Rank {ddp_local_rank} | Device {device}")
             
     else:
         # Single Device Mode
@@ -725,7 +801,8 @@ def main():
         # Automatic gradient accumulation steps
         if config.gradient_accumulation_steps % ddp_world_size != 0:
             if ddp_rank == 0:
-                logger.warning(f"Grad Accum {config.gradient_accumulation_steps} is not divisible by {ddp_world_size}. It will be rounded down.")
+                logger.warning(f"Grad Accum {config.gradient_accumulation_steps} "
+                               f"is not divisible by {ddp_world_size}. It will be rounded down.")
         
         # Original configuration        
         original_accum = config.gradient_accumulation_steps
@@ -758,7 +835,8 @@ def main():
         # Only master shows
         if ddp_rank == 0:
             logger.info(f"DDP Detected: {ddp_world_size} GPUs. {total_available_cpus} CPUs")
-            logger.info(f"  -> Adjusting Gradient Accumulation: {original_accum} -> {config.gradient_accumulation_steps} per GPU.")
+            logger.info(f"  -> Adjusting Gradient Accumulation: {original_accum} "
+                        f"-> {config.gradient_accumulation_steps} per GPU.")
             logger.info(f"  -> Effective Batch Size maintained at: {eff_batch_size}")
             logger.info(f"  -> Assigning {suggested_workers} workers per DataLoader.")
         
@@ -893,7 +971,8 @@ def main():
                 # Changing time to hours
                 prev_hours = accumulated_time / 3600
                 
-                logger.info(f"Resumed successfully at iteration {iter_num} - Best Loss: {best_val_loss:.4f} - Previous run time: {prev_hours:.2f} hours.")
+                logger.info(f"Resumed successfully at iteration {iter_num} - "
+                            f"Best Loss: {best_val_loss:.4f} - Previous run time: {prev_hours:.2f} hours.")
 
             else:
                 logger.info("Starting training from scratch.")
@@ -924,7 +1003,11 @@ def main():
             if config.init_from == 'scratch' or not os.path.exists(csv_path):
                 with open(csv_path, "w") as f:
                     # Headers for the CSV
-                    f.write("iter,epoch,progress,timestamp,train_loss,val_loss,grad_norm,clipped,lr,mfu,mem_gb,dt_ms,rt_hms,eta_hms\n")
+                    headers = [
+                        "iter", "epoch", "progress", "timestamp", "train_loss", "val_loss",
+                        "grad_norm", "clipped", "lr", "mfu", "mem_gb", "dt_ms", "rt_hms", "eta_hms"
+                    ]
+                    f.write(",".join(headers) + "\n")
         
         # WANDB Configuration
         if ddp_rank == 0:
@@ -1041,7 +1124,8 @@ def main():
                         if torch.isnan(loss) or torch.isinf(loss):
                             skip_step = True
                             if ddp_rank == 0:
-                                logger.warning(f"NaN/Inf detected in loss at iter {iter_num}, micro-step {micro_step}. Skipping batch.")
+                                logger.warning(f"NaN/Inf detected in loss at iter {iter_num}, "
+                                               f"micro-step {micro_step}. Skipping batch.")
                             break
                         
                         # Scale loss
@@ -1229,7 +1313,6 @@ def main():
                             val_losses.append(v_loss.item())
                     
                     val_loss = sum(val_losses) / len(val_losses)
-                    logger.info(f"Validation Loss: {val_loss:.4f}")
                     
                     if config.log_via_wandb and _WANDB_AVAILABLE:
                         wandb.log({"val/loss": val_loss, "iter": iter_num})
@@ -1249,16 +1332,26 @@ def main():
                     
                     # If loss improve
                     if val_loss < best_val_loss:
+                        
+                        # Computing the improvement
+                        improvement = best_val_loss - val_loss
+                        
                         # Reset the stop counter
                         best_val_loss = val_loss
                         early_stop_counter = 0
                         is_best = True
                         
+                        # Logging the validation loss as the BEST
+                        logger.info(f"Validation Loss: {val_loss:.4f} (-{improvement:.4f}) | NEW BEST")
+                        
                     else:
                         # Increasing the counter
                         early_stop_counter += 1
                         is_best = False
-                        logger.info(f"Early Stopping Counter: {early_stop_counter}/{config.early_stopping_patience}")
+                        logger.info(
+                            f"Validation Loss: {val_loss:.4f} (Best: {best_val_loss:.4f}) | "
+                            f"Patience: {early_stop_counter}/{config.early_stopping_patience}"
+                        )
                         
                         # If counter eaches the patience limit
                         if early_stop_counter >= config.early_stopping_patience:
@@ -1353,7 +1446,8 @@ def main():
                 if stop_signal.item() == 1:
                     if ddp_rank == 0:
                         elapsed_str = str(datetime.timedelta(seconds=int(elapsed_seconds)))
-                        logger.info(f"Time limit reached ({elapsed_str} > {config.max_run_hours}). Saving checkpoint and exiting...")
+                        logger.info(f"Time limit reached ({elapsed_str} > {config.max_run_hours}). "
+                                    f"Saving checkpoint and exiting...")
                         
                         # Saving checkpoint
                         current_total_time = elapsed_seconds + accumulated_time
