@@ -30,6 +30,9 @@ while getopts ":r:o:a:" opt; do
   esac
 done
 
+# Absolute output path
+OUT_DIR=$(readlink -f "$OUT_DIR")
+
 #--- ENVIRONMENT SETUP ---#
 echo "-----------------------------------------------"
 echo "Starting Embedding Extraction Job $SLURM_JOB_ID"

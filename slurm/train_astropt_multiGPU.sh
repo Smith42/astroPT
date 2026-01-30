@@ -46,6 +46,9 @@ while getopts ":r:o:a:n:d:m:k:" opt; do
   esac
 done
 
+# Absolute output path
+OUT_DIR=$(readlink -f "$OUT_DIR")
+
 # Changing directory to run astropt
 echo "Changing directory to: $REPO_ROOT"
 cd "$REPO_ROOT" || { echo "[ERROR]: Cannot find REPO_ROOT: $REPO_ROOT"; exit 1; }

@@ -28,6 +28,9 @@ while getopts ":r:o:" opt; do
   esac
 done
 
+# Absolute output path
+OUT_DIR=$(readlink -f "$OUT_DIR")
+
 #--- ENVIRONMENT SETUP ---#
 echo "-----------------------------------------------"
 echo "Starting Cosine Similarity Job $SLURM_JOB_ID"

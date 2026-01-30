@@ -42,6 +42,9 @@ while getopts ":n:d:o:h" opt; do
   esac
 done
 
+# Absolute output path
+OUT_DIR=$(readlink -f "$OUT_DIR")
+
 # AUTOMATIC CONFIGURATION
 SUFIX_NAME=$(echo "$TRAIN_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/ /g' | xargs | tr ' ' '_')
 TRAIN_DATE="$(date +%Y%m%d)"

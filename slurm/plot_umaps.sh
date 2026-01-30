@@ -21,7 +21,7 @@ OUT_DIR=""
 META_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.0.fits"
 
 #--- ARGUMENT PARSING (FLAGS) ---#
-while getopts ":r:o:c:" opt; do
+while getopts ":r:o:f:" opt; do
   case $opt in
     r) REPO_ROOT="$OPTARG" ;;
     o) OUT_DIR="$OPTARG" ;;
@@ -42,7 +42,7 @@ cd "$REPO_ROOT" || { echo "[ERROR]: Cannot find REPO_ROOT: $REPO_ROOT"; exit 1; 
 # 2. Activate Environment
 source .venv/bin/activate
 
-# 3. Activating LaTeX
+# 3. Activating LaTeX (Required for plots)
 export PATH="$HOME/.TinyTeX/bin/x86_64-linux:$PATH"
 
 #--- EMBEDDING DETECTION LOGIC ---#
@@ -64,7 +64,7 @@ echo "   EMBEDDINGS:    $EMB_DIR (Auto-detected)"
 python "$PYTHON_SCRIPT" \
     --out_dir "$OUT_DIR" \
     --metadata_path "$META_PATH" \
-    --embeddings_dir "$EMB_DIR"
+    --emb_dir "$EMB_DIR"
 
 echo "-----------------------------------------------"
 echo "Plotting UMAPS Finished"

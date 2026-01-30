@@ -11,8 +11,8 @@
 #SBATCH --time=01:00:00         
 
 #--- LOGS FILES ---#
-#SBATCH --output=logs/astropt_plot_%j.out
-#SBATCH --error=logs/astropt_plot_%j.err
+#SBATCH --output=logs/astropt_img_spec_%j.out
+#SBATCH --error=logs/astropt_img_spect_%j.err
 
 #--- DEFAULT VALUES ---#
 REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
@@ -30,9 +30,12 @@ while getopts ":r:o:a:" opt; do
   esac
 done
 
+# Absolute output path
+OUT_DIR=$(readlink -f "$OUT_DIR")
+
 #--- ENVIRONMENT SETUP ---#
 echo "-----------------------------------------------"
-echo "Starting Plotting Job $SLURM_JOB_ID"
+echo "Plotting Images and Spectra $SLURM_JOB_ID"
 echo "-----------------------------------------------"
 
 # 1. Change directory
