@@ -20,6 +20,7 @@ EXT_EMBD_SCRIPT="$SCRIPT_DIR/extract_embeddings.sh"
 COS_SIM_SCRIPT="$SCRIPT_DIR/cosine_similarity.sh"
 UMAPS_SCRIPT="$SCRIPT_DIR/plot_umaps.sh"
 PROBING_SCRIPT="$SCRIPT_DIR/probing_downstream.sh"
+WORKFLOW_SCRIPT="$SCRIPT_DIR/workflow_controller.sh"
 
 # ARGUMENTS DEFAULT VALUES
 TRAIN_NAME="New Train"              # Training name
@@ -61,7 +62,7 @@ launch_analysis() {
     local PARENT_JOB_ID=$1  
     local STEP_NAME=$2      
 
-    echo "--> Launching Analysis Battery for: $STEP_NAME (Parent: $PARENT_JOB_ID)"
+    echo " --> Launching Analysis Battery for: $STEP_NAME (Parent: $PARENT_JOB_ID)"
 
     # Plotting Metrics
     local J_MET=$(sbatch --parsable --dependency=afterany:$PARENT_JOB_ID "$PLOT_MET_SCRIPT" \
@@ -70,8 +71,15 @@ launch_analysis() {
             )
     echo "    [Metric]  Job sent. ID: $J_MET (Depends on Train: any)"
 
+    # Workflow controller
+    local J_WOR=$(sbatch --parsable --dependency=afterany:$PARENT_JOB_ID "$WORKFLOW_SCRIPT" \
+                -r "$REPO_ROOT" \
+                -o "$OUT_DIR"
+            )
+    echo "    [Work]    Job sent. ID: $J_WOR (Depends on Train: any)"
+
     # Plotting Images
-    local J_IMG=$(sbatch --parsable --dependency=afterany:$PARENT_JOB_ID "$PLOT_IMG_SCRIPT" \
+    local J_IMG=$(sbatch --parsable --dependency=afterok:$J_WOR "$PLOT_IMG_SCRIPT" \
                 -r "$REPO_ROOT" \
                 -o "$OUT_DIR" \
                 -a "$DATA_DIR"
@@ -79,7 +87,7 @@ launch_analysis() {
     echo "    [ImgSpec] Job sent. ID: $J_IMG (Depends on Train: any)"
 
     # Extract Embeddings 
-    local J_EMB=$(sbatch --parsable --dependency=afterok:$PARENT_JOB_ID "$EXT_EMBD_SCRIPT" \
+    local J_EMB=$(sbatch --parsable --dependency=afterok:$J_WOR "$EXT_EMBD_SCRIPT" \
                 -r "$REPO_ROOT" \
                 -o "$OUT_DIR" \
                 -a "$DATA_DIR"
@@ -87,14 +95,14 @@ launch_analysis() {
     echo "    [Embeds]  Job sent. ID: $J_EMB (Depends on Train: any)"
 
     # Cosine Similarity
-    local J_COS=$(sbatch --parsable --dependency=afterok:$J_EMB "$COS_SIM_SCRIPT" \
+    local J_COS=$(sbatch --parsable --dependency=afterok:$J_WOR "$COS_SIM_SCRIPT" \
                 -r "$REPO_ROOT" \
                 -o "$OUT_DIR"
             )
     echo "    [CosSim]  Job sent. ID: $J_COS (Depends on Embeds: ok)"
 
     # UMAPS
-    local J_UMAP=$(sbatch --parsable --dependency=afterok:$J_EMB "$UMAPS_SCRIPT" \
+    local J_UMAP=$(sbatch --parsable --dependency=afterok:$J_WOR "$UMAPS_SCRIPT" \
                 -r "$REPO_ROOT" \
                 -o "$OUT_DIR" \
                 -f "$META_PATH"
@@ -102,7 +110,7 @@ launch_analysis() {
     echo "    [UMAPS]   Job sent. ID: $J_UMAP (Depends on Embeds: ok)"
 
     # PROBING DOWNSTREAM TASKS
-    local J_PROB=$(sbatch --parsable --dependency=afterok:$J_EMB "$PROBING_SCRIPT" \
+    local J_PROB=$(sbatch --parsable --dependency=afterok:$J_WOR "$PROBING_SCRIPT" \
                 -r "$REPO_ROOT" \
                 -o "$OUT_DIR" \
                 -f "$META_PATH"
