@@ -93,7 +93,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="AstroPT UMAP Generator")
     
     parser.add_argument("--out_dir", type=str, default=".", help="Output directory")
-    parser.add_argument("--embeddings_dir", type=str, required=True, help="Directory containing .npy embedding files")
+    parser.add_argument("--emb_dir", type=str, required=True, help="Directory containing .npy embedding files")
     parser.add_argument("--metadata_path", type=str, required=True, help="Path to .fits catalog")
     parser.add_argument("--subsample", type=int, default=None, help="Limit points for speed")
     parser.add_argument("--train_name", type=str, default=None, help="Custom title for the plot (defaults to folder name)")
@@ -101,21 +101,21 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_data(embeddings_dir: str, metadata_path: str) -> Tuple[Dict[str, np.ndarray], pd.DataFrame]:
+def load_data(emb_dir: str, metadata_path: str) -> Tuple[Dict[str, np.ndarray], pd.DataFrame]:
     """
     Loads .npy embeddings from a directory and .fits metadata catalog.
     Scans for 'images.npy', 'spectra.npy', 'joint.npy' and 'targetid.npy'.
 
     Args:
-        embeddings_dir: Path to the directory containing embedding files.
+        emb_dir: Path to the directory containing embedding files.
         metadata_path: Path to the FITS catalog file.
 
     Returns:
         Tuple containing a dictionary of embeddings and the metadata DataFrame.
     """
-    logger.info(f"Scanning embeddings directory: {embeddings_dir}...")
-    if not os.path.exists(embeddings_dir):
-        raise FileNotFoundError(f"Embeddings directory not found: {embeddings_dir}")
+    logger.info(f"Scanning embeddings directory: {emb_dir}...")
+    if not os.path.exists(emb_dir):
+        raise FileNotFoundError(f"Embeddings directory not found: {emb_dir}")
     
     data_dict = {}
     
@@ -123,7 +123,7 @@ def load_data(embeddings_dir: str, metadata_path: str) -> Tuple[Dict[str, np.nda
     id_candidates = ['targetid.npy', 'ids.npy', 'target_ids.npy', 'object_ids.npy']
     id_path = None
     for cand in id_candidates:
-        p = os.path.join(embeddings_dir, cand)
+        p = os.path.join(emb_dir, cand)
         if os.path.exists(p):
             id_path = p
             break
@@ -132,13 +132,13 @@ def load_data(embeddings_dir: str, metadata_path: str) -> Tuple[Dict[str, np.nda
         logger.info(f"Loading Target IDs from {os.path.basename(id_path)}...")
         data_dict['targetid'] = np.load(id_path)
     else:
-        raise FileNotFoundError(f"Could not find IDs ({id_candidates}) in {embeddings_dir}")
+        raise FileNotFoundError(f"Could not find IDs ({id_candidates}) in {emb_dir}")
 
     # Load Modalities (images, spectra, joint)
     modalities = ['images', 'spectra', 'joint']
     for mod in modalities:
         # Search for pattern mod*.npy
-        candidates = glob.glob(os.path.join(embeddings_dir, f"{mod}*.npy"))
+        candidates = glob.glob(os.path.join(emb_dir, f"{mod}*.npy"))
         
         if candidates:
             # Prefer exact name "images.npy"
@@ -433,7 +433,7 @@ def main():
     args = parse_args()
     if args.out_dir and not os.path.exists(args.out_dir): os.makedirs(args.out_dir)
     
-    raw_data, df = load_data(args.embeddings_dir, args.metadata_path)
+    raw_data, df = load_data(args.emb_dir, args.metadata_path)
     df_aligned, valid_emb_indices = align_data(raw_data, df)
     
     # Global Subsampling
