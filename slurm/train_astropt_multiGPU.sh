@@ -80,7 +80,6 @@ torchrun --standalone --nproc_per_node=4 scripts/train_multimodal_arrow.py \
     --train_description "$TRAIN_DESC" \
     --init_from "$TRAIN_MODE" \
     --checkpoint_save_type "$CHECK_MODE" \
-    --loss_type "l1" \
     --max_run_hours "11:55:00"
 
 echo "------------------------------------------------------"
