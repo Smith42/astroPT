@@ -19,10 +19,11 @@ REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
 OUT_DIR=""
 
 #--- ARGUMENT PARSING (FLAGS) ---#
-while getopts ":r:o:" opt; do
+while getopts ":r:o:s:" opt; do
   case $opt in
     r) REPO_ROOT="$OPTARG" ;;
     o) OUT_DIR="$OPTARG" ;;
+    s) SUFFIX="$OPTARG" ;;
     \?) echo "[ERROR] Invalid option -$OPTARG" >&2; exit 1 ;;
   esac
 done
@@ -33,9 +34,26 @@ OUT_DIR=$(readlink -f "$OUT_DIR")
 # Checking if .improved exists
 if [ ! -f "$OUT_DIR/.improved" ]; then
     echo "[CRITICAL]: No detected improvements in $OUT_DIR"
-    echo "[ACTION]: Cancelling jobs depending on ckpt_best.pt file for Training Part 2"
-    
-    scancel --name Plot_Im_Sp,Extract_Embed,Extract_Embed,Cos_Sim,Plot_Umaps,Probing_Tasks --user=$USER
+    echo "[ACTION]: Cancelling dependent jobs for suffix: $SUFFIX"
+
+    JOBS_TO_KILL=(
+        "Plot_Im_Sp${SUFFIX}"
+        "Extract_Embed${SUFFIX}"
+        "Cos_Sim${SUFFIX}"
+        "Plot_Umaps${SUFFIX}"
+        "Probing_Tasks${SUFFIX}"
+    )
+
+    for JOB in "${JOBS_TO_KILL[@]}"; do
+        echo " -> Cancelling: $JOB"
+        scancel --name="$JOB" --user=$USER
+    done
+
+    echo "[DONE]: Kill sequence completed."
+
+    exit 1
+
 else
     echo "[OK]: Improvement confirmed. Running post analysis"
+    exit 0
 fi

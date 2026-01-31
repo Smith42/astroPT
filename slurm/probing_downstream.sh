@@ -60,7 +60,7 @@ fi
 #--- EXECUTION ---#
 echo "Probing Configuration:"
 echo "   OUT DIR:       $OUT_DIR"
-echo "   METADATA:  $META_PATH"
+echo "   METADATA:      $META_PATH"
 echo "   EMBEDDINGS:    $EMB_DIR"
 
 # Run Python Script

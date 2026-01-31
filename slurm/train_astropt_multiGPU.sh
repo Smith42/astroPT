@@ -77,7 +77,7 @@ torchrun --standalone --nproc_per_node=4 scripts/train_multimodal_arrow.py \
     --out_dir "$OUT_DIR" \
     --data_dir "$DATA_DIR" \
     --train_name "$TRAIN_NAME" \
-    --train_description "$TRAIN_DES" \
+    --train_description "$TRAIN_DESC" \
     --init_from "$TRAIN_MODE" \
     --checkpoint_save_type "$CHECK_MODE" \
     --loss_type "l1" \

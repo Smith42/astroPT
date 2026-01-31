@@ -59,27 +59,38 @@ echo "Target Output Directory: $OUT_DIR"
 
 # LAUNCH ANALYSIS FUNCTION
 launch_analysis() {
-    local PARENT_JOB_ID=$1  
-    local STEP_NAME=$2      
+    local PARENT_JOB_ID=$1
+    local JOB_SUFFIX=$2  
+    local STEP_NAME=$3      
 
     echo " --> Launching Analysis Battery for: $STEP_NAME (Parent: $PARENT_JOB_ID)"
 
     # Plotting Metrics
-    local J_MET=$(sbatch --parsable --dependency=afterany:$PARENT_JOB_ID "$PLOT_MET_SCRIPT" \
+    local J_MET=$(sbatch --parsable \
+                --dependency=afterany:$PARENT_JOB_ID \
+                --job-name="Plot_Metrics$JOB_SUFFIX" \
+                "$PLOT_MET_SCRIPT" \
                 -r "$REPO_ROOT" \
                 -o "$OUT_DIR"
             )
     echo "    [Metric]  Job sent. ID: $J_MET (Depends on Train: any)"
 
     # Workflow controller
-    local J_WOR=$(sbatch --parsable --dependency=afterany:$PARENT_JOB_ID "$WORKFLOW_SCRIPT" \
+    local J_WOR=$(sbatch --parsable \
+                --dependency=afterany:$PARENT_JOB_ID \
+                --job-name="Workflow_Controller$JOB_SUFFIX" \
+                "$WORKFLOW_SCRIPT" \
                 -r "$REPO_ROOT" \
-                -o "$OUT_DIR"
+                -o "$OUT_DIR" \
+                -s "$JOB_SUFFIX"
             )
     echo "    [Work]    Job sent. ID: $J_WOR (Depends on Train: any)"
 
     # Plotting Images
-    local J_IMG=$(sbatch --parsable --dependency=afterok:$J_WOR "$PLOT_IMG_SCRIPT" \
+    local J_IMG=$(sbatch --parsable \
+                --dependency=afterok:$J_WOR \
+                --job-name="Plot_Im_Sp$JOB_SUFFIX" \
+                "$PLOT_IMG_SCRIPT" \
                 -r "$REPO_ROOT" \
                 -o "$OUT_DIR" \
                 -a "$DATA_DIR"
@@ -87,7 +98,10 @@ launch_analysis() {
     echo "    [ImgSpec] Job sent. ID: $J_IMG (Depends on Train: any)"
 
     # Extract Embeddings 
-    local J_EMB=$(sbatch --parsable --dependency=afterok:$J_WOR "$EXT_EMBD_SCRIPT" \
+    local J_EMB=$(sbatch --parsable \
+                --dependency=afterok:$J_WOR \
+                --job-name="Extract_Embed$JOB_SUFFIX" \
+                "$EXT_EMBD_SCRIPT" \
                 -r "$REPO_ROOT" \
                 -o "$OUT_DIR" \
                 -a "$DATA_DIR"
@@ -95,14 +109,20 @@ launch_analysis() {
     echo "    [Embeds]  Job sent. ID: $J_EMB (Depends on Train: any)"
 
     # Cosine Similarity
-    local J_COS=$(sbatch --parsable --dependency=afterok:$J_WOR "$COS_SIM_SCRIPT" \
+    local J_COS=$(sbatch --parsable \
+                --dependency=afterok:$J_WOR \
+                --job-name="Cos_Sim$JOB_SUFFIX" \
+                "$COS_SIM_SCRIPT" \
                 -r "$REPO_ROOT" \
                 -o "$OUT_DIR"
             )
     echo "    [CosSim]  Job sent. ID: $J_COS (Depends on Embeds: ok)"
 
     # UMAPS
-    local J_UMAP=$(sbatch --parsable --dependency=afterok:$J_WOR "$UMAPS_SCRIPT" \
+    local J_UMAP=$(sbatch --parsable \
+                --dependency=afterok:$J_WOR \
+                --job-name="Plot_Umaps$JOB_SUFFIX" \
+                "$UMAPS_SCRIPT" \
                 -r "$REPO_ROOT" \
                 -o "$OUT_DIR" \
                 -f "$META_PATH"
@@ -110,7 +130,10 @@ launch_analysis() {
     echo "    [UMAPS]   Job sent. ID: $J_UMAP (Depends on Embeds: ok)"
 
     # PROBING DOWNSTREAM TASKS
-    local J_PROB=$(sbatch --parsable --dependency=afterok:$J_WOR "$PROBING_SCRIPT" \
+    local J_PROB=$(sbatch --parsable \
+                --dependency=afterok:$J_WOR \
+                --job-name="Probing_Tasks$JOB_SUFFIX" \
+                "$PROBING_SCRIPT" \
                 -r "$REPO_ROOT" \
                 -o "$OUT_DIR" \
                 -f "$META_PATH"
@@ -124,7 +147,10 @@ launch_analysis() {
 # PART 1 - TRAIN FROM SCRATCH
 echo "-------------------------------------------------"
 echo "STEP 1: TRAINING FROM SCRATCH"
-JOB_TRAIN_1=$(sbatch --parsable "$TRAIN_SCRIPT" \
+JOB_SUFFIX="_T1"
+JOB_TRAIN_1=$(sbatch --parsable \
+    --job-name="Train_AstroPT_DDP$JOB_SUFFIX" \
+    "$TRAIN_SCRIPT" \
     -r "$REPO_ROOT" \
     -o "$OUT_DIR" \
     -a "$DATA_DIR" \
@@ -135,13 +161,17 @@ JOB_TRAIN_1=$(sbatch --parsable "$TRAIN_SCRIPT" \
 echo "Training Job (Scratch) launched. ID: $JOB_TRAIN_1"
 
 # Calling the execution function
-launch_analysis "$JOB_TRAIN_1" "Part 1 (SCRATCH)"
+launch_analysis "$JOB_TRAIN_1" "$JOB_SUFFIX" "Part 1 (SCRATCH)"
 
 
 # PART 2 - TRAIN FROM RESUME
 echo "-------------------------------------------------"
 echo "STEP 2: TRAINING FROM RESUME"
-JOB_TRAIN_2=$(sbatch --parsable --dependency=afterok:$JOB_TRAIN_1 "$TRAIN_SCRIPT" \
+JOB_SUFFIX="_T2"
+JOB_TRAIN_2=$(sbatch --parsable \
+    --dependency=afterok:$JOB_TRAIN_1 \
+    --job-name="Train_AstroPT_DDP$JOB_SUFFIX" \
+    "$TRAIN_SCRIPT" \
     -r "$REPO_ROOT" \
     -o "$OUT_DIR" \
     -a "$DATA_DIR" \
@@ -152,7 +182,7 @@ JOB_TRAIN_2=$(sbatch --parsable --dependency=afterok:$JOB_TRAIN_1 "$TRAIN_SCRIPT
 echo "Training Job (Resume) launched.  ID: $JOB_TRAIN_2 (Depends on Train 1: ok $JOB_TRAIN_1)"
 
 # Calling the execution function
-launch_analysis "$JOB_TRAIN_2" "Part 2 (Resume)"
+launch_analysis "$JOB_TRAIN_2" "$JOB_SUFFIX" "Part 2 (Resume)"
 
 
 # QUEUE STATUS
