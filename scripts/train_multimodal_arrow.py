@@ -110,7 +110,7 @@ class TrainingConfig:
     images_pos_input_size: int = 1      # Images position input size
     images_norm_type: str = "asinh"     # Normalization method: constant, z_score or asinh
     images_norm_scaler: float = 0.01    # Scaler factor if normalization requieres it
-    images_norm_const: float = 7.603847 # Normalization global constant for images: P99=7.603847
+    images_norm_const: float = 1.0      # Normalization global constant for images: P99=7.603847
     
     # Spectra
     spectra_size: int = 7781                # Spectra total size
@@ -120,7 +120,7 @@ class TrainingConfig:
     spectra_pos_input_size: int = 1         # Spectra position input size
     spectra_norm_type: str = "asinh"        # Normalization method: constant, z_score or asinh
     spectra_norm_scaler: float = 0.01       # Scaler factor if normalization requieres it
-    spectra_norm_const: float = 7.956048    # Normalization global constant for spectra: P99=7.956048
+    spectra_norm_const: float = 1.0         # Normalization global constant for spectra: P99=7.956048
     
     #--- Optimization of the Learning Process ---#
     learning_rate: float = 6e-4     # Learning rate per weight update
@@ -1341,7 +1341,7 @@ def main():
                             stop_training = True
                     
                         # Only remove .improved file in resume mode
-                        if config.mode == "resume":
+                        if config.init_from == "resume":
                             if os.path.exists(improve_file_path):
                                 os.remove(improve_file_path)
                     
