@@ -43,17 +43,17 @@ while getopts ":n:d:o:h" opt; do
   esac
 done
 
-# Absolute output path
-OUT_DIR=$(readlink -f "$OUT_DIR")
-
 # AUTOMATIC CONFIGURATION
 SUFIX_NAME=$(echo "$TRAIN_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/ /g' | xargs | tr ' ' '_')
 TRAIN_DATE="$(date +%Y%m%d)"
-DEFAULT_PATH="logs/astropt_100M_250K_arrow_${TRAIN_DATE}_${SUFIX_NAME}"
+DEFAULT_PATH="$REPO_ROOT/logs/astropt_100M_250K_arrow_${TRAIN_DATE}_${SUFIX_NAME}"
 
 if [ -z "$OUT_DIR" ]; then
     OUT_DIR="$DEFAULT_PATH"
 fi
+
+# Absolute output path
+OUT_DIR=$(readlink -f "$OUT_DIR")
 
 echo "Target Output Directory: $OUT_DIR"
 

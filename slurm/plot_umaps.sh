@@ -30,6 +30,9 @@ while getopts ":r:o:f:" opt; do
   esac
 done
 
+# Absolute output path
+OUT_DIR=$(readlink -f "$OUT_DIR")
+
 #--- ENVIRONMENT SETUP ---#
 echo "-----------------------------------------------"
 echo "Starting Plotting UMAPS Job $SLURM_JOB_ID"
