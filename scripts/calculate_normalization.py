@@ -30,26 +30,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def parse_args() -> argparse.Namespace:
-    """Parses command line arguments."""
-    
-    parser = argparse.ArgumentParser(description="Robust P99 Calc")
-    parser.add_argument("--data_dir",
-        type=str,
-        default="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow",
-        help="Root directory containing train_*/test_* folders"
-    )
-    parser.add_argument(
-        "--sample_prob",
-        type=float,
-        default=0.1,
-        help="Fraction of files to process (0.1 = 10%)."
-    )
-    parser.add_argument(
-        "--pixels_per_file",
-        type=int,
-        default=100_000,
-        help="Max number of pixels/flux values to keep per file."
-    )
+    parser = argparse.ArgumentParser(description="Calculate P99 after ASINH transformation")
+    parser.add_argument("--data_dir", type=str, required=True)
+    parser.add_argument("--sample_prob", type=float, default=1.0, help="File subsample percent to be process")
+    parser.add_argument("--pixels_per_file", type=int, default=50_000)
+    parser.add_argument("--asinh_a_img", type=float, default=0.01, help="Scaler 'a' for images")
+    parser.add_argument("--asinh_a_spec", type=float, default=0.01, help="Scaler 'a' for spectra")
     return parser.parse_args()
 
 def get_arrow_files(root_dir: str) -> List[str]:
@@ -190,70 +176,41 @@ def process_arrow_file(
     return final_img, final_spec
 
 def main() -> None:
-    """
-    Main execution entry point.
-
-    Orchestrates the statistical estimation process:
-    1. Parses command-line arguments.
-    2. Discovers all available Arrow files.
-    3. Selects a random subset of files based on `sample_prob`.
-    4. Iterates through the selected files to extract valid data points using PyArrow.
-    5. Aggregates the results in memory.
-    6. Computes and prints the 99th percentile (P99) for images and spectra.
-    """
-    
-    # Parsing arguments
     args = parse_args()
-    
     all_files = get_arrow_files(args.data_dir)
-    if not all_files:
-        logger.error("No arrow files found.")
-        sys.exit(1)
-        
-    # Sample files
+    
     num_files_to_process = max(1, int(len(all_files) * args.sample_prob))
     selected_files = random.sample(all_files, num_files_to_process)
     
-    logger.info(f"Processing {len(selected_files)}/{len(all_files)} files ({args.sample_prob:.0%})")
+    logger.info(f"Cumputing P99 with asinh(x/a). a_img={args.asinh_a_img}, a_spec={args.asinh_a_spec}")
     
     global_img = []
     global_spec = []
     
-    # Progression bar
-    pbar = tqdm(selected_files, desc="Scanning Arrow Files")
-    for fpath in pbar:
-        
-        # Processing files
+    for fpath in tqdm(selected_files, desc="Processing Arrows"):
         i_data, s_data = process_arrow_file(fpath, args.pixels_per_file)
         
         if i_data is not None and len(i_data) > 0:
-            global_img.append(i_data)
-        if s_data is not None and len(s_data) > 0:
-            global_spec.append(s_data)
+            transformed_img = np.arcsinh(i_data / args.asinh_a_img)
+            global_img.append(transformed_img)
             
-    # COMPUTE P99
-    logger.info("Aggregating data...")
+        if s_data is not None and len(s_data) > 0:
+            transformed_spec = np.arcsinh(s_data / args.asinh_a_spec)
+            global_spec.append(transformed_spec)
+            
+    print("FINAL STATS (ASINH)")
     
     if global_img:
         full_img = np.concatenate(global_img)
-        logger.info(f"Total Image Pixels: {len(full_img):,}")
         img_p99 = np.percentile(full_img, 99)
-    else:
-        img_p99 = 1.0 
-        logger.warning("No image data found.")
-
+        print(f" -> GLOBAL CONSTANT IMAGES:     {img_p99:.6f}")
+    
     if global_spec:
         full_spec = np.concatenate(global_spec)
-        logger.info(f"Total Flux Points: {len(full_spec):,}")
         spec_p99 = np.percentile(full_spec, 99)
-    else:
-        spec_p99 = 1.0
-        logger.warning("No spectra data found.")
-
-    print("\nRESULTS")
-    print(f"->  Images P99 : {img_p99:.6f}")
-    print(f"->  Spectra P99: {spec_p99:.6f}")
-    print("-"*40 + "\n")
+        print(f" -> GLOBAL CONSTANT SPECTRA:    {spec_p99:.6f}")
+    
+    print("-"*40)
 
 if __name__ == "__main__":
     main()
