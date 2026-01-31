@@ -190,7 +190,7 @@ def make_rgb_lupton(image_tensor: np.ndarray, Q: float = 10.0, stretch: float = 
     return rgb_out.transpose(1, 2, 0)
 
 
-def denormalize(data: np.ndarray, method: str, const: float) -> np.ndarray:
+def denormalize(data: np.ndarray, method: str, scaler: float, const: float) -> np.ndarray:
     """
     Reverts normalization to return Physical Units.
     
@@ -200,8 +200,8 @@ def denormalize(data: np.ndarray, method: str, const: float) -> np.ndarray:
         const: Normalization constant (or softening parameter 'a').
     """
     if method == "asinh":
-        # x_norm = asinh(x_phys / a)  -> x_phys = a * sinh(x_norm)
-        return const * np.sinh(data)
+        # x_norm = asinh(x_phys / a) / C  -> x_phys = a * sinh(data * C)
+        return scaler * np.sinh(data * const)
     
     elif method == "constant":
         # x_norm = x_phys / const     -> x_phys = x_norm * const
@@ -283,13 +283,19 @@ def main():
     
     # Retrieve Normalization Constants
     norm_type_img = raw_config.get('img_norm_type', 'constant')
+    norm_scaler_img = raw_config.get('img_norm_scaler',1.0)
     norm_const_img = raw_config.get('img_norm_const', 1.0)
     norm_type_spec = raw_config.get('spectra_norm_type', 'constant')
+    norm_scaler_spec = raw_config.get('spectra_norm_scaler',1.0)
     norm_const_spec = raw_config.get('spectra_norm_const', 1.0)
     
     transforms_dict = EuclidDESIDatasetArrow.data_transforms(
-        norm_type_img=norm_type_img, norm_const_img=norm_const_img,
-        norm_type_spec=norm_type_spec, norm_const_spec=norm_const_spec
+        norm_type_img=norm_type_img,
+        norm_scaler_img=norm_scaler_img,
+        norm_const_img=norm_const_img,
+        norm_type_spec=norm_type_spec,
+        norm_scaler_spec=norm_scaler_spec,
+        norm_const_spec=norm_const_spec,
     )
     
     ds = EuclidDESIDatasetArrow(
@@ -357,7 +363,12 @@ def main():
                 img_pred_model = reconstruct_image_from_patches(full_seq, img_config)
                 
                 # Denormalize
-                img_pred_phys = denormalize(img_pred_model, norm_type_img, norm_const_img)
+                img_pred_phys = denormalize(
+                    img_pred_model, 
+                    norm_type_img, 
+                    norm_scaler_img,
+                    norm_const_img
+                )
                 
                 # Channel Weights [R, G, B]
                 RGB_WEIGHTS = [1.2, 1.3, 1.0]
@@ -433,7 +444,12 @@ def main():
             pred_s = outputs['spectra']
             full_s = torch.cat([start_s, pred_s], dim=1).float().cpu().numpy().flatten()
             
-            spec_pred = denormalize(full_s, norm_type_spec, norm_const_spec)
+            spec_pred = denormalize(
+                full_s, 
+                norm_type_spec, 
+                norm_scaler_spec,
+                norm_const_spec
+            )
             wave_ang = np.array(raw_record['spectrum_wave']).flatten()
             
             min_len = min(len(spec_gt), len(spec_pred), len(wave_ang))
