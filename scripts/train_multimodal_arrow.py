@@ -67,12 +67,12 @@ class TrainingConfig:
     """
     
     #--- Training Metadata ---#
-    train_name: Optional[str] = None    # Name of the training
-    train_date: Optional[str] = None          # Date of the training
-    train_description: Optional[str] = None   # Description or comment abouth the training
+    train_name: Optional[str] = None            # Name of the training
+    train_date: Optional[str] = None            # Date of the training
+    train_description: Optional[str] = None     # Description or comment abouth the training
 
     #--- I/O & Paths ---#
-    out_dir: Optional[str] = None             # Output directory (built dynamically at the end of the class)
+    out_dir: Optional[str] = None               # Output directory (built dynamically at the end of the class)
     data_dir: str = "/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"   # Dataset directory
             
     #--- Data Loading ---#
@@ -85,19 +85,20 @@ class TrainingConfig:
     init_from: str = "scratch"      # Training from scratch or resume training
     
     #--- Model Architecture for the 100M Parameter Setup ---#
-    n_layer: int = 12           # Depth of the Transformer
-    n_head: int = 12            # Number of attention heads
-    n_embd: int = 768           # Embedding dimension (width of the network)
-    n_chan: int = 4             # Input channels: 1 VIS + 3 NISP (Y, J, H)
-    block_size: int = 1024      # Context length (max tokens per sample)
-    dropout: float = 0.0        # Regularization (0.0 for pretraining is standard)
-    bias: bool = False          # Learnable bias in Linear layers (False is modern/faster)
-    attn_type: str = "causal"   # Attention mechanism type
-    backbone: str = "native"    # Model bakcbone: native or llm
-    tokeniser: str = "aim"      # Model tokeniser method
-    use_qlora: bool = False     # Use Quantized Low-Rank Adaptation
-    loss_type: str = "huber"    # Opciones: l1, mse, huber
-    use_aug: bool = True        # Active data augmentation by using image rotation
+    n_layer: int = 12               # Depth of the Transformer
+    n_head: int = 12                # Number of attention heads
+    n_embd: int = 768               # Embedding dimension (width of the network)
+    n_chan: int = 4                 # Input channels: 1 VIS + 3 NISP (Y, J, H)
+    block_size: int = 1024          # Context length (max tokens per sample)
+    dropout: float = 0.0            # Regularization (0.0 for pretraining is standard)
+    bias: bool = False              # Learnable bias in Linear layers (False is modern/faster)
+    attn_type: str = "causal"       # Attention mechanism type
+    backbone: str = "native"        # Model bakcbone: native or llm
+    tokeniser: str = "aim"          # Model tokeniser method
+    use_qlora: bool = False         # Use Quantized Low-Rank Adaptation
+    loss_type: str = "huber"        # Opciones: l1, mse, huber
+    loss_huber_delta: float = 0.1   # Delta value for controlling Huber Loss Behaviour
+    use_aug: bool = True            # Active data augmentation by using image rotation
     
     #--- Multimodality Specifics ---#
     # Images
@@ -106,22 +107,24 @@ class TrainingConfig:
     images_channels: int = 4            # Channels per image (VIS + NISP Y,J,H)
     images_loss_weight: float = 1.0     # Images importance for training
     images_embed_pos: bool = True       # Images embedding positions learning
-    image_pos_input_size: int = 1       # Images position input size
-    img_norm_type: str = "asinh"        # Normalization method: constant, z_score or asinh
-    img_norm_const: float = 1.0         # Normalization constant for images (for constant and asinh)
+    images_pos_input_size: int = 1      # Images position input size
+    images_norm_type: str = "asinh"     # Normalization method: constant, z_score or asinh
+    images_norm_scaler: float = 0.01    # Scaler factor if normalization requieres it
+    images_norm_const: float = 7.603847 # Normalization global constant for images: P99=7.603847
     
     # Spectra
-    spectra_size: int = 7781            # Spectra total size
-    spectra_patch_size: int = 10        # Patch size for each spectrum
-    spectra_loss_weight: float = 1.0    # Spectra importance for training 
-    spectra_embed_pos: bool = True      # Spectra embedding positions learning
-    spectra_pos_input_size: int = 1     # Spectra position input size
-    spectra_norm_type: str = "asinh"    # Normalization method: constant, z_score or asinh
-    spectra_norm_const: float = 1.0     # Normalization constant for spectra (for constant and asinh)
+    spectra_size: int = 7781                # Spectra total size
+    spectra_patch_size: int = 10            # Patch size for each spectrum
+    spectra_loss_weight: float = 1.0        # Spectra importance for training 
+    spectra_embed_pos: bool = True          # Spectra embedding positions learning
+    spectra_pos_input_size: int = 1         # Spectra position input size
+    spectra_norm_type: str = "asinh"        # Normalization method: constant, z_score or asinh
+    spectra_norm_scaler: float = 0.01       # Scaler factor if normalization requieres it
+    spectra_norm_const: float = 7.956048    # Normalization global constant for spectra: P99=7.956048
     
     #--- Optimization of the Learning Process ---#
     learning_rate: float = 6e-4     # Learning rate per weight update
-    max_iters: int = 50_000        # Total training steps (NOT epochs)
+    max_iters: int = 50_000         # Total training iters (NOT epochs)
     weight_decay: float = 1e-1      # Regularization to prevent overfitting
     beta1: float = 0.9              # AdamW parameter
     beta2: float = 0.95             # AdamW parameter
@@ -134,7 +137,7 @@ class TrainingConfig:
     #--- Learning Rate Scheduler ---#
     lr_decay: bool = True           # Activates the variable learning rate decay
     lr_warmup_iters: int = 2_000    # Steps to ramp up LR from 0 to max
-    lr_decay_iters: int = 30_000    # Steps to decay LR down to min
+    lr_decay_iters: int = 13_000    # Steps to decay LR down to min
     lr_min: float = 6e-5            # Minimum LR (usually 10% of max)
 
     #--- Logging & Checkpointing ---#
@@ -162,8 +165,6 @@ class TrainingConfig:
     
     # Dynamic output directory with date
     def __post_init__(self):
-        print(f"DEBUG: train_name recibido = '{self.train_name}'")
-        print(f"DEBUG: sys.argv = {sys.argv}")
         # Date
         if self.train_date is None:
             self.train_date = datetime.datetime.now().strftime("%Y%m%d")
@@ -454,7 +455,7 @@ def create_dataloaders(
             name="images",
             input_size=img_input_batch_size,
             patch_size=config.images_patch_size,
-            pos_input_size=config.image_pos_input_size,  
+            pos_input_size=config.images_pos_input_size,  
             loss_weight=config.images_loss_weight,
             embed_pos=config.images_embed_pos,
         ),
@@ -476,18 +477,22 @@ def create_dataloaders(
     
     # Prepare data transformations for training 
     train_tf = EuclidDESIDatasetArrow.data_transforms(
-        norm_type_img=config.img_norm_type,
-        norm_const_img=config.img_norm_const,
+        norm_type_img=config.images_norm_type,
+        norm_scaler_img=config.images_norm_scaler,
+        norm_const_img=config.images_norm_const,
         norm_type_spec=config.spectra_norm_type,
+        norm_scaler_spec=config.spectra_norm_scaler,
         norm_const_spec=config.spectra_norm_const,
         stage=train_stage
     )
     
     # Prepare data transformations for validation 
     val_tf = EuclidDESIDatasetArrow.data_transforms(
-        norm_type_img=config.img_norm_type,
-        norm_const_img=config.img_norm_const,
+        norm_type_img=config.images_norm_type,
+        norm_scaler_img=config.images_norm_scaler,
+        norm_const_img=config.images_norm_const,
         norm_type_spec=config.spectra_norm_type,
+        norm_scaler_spec=config.spectra_norm_scaler,
         norm_const_spec=config.spectra_norm_const,
         stage='val'
     )
