@@ -66,7 +66,7 @@ REGRESSION_TARGETS = ['Z', 'LOGMSTAR', 'LOGSFR', 'GR',
 CSV_COLUMNS = [
     'Target', 'Task', 'Modality', 'Probe',
     'R2', 'RMSE', 'Bias', 'NMAD', 'Outliers',
-    'Accuracy', 'F1_Weighted', 'FPR'
+    'Accuracy', 'Precision', 'Recall', 'F1_score', 'FPR'
 ]
 
 def parse_args() -> argparse.Namespace:
@@ -323,8 +323,11 @@ def compute_metrics(
             "Outliers": outliers
         }
     else:
+        # CLASIFICATION
         acc = accuracy_score(y_true, y_pred)
         f1 = f1_score(y_true, y_pred, average='weighted', zero_division=0)
+        precision = precision_score(y_true, y_pred, average='weighted', zero_division=0)
+        recall = recall_score(y_true, y_pred, average='weighted', zero_division=0)
         
         # FPR Calculation
         cm = confusion_matrix(y_true, y_pred)
@@ -333,7 +336,13 @@ def compute_metrics(
         with np.errstate(divide='ignore', invalid='ignore'):
             fpr_macro = np.mean(np.nan_to_num(FP / (FP + TN)))
 
-        return {"Accuracy": acc, "F1_Weighted": f1, "FPR": fpr_macro}
+        return {
+            "Accuracy": acc, 
+            "Precision": precision, 
+            "Recall": recall, 
+            "F1_score": f1, 
+            "FPR": fpr_macro
+        }
 
 
 def train_engine(
