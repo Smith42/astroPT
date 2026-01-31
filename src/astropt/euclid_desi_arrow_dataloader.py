@@ -189,7 +189,7 @@ class EuclidDESIDatasetArrow(Dataset):
 
 
     @staticmethod
-    def normalise_asinh(x: torch.Tensor, a: float = 1.0) -> torch.Tensor:
+    def normalise_asinh(x: torch.Tensor, a: float = 1.0, c: float = 1.0) -> torch.Tensor:
         """
         Applies Inverse Hyperbolic Sine (asinh) transformation.
         Linear near 0, Logarithmic for high values. Handles negatives gracefully.
@@ -197,9 +197,10 @@ class EuclidDESIDatasetArrow(Dataset):
         Args:
             x: Input tensor
             a: Softening parameter (scale). Default 1.0.
+            c: Global Constant to normalize. Deafult 1.0.
         """
         
-        return torch.asinh(x.float() / a).to(x.dtype)
+        return (torch.asinh(x.float() / a) / c).to(x.dtype)
     
     @staticmethod
     def _get_augmentation_pipeline() -> Any:
@@ -234,8 +235,10 @@ class EuclidDESIDatasetArrow(Dataset):
     @staticmethod
     def data_transforms(
         norm_type_img: str = "z_score",
+        norm_scaler_img: float = 1.0,
         norm_const_img: float = 1.0,
         norm_type_spec: str = "z_score",
+        norm_scaler_spec: float = 1.0,
         norm_const_spec: float = 1.0,
         stage: str = "val"
     ) -> Dict[str, Any]:
@@ -248,9 +251,11 @@ class EuclidDESIDatasetArrow(Dataset):
 
         Args:
             norm_type_img (str): Normalization strategy for images. Options: "z_score", "constant", "none".
-            norm_const_img (float): The divisor constant used if norm_type_img is "constant".
+            norm_scaler_img (float): Scaler parameter for the normalization image function. 
+            norm_const_img (float): Global constant to divide images by. 
             norm_type_spec (str): Normalization strategy for spectra. Options: "z_score", "constant", "none".
-            norm_const_spec (float): The divisor constant used if norm_type_spec is "constant".
+            norm_scaler_spec (float): Scaler parameter for the normalization spectra function. 
+            norm_const_spec (float): Global constant to divide spectra by. 
             stage (str): 'train' applies augmentations. 'val'/'test' do not.
 
         Returns:
@@ -259,14 +264,14 @@ class EuclidDESIDatasetArrow(Dataset):
         """
         
         # Internal helper function to select the correct normalization method
-        def get_norm_transform(n_type: str, n_const: float):
+        def get_norm_transform(n_type: str, n_scaler: float, n_const: float):
             if n_type == "constant":
                 # Using lambda for parsing two arguments to Compose module
                 return transforms.Lambda(lambda x: EuclidDESIDatasetArrow.normalise_by_const(x, n_const))
             elif n_type == "z_score":
                 return transforms.Lambda(EuclidDESIDatasetArrow.normalise_zscore)
             elif n_type == "asinh":
-                return transforms.Lambda(lambda x: EuclidDESIDatasetArrow.normalise_asinh(x, n_const))
+                return transforms.Lambda(lambda x: EuclidDESIDatasetArrow.normalise_asinh(x, a=n_scaler, c=n_const))
             else:
                 # Identity transform (no change)
                 return transforms.Lambda(lambda x: x)
@@ -279,10 +284,12 @@ class EuclidDESIDatasetArrow(Dataset):
             transform_dict["images_aug"] = EuclidDESIDatasetArrow._get_augmentation_pipeline()
 
         # Image Normalization
-        transform_dict["images_norm"] = get_norm_transform(norm_type_img, norm_const_img)
+        transform_dict["images_norm"] = get_norm_transform(norm_type_img, norm_scaler_img, norm_const_img)
 
         # Spectra transformations
-        transform_dict["spectra"] = transforms.Compose([get_norm_transform(norm_type_spec, norm_const_spec)])
+        transform_dict["spectra"] = transforms.Compose([
+            get_norm_transform(norm_type_spec, norm_scaler_spec, norm_const_spec)
+        ])
 
         return transform_dict
     

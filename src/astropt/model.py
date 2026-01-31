@@ -344,6 +344,7 @@ class GPTConfig:
     lora_alpha: float = 2.0
     use_qlora: bool = False
     loss_type: str = "huber"
+    loss_huber_delta: float = 1.0 
     modalities: list[ModalityConfig] = None
     # LLM specific parameters
     backbone: str = "native"  # native or llm
@@ -646,7 +647,8 @@ class GPT(nn.Module):
                 elif hasattr(self.config, "loss_type") and self.config.loss_type == "mse":
                     loss_fn = F.mse_loss
                 else:
-                    loss_fn = F.huber_loss
+                    def loss_fn(p, t, reduction="mean"):
+                        return F.huber_loss(p, t, delta=self.config.loss_huber_delta, reduction=reduction)
                 
                 if self.config.attn_type == "prefix":
                     # TODO fix this and debug
