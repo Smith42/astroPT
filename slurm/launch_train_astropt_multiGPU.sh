@@ -76,7 +76,7 @@ launch_analysis() {
     echo "    [Metric]  Job sent. ID: $J_MET (Depends on Train: any)"
 
     # Workflow controller
-    local J_WOR=$(sbatch --parsable \
+    J_WOR=$(sbatch --parsable \
                 --dependency=afterany:$PARENT_JOB_ID \
                 --job-name="Workflow_Controller$JOB_SUFFIX" \
                 "$WORKFLOW_SCRIPT" \
