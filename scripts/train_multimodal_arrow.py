@@ -97,7 +97,7 @@ class TrainingConfig:
     tokeniser: str = "aim"          # Model tokeniser method
     use_qlora: bool = False         # Use Quantized Low-Rank Adaptation
     loss_type: str = "huber"        # Opciones: l1, mse, huber
-    loss_huber_delta: float = 0.1   # Delta value for controlling Huber Loss Behaviour
+    loss_huber_delta: float = 1.0   # Delta value for controlling Huber Loss Behaviour (default 1.0)
     use_aug: bool = True            # Active data augmentation by using image rotation
     
     #--- Multimodality Specifics ---#
@@ -109,7 +109,7 @@ class TrainingConfig:
     images_embed_pos: bool = True       # Images embedding positions learning
     images_pos_input_size: int = 1      # Images position input size
     images_norm_type: str = "asinh"     # Normalization method: constant, z_score or asinh
-    images_norm_scaler: float = 0.01    # Scaler factor if normalization requieres it
+    images_norm_scaler: float = 1.0     # Scaler factor if normalization requieres it (default 1.0)
     images_norm_const: float = 1.0      # Normalization global constant for images: P99=7.603847
     
     # Spectra
@@ -119,7 +119,7 @@ class TrainingConfig:
     spectra_embed_pos: bool = True          # Spectra embedding positions learning
     spectra_pos_input_size: int = 1         # Spectra position input size
     spectra_norm_type: str = "asinh"        # Normalization method: constant, z_score or asinh
-    spectra_norm_scaler: float = 0.01       # Scaler factor if normalization requieres it
+    spectra_norm_scaler: float = 1.0        # Scaler factor if normalization requieres it (default 1.0)
     spectra_norm_const: float = 1.0         # Normalization global constant for spectra: P99=7.956048
     
     #--- Optimization of the Learning Process ---#
