@@ -234,6 +234,72 @@ def plot_spectral_lines(ax, min_wl, max_wl, z):
             counter += 1
 
 
+def plot_dashboard(
+    target_id: int,
+    z_val: float,
+    train_name: str,
+    rgb_gt: Optional[np.ndarray],
+    rgb_pred: Optional[np.ndarray],
+    res_map: Optional[np.ndarray],
+    has_image: bool,
+    wave_ang: Optional[np.ndarray],
+    spec_gt: Optional[np.ndarray],
+    spec_pred: Optional[np.ndarray],
+    has_spectra: bool,
+    wl_range: Optional[tuple],
+    out_dir: str,
+    filename: str
+):
+    """Encapsulates the dashboard visualization logic."""
+    fig = plt.figure(figsize=(20, 14))
+    gs = gridspec.GridSpec(3, 3, height_ratios=[2, 1, 1], wspace=0.1, hspace=0.3)
+    fig.suptitle(rf"\textbf{{AstroPT Reconstruction | ID: {target_id} | z={z_val:.3f}}}"
+                 + f"\n[{train_name}]", fontsize=22, y=0.96)
+    
+    if has_image:
+        ax1 = fig.add_subplot(gs[0, 0])
+        ax1.imshow(rgb_gt, origin='lower')
+        ax1.set_title(r"\textbf{Real (Log Scale)}")
+        ax1.axis('off')
+        
+        ax2 = fig.add_subplot(gs[0, 1])
+        ax2.imshow(rgb_pred, origin='lower')
+        ax2.set_title(r"\textbf{Reconstructed (Log Scale)}")
+        ax2.axis('off')
+        
+        ax3 = fig.add_subplot(gs[0, 2])
+        vlim = np.percentile(np.abs(res_map), 98) if res_map is not None else 1
+        im = ax3.imshow(res_map, origin='lower', cmap='seismic', vmin=-vlim, vmax=vlim)
+        ax3.set_title(r"\textbf{Residuals (Physical)}")
+        ax3.axis('off')
+        plt.colorbar(im, ax=ax3, fraction=0.046, pad=0.04, label="Flux Diff")
+
+    if has_spectra:
+        if wl_range: w_min, w_max = wl_range
+        else: w_min, w_max = wave_ang.min(), wave_ang.max()
+        w_mid = (w_min + w_max) / 2
+        
+        for i, (start, end, title, loc) in enumerate([
+            (w_min, w_mid, "Blue Channel", gs[1, :]), 
+            (w_mid, w_max, "Red Channel", gs[2, :])
+        ]):
+            ax = fig.add_subplot(loc)
+            ax.plot(wave_ang, spec_gt, 'k-', lw=1, alpha=0.6, label='Real')
+            ax.plot(wave_ang, spec_pred, 'r-', lw=1.5, alpha=0.8, label='AstroPT')
+            ax.set_xlim(start, end)
+            ax.set_title(rf"\textbf{{Spectrum ({title})}}")
+            ax.set_ylabel(r"Flux")
+            if i==1: ax.set_xlabel(r"Wavelength [\AA]")
+            if i==0: ax.legend(loc='lower left')
+            plot_spectral_lines(ax, start, end, z_val)
+
+    # Save logic
+    save_path = os.path.join(out_dir, filename)
+    plt.savefig(save_path, format='png', dpi=300, bbox_inches='tight')
+    plt.close()
+    logger.info(f" --> Saved dashboard: {save_path}\n")
+
+
 def main():
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -252,23 +318,12 @@ def main():
     # Extract training run name for plot titles
     config_path = os.path.join(args.out_dir, "config.json")
     json_name = None
-    
-    # Reading the .json
     if os.path.exists(config_path):
         try:
             with open(config_path, 'r') as f:
-                config = json.load(f)
-                json_name = config.get("train_name", None)
-        except Exception:
-            pass 
-
-    # # Subtitle priority
-    if args.train_name:
-        train_name = args.train_name
-    elif json_name:
-        train_name = json_name
-    else:
-        train_name = os.path.basename(os.path.normpath(args.out_dir))
+                json_name = json.load(f).get("train_name", None)
+        except Exception: pass 
+    train_name = args.train_name or json_name or os.path.basename(os.path.normpath(args.out_dir))
     
     # Load Model
     ckpt_path = os.path.join(args.out_dir, args.ckpt_name)
@@ -305,17 +360,23 @@ def main():
     
     # Sample Selection
     indices_to_plot = []
+    specific_tids = set()
+    
     if args.target_ids:
         all_ids = ds.ds['targetid']
         id_map = {int(tid): idx for idx, tid in enumerate(all_ids)}
         for tid in args.target_ids:
-            if tid in id_map: indices_to_plot.append(id_map[tid])
+            if tid in id_map: 
+                indices_to_plot.append(id_map[tid])
+                specific_tids.add(int(tid))
     
     if len(indices_to_plot) < args.num_plot:
         pool = list(set(range(len(ds))) - set(indices_to_plot))
         needed = args.num_plot - len(indices_to_plot)
         indices_to_plot.extend(np.random.choice(pool, min(needed, len(pool)), replace=False))
-        
+    
+    # Ensuring correct type
+    indices_to_plot = [int(i) for i in indices_to_plot]
     subset = Subset(ds, indices_to_plot)
     loader = DataLoader(subset, batch_size=1, shuffle=False, num_workers=2)
     
@@ -328,7 +389,12 @@ def main():
         
         # Inference
         with torch.no_grad():
-            with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+            if device.type == 'cuda':
+                with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    outputs, _ = model(X)
+            else:
+                model.to(torch.float32)
+                X = {k: v.to(torch.float32) if isinstance(v, torch.Tensor) else v for k, v in processed['X'].items()}
                 outputs, _ = model(X)
         
         # Raw data
@@ -459,62 +525,19 @@ def main():
             
             has_spectra = True
 
-        # PLOTTING
+        # FILENAME AND SUFFIX LOGIC
+        random_suffix = "_R" if int(target_id) not in specific_tids else ""
+        zoom_suffix = "_zoom" if args.wl_range else ""
+        filename = f"ID_{target_id}{run_suffix}{zoom_suffix}{random_suffix}.png"
+        
         if not has_image and not has_spectra: continue
 
-        fig = plt.figure(figsize=(20, 14))
-        gs = gridspec.GridSpec(3, 3, height_ratios=[2, 1, 1], wspace=0.1, hspace=0.3)
-        fig.suptitle(rf"\textbf{{AstroPT Reconstruction | ID: {target_id} | z={z_val:.3f}}}"
-                     + f"\n[{train_name}]", fontsize=22, y=0.96)
-        
-        if has_image:
-            ax1 = fig.add_subplot(gs[0, 0])
-            ax1.imshow(rgb_gt, origin='lower')
-            ax1.set_title(r"\textbf{Real (Log Scale)}")
-            ax1.axis('off')
-            
-            ax2 = fig.add_subplot(gs[0, 1])
-            ax2.imshow(rgb_pred, origin='lower')
-            ax2.set_title(r"\textbf{Reconstructed (Log Scale)}")
-            ax2.axis('off')
-            
-            ax3 = fig.add_subplot(gs[0, 2])
-            vlim = np.percentile(np.abs(res_map), 98) if res_map is not None else 1
-            im = ax3.imshow(res_map, origin='lower', cmap='seismic', vmin=-vlim, vmax=vlim)
-            ax3.set_title(r"\textbf{Residuals (Physical)}")
-            ax3.axis('off')
-            plt.colorbar(im, ax=ax3, fraction=0.046, pad=0.04, label="Flux Diff")
-
-        if has_spectra:
-            if args.wl_range: w_min, w_max = args.wl_range
-            else: w_min, w_max = wave_ang.min(), wave_ang.max()
-            w_mid = (w_min + w_max) / 2
-            
-            for i, (start, end, title, loc) in enumerate([
-                (w_min, w_mid, "Blue Channel", gs[1, :]), 
-                (w_mid, w_max, "Red Channel", gs[2, :])
-            ]):
-                ax = fig.add_subplot(loc)
-                ax.plot(wave_ang, spec_gt, 'k-', lw=1, alpha=0.6, label='Real')
-                ax.plot(wave_ang, spec_pred, 'r-', lw=1.5, alpha=0.8, label='AstroPT')
-                ax.set_xlim(start, end)
-                ax.set_title(rf"\textbf{{Spectrum ({title})}}")
-                ax.set_ylabel(r"Flux")
-                if i==1: ax.set_xlabel(r"Wavelength [\AA]")
-                if i==0: ax.legend(loc='lower left')
-                plot_spectral_lines(ax, start, end, z_val)
-
-
-        # Saving
-        zoom_suffix = f"_zoom" if args.wl_range else ""
-        
-        # Final name
-        filename = f"ID_{target_id}{zoom_suffix}{run_suffix}.png"
-        save_path = os.path.join(args.out_dir, filename)
-        
-        plt.savefig(save_path, format='png', dpi=300, bbox_inches='tight')
-        plt.close()
-        logger.info(f"-> Saved plot: {save_path}\n")
+        plot_dashboard(
+            target_id=target_id, z_val=float(raw_record.get('redshift', 0.0)),
+            train_name=train_name, rgb_gt=rgb_gt, rgb_pred=rgb_pred, res_map=res_map,
+            has_image=has_image, wave_ang=wave_ang, spec_gt=spec_gt, spec_pred=spec_pred,
+            has_spectra=has_spectra, wl_range=args.wl_range, out_dir=args.out_dir, filename=filename
+        )
 
     logger.info("Done.")
 
