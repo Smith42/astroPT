@@ -757,9 +757,6 @@ def main():
     # Saving configuration in a .json file
     save_config_json(config, ddp_rank)
     
-    # Create an improvement hiden file for bash control
-    improve_file_path = os.path.join(config.out_dir, ".improved")
-    
     # Log basic training info
     if ddp_rank == 0:
         logger.info(f"Starting AstroPT training on {device} (DDP: {ddp})")
@@ -768,10 +765,6 @@ def main():
         config_dict = asdict(config)
         config_str = "\n".join([f"    {k}: {v}" for k, v in config_dict.items()])
         logger.info(f"Training config:\n{config_str}")
-        
-        # Remove if previous exists
-        if os.path.exists(improve_file_path):
-            os.remove(improve_file_path)
 
     # Changing configuration for DDP mode
     if ddp: 
@@ -1322,6 +1315,10 @@ def main():
                         # Logging the validation loss as the BEST
                         logger.info(f"Validation Loss: {val_loss:.4f} (-{improvement:.4f}) | NEW BEST")
                         
+                        # Create an improvement hiden file for bash control
+                        if os.path.exists(improve_file_path) == False:
+                            improve_file_path = os.path.join(config.out_dir, ".improved")
+                        
                         # Bash control hidden file for checking if the val loss has improved
                         with open(improve_file_path, "w") as f:
                             f.write(f"Iter: {iter_num}, Loss: {val_loss}")
@@ -1341,9 +1338,9 @@ def main():
                             stop_training = True
                     
                         # Only remove .improved file in resume mode
-                        if config.init_from == "resume":
-                            if os.path.exists(improve_file_path):
-                                os.remove(improve_file_path)
+                        if config.init_from == "resume" and os.path.exists(improve_file_path):
+                            os.remove(improve_file_path)
+                            logger.info("Removing .improved file.")
                     
                     # CHECKPOINT SAVING
                     if iter_num > 0:

@@ -169,7 +169,7 @@ echo "-------------------------------------------------"
 echo "STEP 2: TRAINING FROM RESUME"
 JOB_SUFFIX="_T2"
 JOB_TRAIN_2=$(sbatch --parsable \
-    --dependency=afterok:$JOB_TRAIN_1 \
+    --dependency=afterok:$J_WOR \
     --job-name="Train_AstroPT_DDP$JOB_SUFFIX" \
     "$TRAIN_SCRIPT" \
     -r "$REPO_ROOT" \
