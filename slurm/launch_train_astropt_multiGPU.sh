@@ -110,7 +110,7 @@ launch_analysis() {
 
     # Cosine Similarity
     local J_COS=$(sbatch --parsable \
-                --dependency=afterok:$J_WOR \
+                --dependency=afterok:$J_EMB \
                 --job-name="Cos_Sim$JOB_SUFFIX" \
                 "$COS_SIM_SCRIPT" \
                 -r "$REPO_ROOT" \
@@ -120,7 +120,7 @@ launch_analysis() {
 
     # UMAPS
     local J_UMAP=$(sbatch --parsable \
-                --dependency=afterok:$J_WOR \
+                --dependency=afterok:$J_EMB \
                 --job-name="Plot_Umaps$JOB_SUFFIX" \
                 "$UMAPS_SCRIPT" \
                 -r "$REPO_ROOT" \
@@ -131,7 +131,7 @@ launch_analysis() {
 
     # PROBING DOWNSTREAM TASKS
     local J_PROB=$(sbatch --parsable \
-                --dependency=afterok:$J_WOR \
+                --dependency=afterok:$J_EMB \
                 --job-name="Probing_Tasks$JOB_SUFFIX" \
                 "$PROBING_SCRIPT" \
                 -r "$REPO_ROOT" \
