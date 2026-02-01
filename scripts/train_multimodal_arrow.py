@@ -757,6 +757,9 @@ def main():
     # Saving configuration in a .json file
     save_config_json(config, ddp_rank)
     
+    # Imporved file for workflow control
+    improve_file_path = os.path.join(config.out_dir, ".improved")
+    
     # Log basic training info
     if ddp_rank == 0:
         logger.info(f"Starting AstroPT training on {device} (DDP: {ddp})")
@@ -944,6 +947,12 @@ def main():
                 
                 logger.info(f"Resumed successfully at iteration {iter_num} - "
                             f"Best Loss: {best_val_loss:.4f} - Previous run time: {prev_hours:.2f} hours.")
+                
+                
+                # Only remove .improved file in resume mode
+                if os.path.exists(improve_file_path):
+                    os.remove(improve_file_path)
+                    logger.info("Removing .improved file.")
 
             else:
                 logger.info("Starting training from scratch.")
@@ -1315,10 +1324,6 @@ def main():
                         # Logging the validation loss as the BEST
                         logger.info(f"Validation Loss: {val_loss:.4f} (-{improvement:.4f}) | NEW BEST")
                         
-                        # Create an improvement hiden file for bash control
-                        if os.path.exists(improve_file_path) == False:
-                            improve_file_path = os.path.join(config.out_dir, ".improved")
-                        
                         # Bash control hidden file for checking if the val loss has improved
                         with open(improve_file_path, "w") as f:
                             f.write(f"Iter: {iter_num}, Loss: {val_loss}")
@@ -1336,11 +1341,6 @@ def main():
                         if early_stop_counter >= config.early_stopping_patience:
                             logger.info(f"Early stopping triggered! No improvement for {early_stop_counter} checks.")
                             stop_training = True
-                    
-                        # Only remove .improved file in resume mode
-                        if config.init_from == "resume" and os.path.exists(improve_file_path):
-                            os.remove(improve_file_path)
-                            logger.info("Removing .improved file.")
                     
                     # CHECKPOINT SAVING
                     if iter_num > 0:
