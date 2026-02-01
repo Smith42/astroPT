@@ -950,7 +950,7 @@ def main():
                 
                 
                 # Only remove .improved file in resume mode
-                if os.path.exists(improve_file_path):
+                if os.path.exists(improve_file_path) and ddp_rank == 0:
                     os.remove(improve_file_path)
                     logger.info("Removing .improved file.")
 
@@ -1325,8 +1325,9 @@ def main():
                         logger.info(f"Validation Loss: {val_loss:.4f} (-{improvement:.4f}) | NEW BEST")
                         
                         # Bash control hidden file for checking if the val loss has improved
-                        with open(improve_file_path, "w") as f:
-                            f.write(f"Iter: {iter_num}, Loss: {val_loss}")
+                        if ddp_rank == 0:
+                            with open(improve_file_path, "w") as f:
+                                f.write(f"Iter: {iter_num}, Loss: {val_loss}")
                         
                     else:
                         # Increasing the counter
