@@ -256,7 +256,7 @@ def plot_dashboard(
     fig.suptitle(rf"\textbf{{AstroPT Reconstruction | ID: {target_id} | z={z_val:.3f}}}"
                  + f"\n[{train_name}]", fontsize=22, y=0.96)
     
-    if has_image:
+    if has_image and rgb_gt is not None and rgb_pred is not None:
         ax1 = fig.add_subplot(gs[0, 0])
         ax1.imshow(rgb_gt, origin='lower')
         ax1.set_title(r"\textbf{Real (Log Scale)}")
@@ -269,12 +269,12 @@ def plot_dashboard(
         
         ax3 = fig.add_subplot(gs[0, 2])
         vlim = np.percentile(np.abs(res_map), 98) if res_map is not None else 1
-        im = ax3.imshow(res_map, origin='lower', cmap='seismic', vmin=-vlim, vmax=vlim)
+        im = ax3.imshow(res_map, origin='lower', cmap='seismic', vmin=-vlim, vmax=vlim) # type: ignore
         ax3.set_title(r"\textbf{Residuals (Physical)}")
         ax3.axis('off')
         plt.colorbar(im, ax=ax3, fraction=0.046, pad=0.04, label="Flux Diff")
 
-    if has_spectra:
+    if has_spectra and wave_ang is not None and spec_gt is not None and spec_pred is not None:
         if wl_range: w_min, w_max = wl_range
         else: w_min, w_max = wave_ang.min(), wave_ang.max()
         w_mid = (w_min + w_max) / 2
@@ -328,7 +328,7 @@ def main():
     # Load Model
     ckpt_path = os.path.join(args.out_dir, args.ckpt_name)
     try:
-        model, config, registry, raw_config = load_local_model(ckpt_path, device)
+        model, config, registry, raw_config_dict = load_local_model(ckpt_path, device)
         logger.info(f"Loaded model from {ckpt_path}")
     except Exception as e:
         logger.critical(f"Model load failed: {e}")
@@ -336,15 +336,20 @@ def main():
         
     img_config = registry.get_config("images")
     
-    # Retrieve Normalization Constants
-    norm_type_img = raw_config.get('img_norm_type', 'constant')
-    norm_scaler_img = raw_config.get('img_norm_scaler',1.0)
-    norm_const_img = raw_config.get('img_norm_const', 1.0)
-    norm_type_spec = raw_config.get('spectra_norm_type', 'constant')
-    norm_scaler_spec = raw_config.get('spectra_norm_scaler',1.0)
-    norm_const_spec = raw_config.get('spectra_norm_const', 1.0)
+    # Arrow data directory
+    data_dir = args.data_dir if args.data_dir else raw_config_dict.get('data_dir')
+    assert data_dir is not None, "data_dir cannot be None. Check your config.json or --data_dir argument."
     
-    transforms_dict = EuclidDESIDatasetArrow.data_transforms(
+    # Retrieve Normalization Constants
+    norm_type_img = raw_config_dict.get('images_norm_type', raw_config_dict.get('img_norm_type', 'asinh'))
+    norm_scaler_img=raw_config_dict.get('images_norm_scaler',raw_config_dict.get('img_norm_scaler',1.0))
+    norm_const_img = raw_config_dict.get('images_norm_const',raw_config_dict.get('img_norm_const',1.0))
+    norm_type_spec = raw_config_dict.get('spectra_norm_type', 'constant')
+    norm_scaler_spec = raw_config_dict.get('spectra_norm_scaler',1.0)
+    norm_const_spec = raw_config_dict.get('spectra_norm_const', 1.0)
+    
+    # Aplying tranformations
+    data_tf = EuclidDESIDatasetArrow.data_transforms(
         norm_type_img=norm_type_img,
         norm_scaler_img=norm_scaler_img,
         norm_const_img=norm_const_img,
@@ -354,8 +359,12 @@ def main():
     )
     
     ds = EuclidDESIDatasetArrow(
-        arrow_folder_root=args.data_dir, split=args.split,
-        modality_registry=registry, spiral=True, transform=transforms_dict
+        arrow_folder_root=data_dir,
+        split=args.split,
+        modality_registry=registry,
+        spiral=True,      
+        stochastic=False,  
+        transform=data_tf
     )
     
     # Sample Selection
@@ -390,7 +399,7 @@ def main():
         # Inference
         with torch.no_grad():
             if device.type == 'cuda':
-                with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+                with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16): # type: ignore
                     outputs, _ = model(X)
             else:
                 model.to(torch.float32)

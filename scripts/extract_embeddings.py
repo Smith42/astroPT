@@ -81,15 +81,26 @@ def main():
         logger.error(f"Failed to load model: {e}")
         sys.exit(1)
 
-    # Data Setup
+    # Arrow data directory
     data_dir = args.data_dir if args.data_dir else raw_config_dict.get('data_dir')
+    assert data_dir is not None, "data_dir cannot be None. Check your config.json or --data_dir argument."
     
-    # Prepare transforms (Same as training)
+    # Retrieve Normalization Constants
+    norm_type_img = raw_config_dict.get('images_norm_type', raw_config_dict.get('img_norm_type', 'asinh'))
+    norm_scaler_img=raw_config_dict.get('images_norm_scaler',raw_config_dict.get('img_norm_scaler',1.0))
+    norm_const_img = raw_config_dict.get('images_norm_const',raw_config_dict.get('img_norm_const',1.0))
+    norm_type_spec = raw_config_dict.get('spectra_norm_type', 'constant')
+    norm_scaler_spec = raw_config_dict.get('spectra_norm_scaler',1.0)
+    norm_const_spec = raw_config_dict.get('spectra_norm_const', 1.0)
+    
+    # Aplying tranformations
     data_tf = EuclidDESIDatasetArrow.data_transforms(
-        norm_type_img=raw_config_dict.get('img_norm_type', 'constant'),
-        norm_const_img=raw_config_dict.get('img_norm_const', 1.0),
-        norm_type_spec=raw_config_dict.get('spectra_norm_type', 'constant'),
-        norm_const_spec=raw_config_dict.get('spectra_norm_const', 1.0)
+        norm_type_img=norm_type_img,
+        norm_scaler_img=norm_scaler_img,
+        norm_const_img=norm_const_img,
+        norm_type_spec=norm_type_spec,
+        norm_scaler_spec=norm_scaler_spec,
+        norm_const_spec=norm_const_spec,
     )
     
     logger.info(f"Initializing Dataset from: {data_dir}")
@@ -143,7 +154,7 @@ def main():
 
     # Extraction loop
     ptdtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    ctx = torch.amp.autocast(device_type="cuda", dtype=ptdtype)
+    ctx = torch.amp.autocast(device_type="cuda", dtype=ptdtype) # type: ignore
     
     start_idx = 0
     target_mods = ['images', 'spectra']
