@@ -12,7 +12,7 @@
 
 #--- LOGS FILES ---#
 #SBATCH --output=logs/astropt_img_spec_%j.out
-#SBATCH --error=logs/astropt_img_spect_%j.err
+#SBATCH --error=logs/astropt_img_spec_%j.err
 
 #--- DEFAULT VALUES ---#
 REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
