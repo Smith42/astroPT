@@ -96,7 +96,7 @@ class TrainingConfig:
     backbone: str = "native"        # Model bakcbone: native or llm
     tokeniser: str = "aim"          # Model tokeniser method
     use_qlora: bool = False         # Use Quantized Low-Rank Adaptation
-    loss_type: str = "l1"           # Opciones: l1, mse, huber
+    loss_type: str = "huber"        # Opciones: l1, mse, huber
     loss_huber_delta: float = 1.0   # Delta value for controlling Huber Loss Behaviour (default 1.0)
     use_aug: bool = True            # Active data augmentation by using image rotation
     
@@ -137,7 +137,7 @@ class TrainingConfig:
     #--- Learning Rate Scheduler ---#
     lr_decay: bool = True           # Activates the variable learning rate decay
     lr_warmup_iters: int = 2_000    # Steps to ramp up LR from 0 to max
-    lr_decay_iters: int = 13_000    # Steps to decay LR down to min
+    lr_decay_iters: int = 30_000    # Steps to decay LR down to min
     lr_min: float = 6e-5            # Minimum LR (usually 10% of max)
 
     #--- Logging & Checkpointing ---#
