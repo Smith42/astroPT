@@ -18,7 +18,7 @@
 REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
 PYTHON_SCRIPT="scripts/plot_umaps.py"
 OUT_DIR=""
-META_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.0.fits"
+META_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.1.fits"
 
 #--- ARGUMENT PARSING (FLAGS) ---#
 while getopts ":r:o:f:" opt; do

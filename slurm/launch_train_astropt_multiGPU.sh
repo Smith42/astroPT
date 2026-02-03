@@ -10,7 +10,7 @@ echo "-------------------------------------------------"
 REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
 SCRIPT_DIR=$(dirname "$0")
 DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
-META_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.0.fits"
+META_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.1.fits"
 
 # LAUNCHING SCRIPTS
 TRAIN_SCRIPT="$SCRIPT_DIR/train_astropt_multiGPU.sh"
