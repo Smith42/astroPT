@@ -57,7 +57,7 @@ echo "   DATA DIR:   $DATA_DIR"
 python "$PYTHON_SCRIPT" \
     --out_dir "$OUT_DIR" \
     --data_dir "$DATA_DIR" \
-    --num_plot 20 \
+    --num_plot 25 \
     --target_ids \
         39627061836389042 \
         39627853679036156 \
@@ -75,7 +75,8 @@ python "$PYTHON_SCRIPT" \
         39633530795330888 \
         39089837394909544 \
         39633478949537029 \
-        39633312192397870
+        39633312192397870 \
+        39633414239814702
 
 echo "-----------------------------------------------"
 echo "Plotting Images and Spectra Finished"
