@@ -19,13 +19,19 @@ REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
 PYTHON_SCRIPT="scripts/extract_embeddings.py"
 OUT_DIR=""
 DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
+POOL_MET_IMG="mean"
+POOL_MET_SPEC="rank"
+PCA_DIM=0
 
 #--- ARGUMENT PARSING (FLAGS) ---#
-while getopts ":r:o:a:" opt; do
+while getopts ":r:o:a:pmi:pms:" opt; do
   case $opt in
     r) REPO_ROOT="$OPTARG" ;;
     o) OUT_DIR="$OPTARG" ;;
     a) DATA_DIR="$OPTARG" ;;
+    p) PCA_DIM="$OPTARG" ;;
+    pmi) POOL_MET_IMG="$OPTARG" ;;
+    pms) POOL_MET_SPEC="$OPTARG" ;;
     \?) echo "[ERROR] Invalid option -$OPTARG" >&2; exit 1 ;;
   esac
 done
@@ -51,14 +57,20 @@ export HF_HOME="/home/valonso/iac18_mhuertas_shared/valonso/cache/huggingface"
 
 #--- EXECUTION ---#
 echo "Embedding Extraction Configuration:"
-echo "   DIR:        $OUT_DIR"
-echo "   DATA DIR:   $DATA_DIR"
+echo "   DIR:           $OUT_DIR"
+echo "   DATA DIR:      $DATA_DIR"
+echo "   POOL MET IMG:  $POOL_MET_IMG"
+echo "   POOL MET SPEC: $POOL_MET_SPEC"
+echo "   PCA DIM:       $PCA_DIM"
 
 
 # Run Python Script
 python "$PYTHON_SCRIPT" \
     --out_dir "$OUT_DIR" \
-    --data_dir "$DATA_DIR"
+    --data_dir "$DATA_DIR" \
+    --pool_method_img "$POOL_MET_IMG" \
+    --pool_method_spec "$POOL_MET_SPEC" \
+    --pca_dim "$PCA_DIM"
 
 echo "-----------------------------------------------"
 echo "Embedding Extraction Finished"

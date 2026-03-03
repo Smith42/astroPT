@@ -19,6 +19,7 @@ import os
 import sys
 import gc
 
+import joblib
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
@@ -26,6 +27,7 @@ from tqdm import tqdm
 
 from astropt.euclid_desi_arrow_dataloader import EuclidDESIDatasetArrow
 from astropt.model_utils import load_local_model
+from sklearn.decomposition import IncrementalPCA
 
 # Configure logging
 logging.basicConfig(
@@ -47,10 +49,81 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch_size", type=int, default=64, help="Inference batch size")
     parser.add_argument("--num_workers", type=int, default=8, help="DataLoader workers")
     parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
+    parser.add_argument("--pool_method_img", type=str, default="mean", help="Pooling method to reduce dimensionality for images")
+    parser.add_argument("--pool_method_spec", type=str, default="rank", help="Pooling method to reduce dimensionality for spectra")
+    parser.add_argument("--pca_dim", type=int, default=0, help="Applying PCA analysis with the resulting pca_dim dimension. 0 means disabled")
     
     return parser.parse_args()
 
-def get_output_folder_name(out_dir: str, ckpt_name: str) -> str:
+
+def apply_pooling(tensor: torch.Tensor,
+                  method: str = "mean", 
+                  p_value: float = 2.0, 
+                  mixed_lambda: float = 0.5
+    ) -> torch.Tensor:
+    """
+    Applying different pooling methods.
+    Reference: Gholamalinezhad & Khosravi (2020).
+    """
+    if method == 'mean':
+        # Average Pooling
+        return tensor.mean(dim=1)
+    
+    elif method == 'max':
+        # Max Pooling
+        return tensor.max(dim=1)[0]
+    
+    elif method == 'mixed':
+        # Mixed Pooling
+        max_p = tensor.max(dim=1)[0]
+        avg_p = tensor.mean(dim=1)
+        return mixed_lambda * max_p + (1 - mixed_lambda) * avg_p
+    
+    elif method == 'lp':
+        # L_p Pooling
+        return (torch.mean(tensor.abs()**p_value, dim=1))**(1.0 / p_value)
+    
+    elif method == 'rank':
+        # Rank-based Average Pooling (RAP)
+        sorted_tensor, _ = torch.sort(tensor, dim=1, descending=True)
+        k = max(1, int(sorted_tensor.size(1) * 0.1))
+        return sorted_tensor[:, :k, :].mean(dim=1)
+    
+    else:
+        raise ValueError(f"Invalid pooling method '{method}'.")
+
+def apply_pca_to_memmap(file_path, original_shape, n_components, batch_size=1024):
+    """
+    Applying PCA to memmaps files
+    """
+    logger.info(f"Starting PCA {file_path} (Target: {n_components} dims)")
+    
+    ipca = IncrementalPCA(n_components=n_components)
+    
+    arr_mmap = np.load(file_path, mmap_mode='r')
+    for i in range(0, original_shape[0], batch_size):
+        chunk = arr_mmap[i:i + batch_size]
+        ipca.partial_fit(chunk)
+    
+    pca_path = file_path.replace(".npy", f"_pca{n_components}.npy")
+    new_mmap = np.lib.format.open_memmap(
+        pca_path, mode='w+', dtype='float32', shape=(original_shape[0], n_components)
+    )
+    
+    for i in range(0, original_shape[0], batch_size):
+        chunk = arr_mmap[i:i + batch_size]
+        new_mmap[i:i + batch_size] = ipca.transform(chunk)
+    
+    new_mmap.flush()
+    logger.info(f"PCA completed. New file: {pca_path}")
+    return pca_path
+
+def get_output_folder_name(
+        out_dir: str, 
+        ckpt_name: str, 
+        pool_name: str, 
+        pca_dim: int
+    ) -> str:
     """Generates the folder name: embeddings_{parent_suffix}_{ckpt_suffix}"""
     # Get directory suffix
     parent_suffix = os.path.basename(os.path.normpath(out_dir))
@@ -58,7 +131,11 @@ def get_output_folder_name(out_dir: str, ckpt_name: str) -> str:
     # Get Checkpoint Suffix
     ckpt_suffix = ckpt_name.replace(".pt", "").replace("ckpt_", "")
     
-    folder_name = f"embeddings_{parent_suffix}_{ckpt_suffix}"
+    if pca_dim > 0:
+        folder_name = f"embeddings_{parent_suffix}_{ckpt_suffix}_{pool_name}_pca{pca_dim}"
+    else:
+        folder_name = f"embeddings_{parent_suffix}_{ckpt_suffix}_{pool_name}"
+        
     return folder_name
 
 def main():
@@ -128,7 +205,13 @@ def main():
     logger.info(f"Embedding dimension: {emb_dim}")
 
     # MEMMAP Format
-    folder_name = get_output_folder_name(args.out_dir, args.ckpt_name)
+    
+    if args.pool_method_img != args.pool_method_spec:
+        folder_pool_name = args.pool_method_img + args.pool_method_spec
+    else:
+        folder_pool_name = args.pool_method_img
+    
+    folder_name = get_output_folder_name(args.out_dir, args.ckpt_name, folder_pool_name, args.pca_dim)
     save_path = os.path.join(args.out_dir, folder_name)
     os.makedirs(save_path, exist_ok=True)
     logger.info(f"Output directory created: {save_path}")
@@ -160,54 +243,63 @@ def main():
     target_mods = ['images', 'spectra']
 
     with torch.no_grad(), ctx:
-        for batch in tqdm(dl, desc="Extracting to Disk"):
-            if batch is None: continue
-            
-            # Batch size
-            batch_len = len(batch['targetid'])
-            end_idx = start_idx + batch_len
+        for batch in tqdm(dl, desc="Extracting Embeddings"):
+            if batch is None:
+                continue
+                
+            # 1. Coordinate batch indices
+            current_batch_size = len(batch['targetid'])
+            end_idx = start_idx + current_batch_size
 
-            # Prepare Batch
             X = EuclidDESIDatasetArrow.prepare_batch(
                 batch_data=batch,
                 modality_registry=registry,
                 device=device
             )
 
-            # Getting mebeddings
-            emb_dict = model.get_embeddings(X, draw_from_centre=True)
+            # Generate raw embeddings
+            # Expected shape per modality: (batch_size, sequence_length, embedding_dim)
+            embeddings = model.get_embeddings(X, draw_from_centre=True)
+            
+            # Buffers for late fusion
+            img_pooled = None
+            spec_pooled = None
+            
+            # Process individual modalities with Hybrid Pooling
+            for modality in ['images', 'spectra']:
+                if modality in embeddings:
+                    # Select specific pooling method based on modality nature
+                    method = args.pool_method_img if modality == 'images' else args.pool_method_spec
+                    
+                    pooled_tensor = apply_pooling(embeddings[modality], method=method)
+                    pooled_numpy = pooled_tensor.float().cpu().numpy()
+                    
+                    if modality == 'images':
+                        img_pooled = pooled_tensor 
+                        mmap_images[start_idx:end_idx] = pooled_numpy
+                    else:
+                        spec_pooled = pooled_tensor
+                        mmap_spectra[start_idx:end_idx] = pooled_numpy
+                else:
+                    # Fallback: Zero-padding for missing modalities
+                    padding = np.zeros((current_batch_size, emb_dim), dtype='float32')
+                    if modality == 'images':
+                        mmap_images[start_idx:end_idx] = padding
+                    else:
+                        mmap_spectra[start_idx:end_idx] = padding
 
-            # Write Images
-            if 'images' in emb_dict:
-                # Mean Pool: [B, Seq, Dim] -> [B, Dim]
-                img_pool = emb_dict['images'].mean(dim=1).float().cpu().numpy()
-                mmap_images[start_idx:end_idx] = img_pool
+            # Hybrid Joint Embedding
+            if img_pooled is not None and spec_pooled is not None:
+                joint_tensor = (img_pooled + spec_pooled) / 2.0
+                mmap_joint[start_idx:end_idx] = joint_tensor.float().cpu().numpy()
+            elif img_pooled is not None:
+                mmap_joint[start_idx:end_idx] = img_pooled.float().cpu().numpy()
+            elif spec_pooled is not None:
+                mmap_joint[start_idx:end_idx] = spec_pooled.float().cpu().numpy()
             else:
-                # Fallback zero fill if missing (unlikely in test set but safe)
-                mmap_images[start_idx:end_idx] = np.zeros((batch_len, emb_dim), dtype='float32')
+                mmap_joint[start_idx:end_idx] = np.zeros((current_batch_size, emb_dim), dtype='float32')
 
-            # Write Spectra
-            if 'spectra' in emb_dict:
-                spec_pool = emb_dict['spectra'].mean(dim=1).float().cpu().numpy()
-                mmap_spectra[start_idx:end_idx] = spec_pool
-            else:
-                mmap_spectra[start_idx:end_idx] = np.zeros((batch_len, emb_dim), dtype='float32')
-
-            # Write Joint
-            valid_seqs = [emb_dict[m] for m in target_mods if m in emb_dict and emb_dict[m].ndim == 3]
-            if valid_seqs:
-                
-                # Concat sequence length -> Mean Pool
-                joint_seq = torch.cat(valid_seqs, dim=1)
-                joint_pool = joint_seq.mean(dim=1).float().cpu().numpy()
-                mmap_joint[start_idx:end_idx] = joint_pool
-            else:
-                 mmap_joint[start_idx:end_idx] = np.zeros((batch_len, emb_dim), dtype='float32')
-
-            # Write IDs
             mmap_ids[start_idx:end_idx] = batch['targetid'].numpy().astype('int64')
-
-            # Update pointer
             start_idx = end_idx
 
 
@@ -217,7 +309,7 @@ def main():
     mmap_joint.flush()
     mmap_ids.flush()
     
-    # Deleting the variables
+    # Deleting the variables to close files
     del mmap_images, mmap_spectra, mmap_joint, mmap_ids
     gc.collect()
 
@@ -226,21 +318,33 @@ def main():
     # Create a portable .npz file
     logger.info("Generating portable .npz file from disk data...")
     
+    final_paths = {
+        'images': os.path.join(save_path, 'images.npy'),
+        'spectra': os.path.join(save_path, 'spectra.npy'),
+        'joint': os.path.join(save_path, 'joint.npy')
+    }
+
+    if args.pca_dim > 0:
+        logger.info(f"Applying PCA reduction to {args.pca_dim} dimensions...")
+        for key in ['images', 'spectra', 'joint']:
+
+            final_paths[key] = apply_pca_to_memmap(
+                final_paths[key], 
+                (total_samples, emb_dim), 
+                args.pca_dim
+            )
+            
+    logger.info("Generating portable .npz file...")
     npz_path = os.path.join(save_path, "embeddings_all.npz")
     
-    # Reading .npy to convert them to .npz
     try:
-        arr_img = np.load(os.path.join(save_path, 'images.npy'), mmap_mode='r')
-        arr_spec = np.load(os.path.join(save_path, 'spectra.npy'), mmap_mode='r')
-        arr_joint = np.load(os.path.join(save_path, 'joint.npy'), mmap_mode='r')
-        arr_ids = np.load(os.path.join(save_path, 'ids.npy'), mmap_mode='r')
         
         np.savez_compressed(
             npz_path,
-            images=arr_img,
-            spectra=arr_spec,
-            joint=arr_joint,
-            targetid=arr_ids
+            images=np.load(final_paths['images'], mmap_mode='r'),
+            spectra=np.load(final_paths['spectra'], mmap_mode='r'),
+            joint=np.load(final_paths['joint'], mmap_mode='r'),
+            targetid=np.load(os.path.join(save_path, 'ids.npy'), mmap_mode='r')
         )
         logger.info(f"Compressed archive created: {npz_path}")
         
@@ -248,7 +352,6 @@ def main():
         logger.error(f"Error creating .npz: {e}")
 
     logger.info("Extraction Pipeline Finished Successfully.")
-    logger.info(f"Results stored in: {save_path}")
 
 if __name__ == "__main__":
     main()
