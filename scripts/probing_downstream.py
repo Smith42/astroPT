@@ -19,6 +19,7 @@ import argparse
 import glob
 import logging
 import os
+import random
 import sys
 from typing import Dict, Any, Tuple, List, Optional, Union
 import warnings
@@ -57,10 +58,12 @@ warnings.filterwarnings('ignore', module='astropy.io.fits')
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Targets
-DEFAULT_TARGETS = ['Z', 'LOGMSTAR', 'LOGSFR', 'GR', 'SPECTYPE', 'data_set_release', 
-                   'flux_detection_total', 'SNR_SPEC_R', 'HALPHA_FLUX', 'OIII_5007_FLUX', 'OII_3726_FLUX', 'NII_6584_FLUX']
-REGRESSION_TARGETS = ['Z', 'LOGMSTAR', 'LOGSFR', 'GR', 
-                      'flux_detection_total', 'SNR_SPEC_R', 'HALPHA_FLUX', 'OIII_5007_FLUX', 'OII_3726_FLUX', 'NII_6584_FLUX'] 
+DEFAULT_TARGETS = ['Z', 'LOGMSTAR', 'LOGSFR', 'GR', 
+                    'flux_detection_total', 'HALPHA_EW', 'HALPHA_FLUX', 'NII_6584_FLUX', 'OIII_5007_FLUX', 'HBETA_FLUX', 'NII_6584_FLUX', 
+                    'sersic_sersic_vis_radius', 'sersic_sersic_vis_index', 'sersic_sersic_vis_axis_ratio',
+                    'has_spiral_arms_yes', 'smoothness', 'gini', 'SPECTYPE', 'data_set_release']
+
+CLASSIFICATION_TARGETS = ['SPECTYPE', 'data_set_release'] 
 
 # Column order for the final CSV
 CSV_COLUMNS = [
@@ -106,6 +109,17 @@ class AsinhScaler(BaseEstimator, TransformerMixin):
     def transform(self, X: np.ndarray) -> np.ndarray: return np.arcsinh(X / self.a)
     def inverse_transform(self, X: np.ndarray) -> np.ndarray: return self.a * np.sinh(X)
 
+# Fixed seed for different experiments
+def set_seed(seed=61):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    logger.info(f"Seed set to {seed} for reproducibility.")
+
 
 # LINEAR MODEL
 class LinearProbe(nn.Module):
@@ -144,14 +158,8 @@ class AdaptiveMLP(nn.Module):
 def load_data_global(embeddings_dir: str, metadata_path: str) -> Tuple[Dict[str, np.ndarray], pd.DataFrame]:
     """
     Loads embeddings (.npy) from a directory and metadata, aligning them by TARGETID.
+    Applies strict spectral quality filtering (SNR > 3) to discard noisy data.
     Uses memmap for efficient loading of large embedding files.
-
-    Args:
-        embeddings_dir: Directory containing .npy files.
-        metadata_path: Path to the FITS catalog.
-
-    Returns:
-        Tuple containing the aligned embeddings dictionary and metadata DataFrame.
     """
     # Scan for IDs
     if not os.path.exists(embeddings_dir):
@@ -185,6 +193,31 @@ def load_data_global(embeddings_dir: str, metadata_path: str) -> Tuple[Dict[str,
     for col in df.columns:
         if df[col].dtype == object and isinstance(df[col].iloc[0], bytes):
              df[col] = df[col].str.decode('utf-8')
+
+    # Spectral Quality Filter
+    logger.info("Applying Spectral Quality Filter (SNR > 3)...")
+    initial_len = len(df)
+    
+    # Spectrograph filter
+    if 'SNR_SPEC_R' in df.columns and 'SNR_SPEC_Z' in df.columns:
+        mask_snr = (df['SNR_SPEC_R'] > 3.0) | (df['SNR_SPEC_Z'] > 3.0)
+    else:
+        logger.warning("SNR_SPEC_R or SNR_SPEC_Z not found. Skipping global SNR filter.")
+        mask_snr = pd.Series(True, index=df.index)
+
+    # Halpha filter
+    if 'HALPHA_FLUX' in df.columns and 'HALPHA_FLUX_IVAR' in df.columns:
+        halpha_err = np.where(df['HALPHA_FLUX_IVAR'] > 0, 1.0 / np.sqrt(df['HALPHA_FLUX_IVAR'].clip(lower=1e-10)), np.inf)
+        mask_halpha = df['HALPHA_FLUX'] > (3.0 * halpha_err)
+    else:
+        logger.warning("HALPHA_FLUX or HALPHA_FLUX_IVAR not found. Skipping H-alpha quality filter.")
+        mask_halpha = pd.Series(True, index=df.index)
+
+    # Combining results
+    df = df[mask_snr & mask_halpha].copy()
+    
+    final_len = len(df)
+    logger.info(f"Filtered out {initial_len - final_len} noisy spectra from raw catalog. Retained {final_len} ({final_len/initial_len:.1%})")
 
     # Global Alignment
     logger.info(f"Performing global alignment (IDs)...")
@@ -220,7 +253,7 @@ def load_data_global(embeddings_dir: str, metadata_path: str) -> Tuple[Dict[str,
         else:
             logger.warning(f"No embeddings found for modality: {mod}")
         
-    logger.info(f"Global alignment complete. {len(df_aligned)} objects available.")
+    logger.info(f" --> Global alignment complete. {len(df_aligned)} pure Test Set objects available for probing.")
     return data_aligned, df_aligned
 
 
@@ -248,7 +281,7 @@ def get_task_data(
     vals = df[target_col]
     
     # Task Logic
-    if target_col in REGRESSION_TARGETS or pd.api.types.is_numeric_dtype(vals):
+    if target_col not in CLASSIFICATION_TARGETS or pd.api.types.is_numeric_dtype(vals):
         task_type = 'regression'
         mask = vals.notna() & (vals > -90)
     else:
@@ -313,7 +346,8 @@ def compute_metrics(
         else:
             bias = np.median(diff)      
             nmad = 1.4826 * np.median(np.abs(diff - np.median(diff)))
-            outliers = np.mean(np.abs(diff) > 0.5) * 100 
+            relative_error = np.abs(diff) / (np.abs(y_true) + 1e-5)
+            outliers = np.mean(relative_error > 0.30) * 100
             
         return {
             "R2": r2, 
@@ -474,6 +508,9 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     csv_path = os.path.join(out_dir, "probing_results_all.csv")
     
+    # Fixing the seed
+    set_seed(61)
+    
     # Prepare Initial Targets List
     initial_targets = DEFAULT_TARGETS.copy()
     if args.targets: initial_targets = args.targets
@@ -500,7 +537,7 @@ def main():
     for t in initial_targets:
         if t in df_global.columns:
             vals = df_global[t]
-            if t in REGRESSION_TARGETS or pd.api.types.is_numeric_dtype(vals):
+            if t not in CLASSIFICATION_TARGETS or pd.api.types.is_numeric_dtype(vals):
                 reg_list.append(t)
             else:
                 cls_list.append(t)
@@ -530,6 +567,14 @@ def main():
             try:
                 X, y, task_type, processor = get_task_data(raw_data, df_global, mode, target_col)
                 output_dim = 1 if task_type == 'regression' else len(processor.classes_)
+                
+                # Logging valid objects
+                n_total = len(X)
+                n_train = int(n_total * 0.8) # 80% train split
+                n_test = n_total - n_train   # 20% test split
+                
+                logger.info(f"    [{mode.upper()}] Valid objects: {n_total} (Train: {n_train} | Test: {n_test})")
+                
             except Exception as e:
                 logger.error(f"Skipping {target_col} ({mode}): {e}")
                 continue
