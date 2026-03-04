@@ -1,25 +1,28 @@
 """
-AstroPT UMAP Visualizer.
+AstroPT Unified UMAP Visualizer.
 
-This script generates UMAP visualizations split into 4 rows (one per Survey: Main, SV1, SV3, Special)
-to allow detailed inspection of domain shifts and batch effects.
+This script computes UMAP projections ONCE per modality and generates multiple
+layers of visualizations based on user flags. It ensures absolute spatial consistency
+across all plots and significantly reduces compute time.
 
-It plots two sets of properties to diagnose both physical learning and instrumental biases:
-- Set 1: Physical Properties & Data Release (Is the model learning physics or instrument modes?)
-- Set 2: Spectral Lines & Quality (Is the model sensitive to chemistry and noise?)
+Available Plotting Modules:
+    1. Standard (--plot_standard): Plots physical, chemical, and morphological properties.
+    2. Visual (--plot_visual): Dense mosaic of galaxy RGB thumbnails mapped to latent space.
+    3. Spectral (--plot_spectral): Dense mosaic of 1D spectra mapped to latent space.
 
 Author: Victor Alonso Rodriguez
-Date: January 2026
+Date: March 2026
 """
 
 import argparse
+import collections
 import glob
 import json
 import logging
 import os
 import sys
 import warnings
-from typing import Dict, Any, Tuple, List, Optional
+from typing import Dict, Tuple, Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -28,6 +31,12 @@ import umap
 from astropy.table import Table
 from astropy.utils.exceptions import AstropyWarning
 from matplotlib.lines import Line2D
+from matplotlib.offsetbox import OffsetImage, AnnotationBbox
+
+try:
+    from astropt.euclid_desi_arrow_dataloader import EuclidDESIDatasetArrow
+except ImportError:
+    logging.warning("Could not import EuclidDESIDatasetArrow. Arrow-dependent plots may fail.")
 
 # Logger Configuration
 logging.basicConfig(
@@ -36,13 +45,11 @@ logging.basicConfig(
     level=logging.INFO,
     stream=sys.stdout
 )
-logger = logging.getLogger("AstroPT-UMAP")
+logger = logging.getLogger("AstroPT-Unified-UMAP")
 
-# Suppress warnings
 warnings.simplefilter('ignore', category=AstropyWarning)
-warnings.filterwarnings('ignore', module='astropy.io.fits')
 
-# Plotting Global Configuration
+# Plotting Style
 plt.rcParams['text.latex.preamble'] = r'''
             \usepackage{siunitx}
             \usepackage{bm}
@@ -52,201 +59,116 @@ plt.rcParams['text.latex.preamble'] = r'''
 plt.rc('text', usetex=True)
 plt.rc('font', family='serif', weight='bold') 
 
-plt.rcParams.update({
-    'axes.grid': True,
-    'grid.alpha': 0.3,
-    'lines.linewidth': 2,
-    'font.size': 14,          
-    'axes.labelsize': 19,     
-    'axes.titlesize': 21,     
-    'xtick.labelsize': 19,   
-    'ytick.labelsize': 19,
-    'legend.fontsize': 16,
-    'axes.labelweight': 'bold',
-    'axes.titleweight': 'bold',
-    'figure.titlesize': 24,
-    'figure.titleweight': 'bold',
-})
-
-# PLOT Constants
+# Constants
 UMAP_PARAMS = {
     "n_neighbors": 30,
     "min_dist": 0.1,
     "n_components": 2,
     "metric": "cosine",
-    "random_state": 42
+    "random_state": 61
 }
 
 SURVEY_ORDER = ['main', 'sv1', 'sv3', 'special']
+CAT_PALETTE = {"GALAXY": "#006eff", 
+               "QSO": "#fbd500", 
+               "DR1_R1": "#1b9e77", 
+               "DR1_R2": "#e7298a", 
+               "Other": "#666666"}
 
-CAT_PALETTE = {
-    "GALAXY": "#006eff",
-    "QSO": "#fbd500",
-    "DR1_R1": "#1b9e77",
-    "DR1_R2": "#e7298a",
-    "Other":  "#666666"
-}
+class DummyRegistry:
+    """Mock registry for Arrow DataLoader to bypass strict modality checks during plotting."""
+    def get_config(self, name: str) -> Any: return None
 
 
 def parse_args() -> argparse.Namespace:
-    """Parses command line arguments."""
-    parser = argparse.ArgumentParser(description="AstroPT UMAP Generator")
+    """Parses command line arguments for the unified pipeline."""
+    parser = argparse.ArgumentParser(description="AstroPT Unified UMAP Generator")
     
-    parser.add_argument("--out_dir", type=str, default=".", help="Output directory")
+    # Core Data Arguments
     parser.add_argument("--emb_dir", type=str, required=True, help="Directory containing .npy embedding files")
     parser.add_argument("--metadata_path", type=str, required=True, help="Path to .fits catalog")
-    parser.add_argument("--subsample", type=int, default=None, help="Limit points for speed")
-    parser.add_argument("--train_name", type=str, default=None, help="Custom title for the plot (defaults to folder name)")
+    parser.add_argument("--out_dir", type=str, default="plots_umap", help="Output directory")
+    parser.add_argument("--subsample", type=int, default=None, help="Global limit of points for speed")
+    parser.add_argument("--title_name", type=str, default=None, help="Custom title for plots")
+    
+    # Activation Flags (Modular Execution)
+    parser.add_argument("--plot_standard", action="store_true", help="Generate physical/chemical property grids")
+    parser.add_argument("--plot_visual", action="store_true", help="Generate dense RGB image mosaic")
+    parser.add_argument("--plot_spectral", action="store_true", help="Generate dense 1D spectra mosaic")
+    
+    # Arrow Data (Required for Visual/Spectral)
+    parser.add_argument("--data_dir", type=str, default=None, help="Arrow data root directory (Required if visual/spectral)")
+    parser.add_argument("--grid_size", type=int, default=100, help="Grid density for visual/spectral plots")
+    
+    # Spectral Plotting specific arguments
+    parser.add_argument("--spec_wl", type=float, default=6562.8, help="Central wl")
+    parser.add_argument("--spec_range", type=float, default=100, help="Wl range around central wl")
     
     return parser.parse_args()
 
 
 def load_data(emb_dir: str, metadata_path: str) -> Tuple[Dict[str, np.ndarray], pd.DataFrame]:
-    """
-    Loads .npy embeddings from a directory and .fits metadata catalog.
-    Scans for 'images.npy', 'spectra.npy', 'joint.npy' and 'targetid.npy'.
-
-    Args:
-        emb_dir: Path to the directory containing embedding files.
-        metadata_path: Path to the FITS catalog file.
-
-    Returns:
-        Tuple containing a dictionary of embeddings and the metadata DataFrame.
-    """
+    """Loads embeddings and FITS metadata."""
     logger.info(f"Scanning embeddings directory: {emb_dir}...")
-    if not os.path.exists(emb_dir):
-        raise FileNotFoundError(f"Embeddings directory not found: {emb_dir}")
-    
     data_dict = {}
     
-    # Load Target IDs
+    # Find IDs
     id_candidates = ['targetid.npy', 'ids.npy', 'target_ids.npy', 'object_ids.npy']
-    id_path = None
-    for cand in id_candidates:
-        p = os.path.join(emb_dir, cand)
-        if os.path.exists(p):
-            id_path = p
-            break
-            
-    if id_path:
-        logger.info(f"Loading Target IDs from {os.path.basename(id_path)}...")
-        data_dict['targetid'] = np.load(id_path)
-    else:
-        raise FileNotFoundError(f"Could not find IDs ({id_candidates}) in {emb_dir}")
+    id_path = next((os.path.join(emb_dir, c) for c in id_candidates if os.path.exists(os.path.join(emb_dir, c))), None)
+    if not id_path: raise FileNotFoundError(f"Could not find Target IDs in {emb_dir}")
+    data_dict['targetid'] = np.load(id_path)
 
-    # Load Modalities (images, spectra, joint)
-    modalities = ['images', 'spectra', 'joint']
-    for mod in modalities:
-        # Search for pattern mod*.npy
+    # Find Modalities
+    for mod in ['images', 'spectra', 'joint']:
         candidates = glob.glob(os.path.join(emb_dir, f"{mod}*.npy"))
-        
         if candidates:
-            # Prefer exact name "images.npy"
-            best_cand = candidates[0] 
-            for c in candidates:
-                if os.path.basename(c) == f"{mod}.npy":
-                    best_cand = c
-                    break
-            
-            logger.info(f"Loading {mod} embeddings from {os.path.basename(best_cand)}...")
-            data_dict[mod] = np.load(best_cand)
-        else:
-            logger.warning(f"No embeddings found for modality: {mod}")
+            best = next((c for c in candidates if os.path.basename(c) == f"{mod}.npy"), candidates[0])
+            data_dict[mod] = np.load(best)
 
     # Load Metadata
-    logger.info(f"Loading metadata from {metadata_path}...")
-    if not os.path.exists(metadata_path):
-        raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
-    
     catalog = Table.read(metadata_path)
     df = catalog.to_pandas()
     
-    # Basic string cleaning
     for col in df.columns:
         if df[col].dtype == object and isinstance(df[col].iloc[0], bytes):
             try: df[col] = df[col].str.decode('utf-8')
             except: pass
-    if 'SURVEY' in df.columns:
-        df['SURVEY'] = df['SURVEY'].str.lower().str.strip()
+    if 'SURVEY' in df.columns: df['SURVEY'] = df['SURVEY'].str.lower().str.strip()
         
     return data_dict, df
 
-
 def align_data(embeddings_dict: Dict[str, np.ndarray], catalog_df: pd.DataFrame) -> Tuple[pd.DataFrame, np.ndarray]:
-    """
-    Aligns metadata with embeddings using TARGETID intersection.
-
-    Args:
-        embeddings_dict: Dictionary containing embeddings and target IDs.
-        catalog_df: Pandas DataFrame containing metadata.
-
-    Returns:
-        Tuple containing the aligned DataFrame and valid embedding indices.
-    """
+    """Aligns metadata with embeddings using strict TARGETID intersection."""
     logger.info("Aligning embeddings with metadata...")
     emb_ids = embeddings_dict['targetid']
+    target_col = 'TARGETID' if 'TARGETID' in catalog_df.columns else 'targetid'
     
-    # Prepare catalog
-    catalog_df['TARGETID'] = catalog_df['TARGETID'].astype('int64')
-    catalog_indexed = catalog_df.drop_duplicates(subset=['TARGETID']).set_index('TARGETID')
+    catalog_df[target_col] = catalog_df[target_col].astype('int64')
+    catalog_indexed = catalog_df.drop_duplicates(subset=[target_col]).set_index(target_col)
     
-    # Intersection
     common_ids = np.intersect1d(emb_ids, catalog_indexed.index.values)
-    
-    if len(common_ids) < len(emb_ids):
-        logger.warning(f"Dropping {len(emb_ids) - len(common_ids)} objects (missing in metadata).")
-    
-    # Align Catalog
     matched_catalog = catalog_indexed.loc[common_ids].reset_index()
     
-    # Align Embeddings (Recover original indices)
     id_to_idx = {id_val: i for i, id_val in enumerate(emb_ids)}
-    valid_indices = np.array([id_to_idx[uid] for uid in matched_catalog['TARGETID'].values])
+    valid_indices = np.array([id_to_idx[uid] for uid in matched_catalog[target_col].values])
     
     logger.info(f"Final aligned samples: {len(matched_catalog)}")
     return matched_catalog, valid_indices
 
 
-def compute_umap(embeddings: np.ndarray, subsample: Optional[int] = None) -> np.ndarray:
-    """
-    Computes UMAP reduction.
-
-    Args:
-        embeddings: Input high-dimensional data.
-        subsample: Optional limit on number of points for speed.
-
-    Returns:
-        2D UMAP projection.
-    """
-    if subsample and len(embeddings) > subsample:
-        logger.info(f"Subsampling to {subsample} for UMAP calc...")
-        idx = np.random.choice(len(embeddings), subsample, replace=False)
-        data = embeddings[idx]
-    else:
-        data = embeddings
-        
-    logger.info(f"Running UMAP on {data.shape}...")
-    reducer = umap.UMAP(**UMAP_PARAMS)
-    return reducer.fit_transform(data)
-
-
-def plot_umaps_grid(
-    umap_2d: np.ndarray, 
-    df: pd.DataFrame, 
-    modality_name: str, 
-    out_dir: str, 
-    custom_title: Optional[str] = None
-):
+# STANDARD UMAPS
+def plot_standard_grid(
+        umap_2d: np.ndarray, 
+        df: pd.DataFrame, 
+        mod_name: str, 
+        out_dir: str, 
+        run_id: str
+    ) -> None:
     """
     Generates the grid plots with DYNAMIC percentiles, SMART Z-ORDERING and CUSTOM PALETTES.
-
-    Args:
-        umap_2d: 2D embedding coordinates.
-        df: Aligned metadata DataFrame.
-        modality_name: Name of the modality (e.g., 'images').
-        out_dir: Directory to save plots.
-        custom_title: Optional override for the plot title.
+    (Restored from original full version)
     """
+    logger.info(f"Generating Standard Grids for {mod_name}...")
     
     # Logaritmic transform
     def log_transform(x): 
@@ -264,18 +186,27 @@ def plot_umaps_grid(
     
     set_2_config = [
         {"col": "flux_detection_total", "label": r"Total Flux ($\log$)", "cat": False, "trans": log_transform},
-        {"col": "SNR_SPEC_R", "label": r"SNR (R-Band)", "cat": False, "trans": None},
+        {"col": "HALPHA_EW", "label": r"H$\alpha$ EW ($\log$)", "cat": False, "trans": log_transform},
+        {"col": "NII_6584_FLUX", "label": r"[NII] Flux ($\log$)", "cat": False, "trans": log_transform},
         {"col": "HALPHA_FLUX", "label": r"H$\alpha$ Flux ($\log$)", "cat": False, "trans": log_transform},
         {"col": "OIII_5007_FLUX", "label": r"[OIII] Flux ($\log$)", "cat": False, "trans": log_transform},
-        {"col": "OII_3726_FLUX", "label": r"[OII] Flux ($\log$)", "cat": False, "trans": log_transform},
-        {"col": "NII_6584_FLUX", "label": r"[NII] Flux ($\log$)", "cat": False, "trans": log_transform},
+        {"col": "HBETA_FLUX", "label": r"H$\beta$ Flux ($\log$)", "cat": False, "trans": log_transform},
     ]
     
-    sets_to_plot = [("Physics", set_1_config), ("Chemistry", set_2_config)]
+    set_3_config = [
+        {"col": "sersic_sersic_vis_radius", "label": r"Sersic VIS Radius ($\log$)", "cat": False, "trans": log_transform},
+        {"col": "sersic_sersic_vis_index", "label": r"Sersic VIS Index", "cat": False, "trans": None},
+        {"col": "sersic_sersic_vis_axis_ratio", "label": r"Sersic VIS Axis Ratio", "cat": False, "trans": None},
+        {"col": "has_spiral_arms_yes", "label": r"Spiral Arms Prob", "cat": False, "trans": None},
+        {"col": "smoothness", "label": r"Smoothness", "cat": False, "trans": None},
+        {"col": "gini", "label": r"Gini Coefficient", "cat": False, "trans": None},
+    ]
     
-    # Dynamic Limits (P1 - P99) ---
+    sets_to_plot = [("Physics", set_1_config), ("Chemistry", set_2_config), ("Morphology", set_3_config)]
+    
+    # Dynamic Limits (P1 - P99)
     global_limits = {}
-    for config in set_1_config + set_2_config:
+    for config in set_1_config + set_2_config + set_3_config:
         col = config["col"]
         if not config["cat"] and col in df.columns:
             vals = df[col].values.astype(float)
@@ -393,78 +324,281 @@ def plot_umaps_grid(
                     raw_label = config["label"]
                     formatted_label = rf"\boldmath\textbf{{{raw_label}}}"
                     ax.set_title(formatted_label, fontsize=20, pad=15)
-        
-        # TITLE LOGIC
-        config_path = os.path.join(out_dir, "config.json")
-        json_name = None
-        
-        # Try reading config.json
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, 'r') as f:
-                    config = json.load(f)
-                    json_name = config.get("train_name", None)
-            except Exception:
-                pass 
 
-        # Select ID: CLI > JSON > Folder
-        if custom_title:
-            run_id = custom_title
-        elif json_name:
-            run_id = json_name
-        else:
-            run_id = os.path.basename(os.path.normpath(out_dir))
-
+        # Plot titlle
         title_text = (
-            rf"\textbf{{AstroPT Latent Space - {modality_name.upper()} - {set_name}}}" + "\n" +
-            f"[{run_id}]"
+            rf"\textbf{{AstroPT Latent Space - {mod_name.upper()} - {set_name}}}" + "\n" +
+            f"{run_id}"
         ) 
 
         fig.suptitle(title_text, fontsize=24, y=1.05)
         
-        out_name = f"umap_{modality_name}_{set_name.lower()}.png"
+        out_name = f"umap_{mod_name}_{set_name.lower()}.png"
         out_path = os.path.join(out_dir, out_name)
         plt.savefig(out_path, dpi=300, bbox_inches='tight')
-        logger.info(f"-> Saved: {out_path}")
+        logger.info(f" --> Saved: {out_path}")
         plt.close()
+
+
+# VISUAL & SPECTRAL UMAPS
+def make_rgb_lupton(rgb_array: np.ndarray) -> np.ndarray:
+    """Applies Lupton stretch for RGB generation."""
+    I = np.maximum(np.mean(rgb_array, axis=0), 1e-10)
+    f_I = np.arcsinh(10.0 * 0.4 * I) / 10.0
+    out = rgb_array * (f_I / I)[np.newaxis, :, :]
+    max_val = np.percentile(out, 99.5)
+    return np.clip(out / (max_val if max_val > 0 else 1.0), 0, 1).transpose(1, 2, 0)
+
+def render_mini_spectrum(flux: np.ndarray, idx_min: int, idx_max: int, fig: plt.Figure, ax: plt.Axes) -> np.ndarray:
+    """Renders a 1D array to an RGBA buffer rapidly without re-instantiating figures."""
+    ax.clear()
+    segment = flux[idx_min:idx_max]
+    
+    # Touching edges
+    if len(segment) > 1:
+        ax.set_xlim(0, len(segment) - 1)
+        
+    if len(segment) > 0:
+        vmin, vmax = np.nanpercentile(segment, 1), np.nanpercentile(segment, 99.5)
+        # Seguro contra espectros planos (ruido cero)
+        if vmin == vmax: vmax = vmin + 1e-5 
+        ax.set_ylim(vmin, vmax)
+        
+    ax.plot(segment, color='black', linewidth=0.5)
+    
+    # White background
+    ax.patch.set_facecolor('white')
+    ax.patch.set_alpha(1.0)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    
+    fig.canvas.draw()
+    img = np.frombuffer(fig.canvas.tostring_argb(), dtype=np.uint8)
+    img = img.reshape(fig.canvas.get_width_height()[::-1] + (4,))
+    
+    # Convert ARGB toa RGBA
+    img = np.roll(img, 3, axis=2)
+    
+    # Edge color
+    color_borde = [220, 220, 220, 255] 
+    
+    img[:1, :, :] = color_borde  # Up 
+    img[-1:, :, :] = color_borde # Down 
+    img[:, :1, :] = color_borde  # Left 
+    img[:, -1:, :] = color_borde # Right
+    
+    return img
+
+def plot_mosaic_grid(
+        umap_2d: np.ndarray, 
+        df: pd.DataFrame, 
+        ds: Any, 
+        args: argparse.Namespace, 
+        mod_name: str, 
+        mode: str, 
+        run_id: str
+    ) -> None:
+    """
+    Generates dense mosaics for either Visual (RGB) or Spectral (1D) data.
+    Uses an occupancy queue to guarantee 1:1 pairing and avoid missing data holes.
+    """
+    logger.info(f"Generating {mode.upper()} Mosaic Grid for {mod_name}...")
+    
+    target_col = 'TARGETID' if 'TARGETID' in df.columns else 'targetid'
+    id_to_idx = {tid: i for i, tid in enumerate(np.array(ds.ds['targetid']))}
+    
+    fig_main, ax_main = plt.subplots(figsize=(24, 24))
+    grid_size = args.grid_size
+    auto_zoom = 6.5 / grid_size
+    
+    x_min, x_max = umap_2d[:, 0].min(), umap_2d[:, 0].max()
+    y_min, y_max = umap_2d[:, 1].min(), umap_2d[:, 1].max()
+    step_x, step_y = (x_max - x_min) / grid_size, (y_max - y_min) / grid_size
+
+    # Occupation priority list
+    occupied_cells = collections.defaultdict(list)
+    
+    for idx, (px, py) in enumerate(umap_2d):
+        ix = np.clip(int((px - x_min) / step_x), 0, grid_size - 1)
+        iy = np.clip(int((py - y_min) / step_y), 0, grid_size - 1)
+        cx, cy = x_min + (ix + 0.5) * step_x, y_min + (iy + 0.5) * step_y
+        dist_sq = (px - cx)**2 + (py - cy)**2
+        
+        # Saving all cells candidates
+        occupied_cells[(ix, iy)].append((dist_sq, idx, cx, cy))
+
+    # Closer candidates first
+    for cell_key in occupied_cells:
+        occupied_cells[cell_key].sort(key=lambda item: item[0])
+
+    spec_fig, spec_ax = None, None
+    if mode == 'spectral':
+        spec_fig, spec_ax = plt.subplots(figsize=(1.5, 1.5), dpi=85)
+        spec_fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
+        spec_fig.patch.set_alpha(0.0)
+        spec_ax.patch.set_alpha(0.0)
+
+    # Images - Spectra pair object validation
+    # If object has no pair skip to the next
+    images_placed = 0
+    for (ix, iy), candidates in occupied_cells.items():
+        for dist_sq, idx, cx, cy in candidates:
+            try:
+                target_id = df.iloc[idx][target_col]
+                if target_id not in id_to_idx: continue
+                rec = ds.ds[id_to_idx[target_id]]
+                
+                vis = np.array(rec['image_vis'], dtype=np.float32)
+                h = np.array(rec['image_nisp_h'], dtype=np.float32)
+                j = np.array(rec['image_nisp_j'], dtype=np.float32)
+                y = np.array(rec['image_nisp_y'], dtype=np.float32)
+                flux = np.array(rec['spectrum_flux'], dtype=np.float32) 
+
+                if vis.size == 0 or h.size == 0 or j.size == 0 or y.size == 0 or flux.size == 0:
+                    continue
+                
+                raw_stack = np.stack([vis, h, j, y], axis=0)
+                if np.isnan(raw_stack).all() or np.nanmax(np.abs(raw_stack)) == 0:
+                    continue
+                
+                z_val = df.iloc[idx]['Z']
+                lambda_obs = args.spec_wl * (1.0 + z_val)
+                step_wl = (9824.0 - 3600.0) / (7781 - 1)
+                idx_min = np.clip(int((lambda_obs - args.spec_range - 3600.0) / step_wl), 0, 7780)
+                idx_max = np.clip(int((lambda_obs + args.spec_range - 3600.0) / step_wl), 0, 7780)
+                if idx_min >= idx_max: 
+                    continue
+                
+                if mode == 'visual':
+                    raw_bg = raw_stack - np.nanpercentile(raw_stack, 60, axis=(1,2), keepdims=True)
+                    
+                    vmax = np.percentile(np.abs(raw_bg), 99.5, axis=(1,2), keepdims=True)
+                    vmax[vmax == 0] = 1.0  
+                    
+                    raw_norm = np.clip(raw_bg / vmax, 0, 100)
+                    rgb_input = np.stack([raw_norm[1]*1.2, ((raw_norm[2]+raw_norm[3])/2.0)*1.3, raw_norm[0]*1.0], axis=0)
+                    rendered_img = make_rgb_lupton(rgb_input)
+                    
+                    ab = AnnotationBbox(OffsetImage(rendered_img, zoom=auto_zoom), (cx, cy), frameon=False, pad=0.0)
+                    ax_main.add_artist(ab)
+                    
+                elif mode == 'spectral':
+                    rendered_img = render_mini_spectrum(flux, idx_min, idx_max, spec_fig, spec_ax)
+                    ax_main.imshow(rendered_img, 
+                                   extent=(cx - step_x/2.0, cx + step_x/2.0, cy - step_y/2.0, cy + step_y/2.0), 
+                                   aspect='auto', 
+                                   zorder=2)
+                
+                images_placed += 1
+                
+                # Next cell
+                break
+                
+            except Exception as e:
+                continue
+
+    if spec_fig: plt.close(spec_fig)
+
+    logger.info(f"Placed {images_placed} {mode} thumbnails.")
+    ax_main.set_xlim(x_min, x_max); ax_main.set_ylim(y_min, y_max)
+    ax_main.axis('off')
+    
+    title_text = (
+        rf"\textbf{{AstroPT Latent Space - {mod_name.upper()} - {mode.capitalize()}}}" + "\n" +
+        f"{run_id}"
+    ) 
+
+    fig_main.suptitle(title_text, fontsize=24, y=0.98)
+    
+    out_path = os.path.join(args.out_dir, f"umap_{mod_name}_{mode}.png")
+    plt.savefig(out_path, dpi=300, bbox_inches='tight', pad_inches=0.05)
+    logger.info(f" --> Saved: {out_path}")
+    plt.close(fig_main)
+
 
 
 def main():
     args = parse_args()
-    if args.out_dir and not os.path.exists(args.out_dir): os.makedirs(args.out_dir)
+    os.makedirs(args.out_dir, exist_ok=True)
     
+    # Validation
+    if (args.plot_visual or args.plot_spectral) and not args.data_dir:
+        logger.error("--data_dir is required if --plot_visual or --plot_spectral is enabled.")
+        sys.exit(1)
+        
+    # Load Data
     raw_data, df = load_data(args.emb_dir, args.metadata_path)
-    df_aligned, valid_emb_indices = align_data(raw_data, df)
+    df_aligned, valid_idx = align_data(raw_data, df)
     
-    # Global Subsampling
     if args.subsample and len(df_aligned) > args.subsample:
-        logger.info(f"Randomly subsampling to {args.subsample} points...")
-        rng = np.random.default_rng(42)
-        subset_idx = rng.choice(len(df_aligned), args.subsample, replace=False)
-        subset_idx.sort()
+        logger.info(f"Subsampling globally to {args.subsample} points...")
+        subset_idx = np.sort(np.random.choice(len(df_aligned), args.subsample, replace=False))
         df_aligned = df_aligned.iloc[subset_idx].reset_index(drop=True)
-        final_indices = valid_emb_indices[subset_idx]
-    else:
-        final_indices = valid_emb_indices
+        valid_idx = valid_idx[subset_idx]
+
+    # Initialize Arrow Dataset only if needed
+    arrow_ds = None
+    if args.plot_visual or args.plot_spectral:
+        logger.info("Initializing Arrow DataLoader...")
+        arrow_ds = EuclidDESIDatasetArrow(args.data_dir, split='test', modality_registry=DummyRegistry(), transform=None)
+        
+    # TITLE LOGIC
+    config_path = os.path.join(args.out_dir, "config.json")
+    json_name = None
     
-    found_modalities = [k for k in raw_data.keys() if k in ['images', 'spectra', 'joint']]
-    for mod in found_modalities:
-        logger.info("-" * 40)
-        logger.info(f"Processing {mod.upper()}")
-        emb = raw_data[mod]
-        if len(emb) > len(final_indices): emb = emb[final_indices]
+    # Try reading config.json
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                json_name = config.get("train_name", None)
+        except Exception:
+            pass 
+
+    if args.title_name:
+        run_id = args.title_name
+    elif json_name:
+        run_id = json_name
+    else:
+        run_id = os.path.basename(os.path.normpath(args.out_dir))
+
+    # Core Execution Loop
+    for mod in ['images', 'spectra', 'joint']:
+        if mod not in raw_data: continue
         
-        umap_2d = compute_umap(emb, subsample=None)
+        logger.info(f"\n{'-'*40}\nPROCESSING MODALITY: {mod.upper()}")
+        emb = raw_data[mod][valid_idx]
         
-        plot_umaps_grid(
-            umap_2d, 
-            df_aligned, 
-            mod, 
-            args.out_dir if args.out_dir else ".", 
-            custom_title=args.train_name
-        )
+        logger.info("Computing Universal UMAP Coordinates...")
+        reducer = umap.UMAP(**UMAP_PARAMS)
+        umap_coords = reducer.fit_transform(emb)
         
-    logger.info("Done.")
+        if args.plot_standard: 
+            plot_standard_grid(umap_coords, df_aligned, mod, args.out_dir, run_id=run_id)
+        
+        if args.plot_visual or args.plot_spectral:
+
+            if 'sersic_sersic_vis_radius' in df_aligned.columns:
+                logger.info("Filtering large objects for Mosaic Grids...")
+                radius_vals = df_aligned['sersic_sersic_vis_radius'].values
+                
+                size_threshold = np.nanpercentile(radius_vals, 75) 
+                large_mask = radius_vals > size_threshold
+                
+                mosaic_umap = umap_coords[large_mask]
+                mosaic_df = df_aligned[large_mask].reset_index(drop=True)
+                logger.info(f"Mosaic reduced from {len(df_aligned)} to {len(mosaic_df)} large objects.")
+            else:
+                logger.warning("Size column not found. Plotting all objects in mosaic.")
+                mosaic_umap = umap_coords
+                mosaic_df = df_aligned
+
+            if args.plot_visual: 
+                plot_mosaic_grid(mosaic_umap, mosaic_df, arrow_ds, args, mod, "visual", run_id=run_id)
+            if args.plot_spectral: 
+                plot_mosaic_grid(mosaic_umap, mosaic_df, arrow_ds, args, mod, "spectral", run_id=run_id)
+
+    logger.info("Unified UMAP Pipeline completed successfully.")
 
 if __name__ == "__main__":
     main()
