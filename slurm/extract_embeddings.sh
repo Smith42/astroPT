@@ -24,14 +24,14 @@ POOL_MET_SPEC="rank"
 PCA_DIM=0
 
 #--- ARGUMENT PARSING (FLAGS) ---#
-while getopts ":r:o:a:pmi:pms:" opt; do
+while getopts ":r:o:a:i:s:" opt; do
   case $opt in
     r) REPO_ROOT="$OPTARG" ;;
     o) OUT_DIR="$OPTARG" ;;
     a) DATA_DIR="$OPTARG" ;;
     p) PCA_DIM="$OPTARG" ;;
-    pmi) POOL_MET_IMG="$OPTARG" ;;
-    pms) POOL_MET_SPEC="$OPTARG" ;;
+    i) POOL_MET_IMG="$OPTARG" ;;
+    s) POOL_MET_SPEC="$OPTARG" ;;
     \?) echo "[ERROR] Invalid option -$OPTARG" >&2; exit 1 ;;
   esac
 done
