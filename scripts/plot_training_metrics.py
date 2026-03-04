@@ -64,8 +64,8 @@ def parse_args() -> argparse.Namespace:
     
     # Parsing Arguments
     parser.add_argument("--out_dir", type=str, required=True, help="Directory containing metrics.csv")
-    parser.add_argument("--csv_name", type=str, default="metrics.csv", help="Name of the CSV file")
-    parser.add_argument("--save_name", type=str, default="training_dashboard.png", help="Output image name")
+    parser.add_argument("--csv_name", type=str, default="training_metrics.csv", help="Name of the CSV file")
+    parser.add_argument("--save_name", type=str, default="training_metrics.png", help="Output image name")
     parser.add_argument("--smooth_window", type=int, default=10, help="Smoothing window for training loss")
     parser.add_argument("--train_name", type=str, default=None, help="Custom title for the plot (defaults to folder name)")
     
@@ -341,7 +341,7 @@ def main():
     
     save_path = os.path.join(args.out_dir, args.save_name)
     plt.savefig(save_path, format='png', dpi=300, bbox_inches='tight')
-    print(f"--> Dashboard saved to: {save_path}")
+    print(f" --> Dashboard saved to: {save_path}")
 
 if __name__ == "__main__":
     main()

@@ -53,7 +53,7 @@ echo "   OUT DIR:   $OUT_DIR"
 # Running Python Script
 python "$PYTHON_SCRIPT" \
     --out_dir "$OUT_DIR" \
-    --csv_name "metrics.csv" \
+    --csv_name "training_metrics.csv" \
     --save_name "training_metrics.png"
 
 echo "-----------------------------------------------"

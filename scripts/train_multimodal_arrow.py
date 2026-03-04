@@ -987,7 +987,7 @@ def main():
         t0 = time.time()
         run_start_time = time.time()
         last_log_time = time.time()
-        epoch_num = 0
+        initial_iter = iter_num
         
         # Wait for all GPUs synchronization
         if ddp:
@@ -995,7 +995,7 @@ def main():
         
         # CSV Logging setup
         if ddp_rank == 0:
-            csv_path = os.path.join(config.out_dir, "metrics.csv")
+            csv_path = os.path.join(config.out_dir, "training_metrics.csv")
             if config.init_from == 'scratch' or not os.path.exists(csv_path):
                 with open(csv_path, "w") as f:
                     # Headers for the CSV
@@ -1185,7 +1185,7 @@ def main():
                 train_prog = iter_num / config.max_iters
                     
                 
-                if iter_num % config.log_interval == 0:
+                if iter_num % config.log_interval == 0 and (iter_num > initial_iter or iter_num == 0):
                     
                     # Time since last iter log
                     current_log_time = time.time()
