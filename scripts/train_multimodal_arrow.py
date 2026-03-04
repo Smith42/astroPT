@@ -102,6 +102,7 @@ class TrainingConfig:
     
     #--- Multimodality Specifics ---#
     # Images
+    images_train: bool = True           # Images bool flag for enabling training
     images_size: int = 224              # Images side size in pixels
     images_patch_size: int = 16         # Side size in pixels of each patch in an image
     images_channels: int = 4            # Channels per image (VIS + NISP Y,J,H)
@@ -113,6 +114,7 @@ class TrainingConfig:
     images_norm_const: float = 1.0      # Normalization global constant for images: P99=7.603847
     
     # Spectra
+    spectra_train: bool = True               # Spectra bool flag for enabling training
     spectra_size: int = 7781                # Spectra total size
     spectra_patch_size: int = 10            # Patch size for each spectrum
     spectra_loss_weight: float = 1.0        # Spectra importance for training 
@@ -449,25 +451,31 @@ def create_dataloaders(
     # Calculate the flattened input image size for the Linear Encoder
     img_input_batch_size = config.images_patch_size * config.images_patch_size * config.images_channels
     
+    # List to store the training modalities
+    modalities = []
+    
     # Define configuration for each modality
-    modalities = [
-        ModalityConfig(
+    if images_train:
+        image_modality_config = ModalityConfig(
             name="images",
             input_size=img_input_batch_size,
             patch_size=config.images_patch_size,
             pos_input_size=config.images_pos_input_size,  
             loss_weight=config.images_loss_weight,
             embed_pos=config.images_embed_pos,
-        ),
-        ModalityConfig(
+        )
+        modalities.append(image_modality_config)
+        
+    if spectra_train:
+        spectra_modality_config = ModalityConfig(
             name="spectra",
             input_size=config.spectra_patch_size,
             patch_size=config.spectra_patch_size,
             pos_input_size=config.spectra_pos_input_size, 
             loss_weight=config.spectra_loss_weight,
             embed_pos=config.spectra_embed_pos,
-        ),
-    ]
+        )
+        modalities.append(spectra_modality_config)
     
     # Instantiate the Registry
     registry = ModalityRegistry(modalities)
@@ -475,26 +483,34 @@ def create_dataloaders(
     # Use data augmentation for training
     train_stage = 'train' if config.use_aug else 'val'
     
-    # Prepare data transformations for training 
+    # Base dictionary for transformations
+    tf_kwargs = {}
+    
+    # Add image parameters only if training with images
+    if images_train:
+        tf_kwargs.update({
+            'norm_type_img': config.images_norm_type,
+            'norm_scaler_img': config.images_norm_scaler,
+            'norm_const_img': config.images_norm_const,
+        })
+        
+    # Add spectra parameters only if training with spectra
+    if spectra_train:
+        tf_kwargs.update({
+            'norm_type_spec': config.spectra_norm_type,
+            'norm_scaler_spec': config.spectra_norm_scaler,
+            'norm_const_spec': config.spectra_norm_const,
+        })
+
+    # 4. Instantiate transforms dynamically unpacking the dictionary
     train_tf = EuclidDESIDatasetArrow.data_transforms(
-        norm_type_img=config.images_norm_type,
-        norm_scaler_img=config.images_norm_scaler,
-        norm_const_img=config.images_norm_const,
-        norm_type_spec=config.spectra_norm_type,
-        norm_scaler_spec=config.spectra_norm_scaler,
-        norm_const_spec=config.spectra_norm_const,
-        stage=train_stage
+        stage=train_stage, 
+        **tf_kwargs
     )
     
-    # Prepare data transformations for validation 
     val_tf = EuclidDESIDatasetArrow.data_transforms(
-        norm_type_img=config.images_norm_type,
-        norm_scaler_img=config.images_norm_scaler,
-        norm_const_img=config.images_norm_const,
-        norm_type_spec=config.spectra_norm_type,
-        norm_scaler_spec=config.spectra_norm_scaler,
-        norm_const_spec=config.spectra_norm_const,
-        stage='val'
+        stage='val', 
+        **tf_kwargs
     )
     
     
