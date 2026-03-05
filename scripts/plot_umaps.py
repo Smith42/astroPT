@@ -22,6 +22,7 @@ import logging
 import os
 import sys
 import warnings
+from pathlib import Path
 from typing import Dict, Tuple, Any
 
 import matplotlib.pyplot as plt
@@ -85,11 +86,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="AstroPT Unified UMAP Generator")
     
     # Core Data Arguments
-    parser.add_argument("--emb_dir", type=str, required=True, help="Directory containing .npy embedding files")
     parser.add_argument("--metadata_path", type=str, required=True, help="Path to .fits catalog")
-    parser.add_argument("--out_dir", type=str, default="plots_umap", help="Output directory")
+    parser.add_argument("--weights_dir", type=str, required=True, help="Directory containing training weights")
+    parser.add_argument("--emb_dir", type=str, required=True, help="Directory containing .npy embedding files")
+    parser.add_argument("--save_dir", type=str, required=True, help="Plot Saving Directory")
     parser.add_argument("--subsample", type=int, default=None, help="Global limit of points for speed")
-    parser.add_argument("--title_name", type=str, default=None, help="Custom title for plots")
+    parser.add_argument("--train_name", type=str, default=None, help="Custom title for plots")
     
     # Activation Flags (Modular Execution)
     parser.add_argument("--plot_standard", action="store_true", help="Generate physical/chemical property grids")
@@ -106,23 +108,34 @@ def parse_args() -> argparse.Namespace:
     
     return parser.parse_args()
 
-
-def load_data(emb_dir: str, metadata_path: str) -> Tuple[Dict[str, np.ndarray], pd.DataFrame]:
+# UMAPS Data Loader
+def load_data(
+        emb_dir: str | Path, 
+        metadata_path: str | Path
+    ) -> Tuple[Dict[str, np.ndarray], pd.DataFrame]:
     """Loads embeddings and FITS metadata."""
     logger.info(f"Scanning embeddings directory: {emb_dir}...")
     data_dict = {}
     
+    emb_dir = Path(emb_dir)
+    metadata_path = Path(metadata_path)
+    
+    # Scan for IDs
+    if not emb_dir.exists:
+        raise FileNotFoundError(f"Embeddings directory not found: {emb_dir}")
+    
     # Find IDs
     id_candidates = ['targetid.npy', 'ids.npy', 'target_ids.npy', 'object_ids.npy']
-    id_path = next((os.path.join(emb_dir, c) for c in id_candidates if os.path.exists(os.path.join(emb_dir, c))), None)
+    id_path = next((emb_dir / c for c in id_candidates if (emb_dir / c).exists()), None)
     if not id_path: raise FileNotFoundError(f"Could not find Target IDs in {emb_dir}")
     data_dict['targetid'] = np.load(id_path)
 
     # Find Modalities
     for mod in ['images', 'spectra', 'joint']:
-        candidates = glob.glob(os.path.join(emb_dir, f"{mod}*.npy"))
+        candidates = list(emb_dir.glob(f"{mod}*.npy"))
         if candidates:
-            best = next((c for c in candidates if os.path.basename(c) == f"{mod}.npy"), candidates[0])
+            best = next((c for c in candidates if c.name == f"{mod}.npy"), candidates[0])
+            logger.info(f"Loading {mod} from: {best.name}")
             data_dict[mod] = np.load(best)
 
     # Load Metadata
@@ -161,8 +174,8 @@ def plot_standard_grid(
         umap_2d: np.ndarray, 
         df: pd.DataFrame, 
         mod_name: str, 
-        out_dir: str, 
-        run_id: str
+        save_dir: str | Path, 
+        suffix: str
     ) -> None:
     """
     Generates the grid plots with DYNAMIC percentiles, SMART Z-ORDERING and CUSTOM PALETTES.
@@ -327,16 +340,15 @@ def plot_standard_grid(
 
         # Plot titlle
         title_text = (
-            rf"\textbf{{AstroPT Latent Space - {mod_name.upper()} - {set_name}}}" + "\n" +
-            f"{run_id}"
+            rf"\textbf{{AstroPT Latent Space - {mod_name.upper()} - {set_name}}}" + f"\n{suffix}"
         ) 
 
         fig.suptitle(title_text, fontsize=24, y=1.05)
         
-        out_name = f"umap_{mod_name}_{set_name.lower()}.png"
-        out_path = os.path.join(out_dir, out_name)
-        plt.savefig(out_path, dpi=300, bbox_inches='tight')
-        logger.info(f" --> Saved: {out_path}")
+        save_name = f"umap_{mod_name}_{set_name.lower()}.png"
+        save_path = Path(save_dir) / save_name
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        logger.info(f" --> Saved: {save_path}")
         plt.close()
 
 
@@ -396,7 +408,8 @@ def plot_mosaic_grid(
         args: argparse.Namespace, 
         mod_name: str, 
         mode: str, 
-        run_id: str
+        suffix: str,
+        save_dir: str | Path
     ) -> None:
     """
     Generates dense mosaics for either Visual (RGB) or Spectral (1D) data.
@@ -503,31 +516,41 @@ def plot_mosaic_grid(
     ax_main.set_xlim(x_min, x_max); ax_main.set_ylim(y_min, y_max)
     ax_main.axis('off')
     
+    # Plot title
     title_text = (
-        rf"\textbf{{AstroPT Latent Space - {mod_name.upper()} - {mode.capitalize()}}}" + "\n" +
-        f"{run_id}"
-    ) 
+        rf"\textbf{{AstroPT Latent Space - {mod_name.upper()} - {mode.capitalize()}}}" + f"\n{suffix}"
+    )
+    
+    if mode == "spectral":
+        title_text += rf" [${args.spec_wl}$ \AA]"
 
     fig_main.suptitle(title_text, fontsize=24, y=0.98)
     
-    out_path = os.path.join(args.out_dir, f"umap_{mod_name}_{mode}.png")
-    plt.savefig(out_path, dpi=300, bbox_inches='tight', pad_inches=0.05)
-    logger.info(f" --> Saved: {out_path}")
+    save_path = Path(save_dir) / f"umap_{mod_name}_{mode}.png"
+    plt.savefig(save_path, dpi=300, bbox_inches='tight', pad_inches=0.05)
+    logger.info(f" --> Saved: {save_path}")
     plt.close(fig_main)
 
 
 
 def main():
     args = parse_args()
-    os.makedirs(args.out_dir, exist_ok=True)
+    
+    # Required paths
+    weights_dir = Path(args.weights_dir)
+    emb_dir = Path(args.emb_dir)
+    data_dir = Path(args.data_dir) if args.data_dir else None
+    metadata_path = Path(args.metadata_path)
+    save_dir = Path(args.save_dir) / "umaps"
+    save_dir.mkdir(parents=True, exist_ok=True)
     
     # Validation
-    if (args.plot_visual or args.plot_spectral) and not args.data_dir:
+    if (args.plot_visual or args.plot_spectral) and data_dir is None:
         logger.error("--data_dir is required if --plot_visual or --plot_spectral is enabled.")
         sys.exit(1)
         
     # Load Data
-    raw_data, df = load_data(args.emb_dir, args.metadata_path)
+    raw_data, df = load_data(emb_dir, metadata_path)
     df_aligned, valid_idx = align_data(raw_data, df)
     
     if args.subsample and len(df_aligned) > args.subsample:
@@ -540,27 +563,29 @@ def main():
     arrow_ds = None
     if args.plot_visual or args.plot_spectral:
         logger.info("Initializing Arrow DataLoader...")
-        arrow_ds = EuclidDESIDatasetArrow(args.data_dir, split='test', modality_registry=DummyRegistry(), transform=None)
+        arrow_ds = EuclidDESIDatasetArrow(data_dir, split='test', modality_registry=DummyRegistry(), transform=None)
         
     # TITLE LOGIC
-    config_path = os.path.join(args.out_dir, "config.json")
-    json_name = None
+    config_path = weights_dir / "config.json"
+    json_train_name = None
     
     # Try reading config.json
-    if os.path.exists(config_path):
+    if config_path.is_file():
         try:
             with open(config_path, 'r') as f:
                 config = json.load(f)
-                json_name = config.get("train_name", None)
+                json_train_name = config.get("train_name", None)
         except Exception:
             pass 
 
-    if args.title_name:
-        run_id = args.title_name
-    elif json_name:
-        run_id = json_name
-    else:
-        run_id = os.path.basename(os.path.normpath(args.out_dir))
+    # Select ID: CLI > JSON > Folder
+    train_name = args.train_name or json_train_name or weights_dir.parent.name
+    raw_emb_name = emb_dir.name
+    emb_parts = [p.upper() for p in raw_emb_name.split('_')]
+    embedding_method = " + ".join(emb_parts)
+    
+    title_suffix = f"[{train_name} - {embedding_method}]"
+    title_suffix = title_suffix.replace('_', r'\_')
 
     # Core Execution Loop
     for mod in ['images', 'spectra', 'joint']:
@@ -574,7 +599,7 @@ def main():
         umap_coords = reducer.fit_transform(emb)
         
         if args.plot_standard: 
-            plot_standard_grid(umap_coords, df_aligned, mod, args.out_dir, run_id=run_id)
+            plot_standard_grid(umap_coords, df_aligned, mod, save_dir, suffix=title_suffix)
         
         if args.plot_visual or args.plot_spectral:
 
@@ -594,9 +619,11 @@ def main():
                 mosaic_df = df_aligned
 
             if args.plot_visual: 
-                plot_mosaic_grid(mosaic_umap, mosaic_df, arrow_ds, args, mod, "visual", run_id=run_id)
+                plot_mosaic_grid(mosaic_umap, mosaic_df, arrow_ds, args, mod, "visual", 
+                                 suffix=title_suffix, save_dir=save_dir)
             if args.plot_spectral: 
-                plot_mosaic_grid(mosaic_umap, mosaic_df, arrow_ds, args, mod, "spectral", run_id=run_id)
+                plot_mosaic_grid(mosaic_umap, mosaic_df, arrow_ds, args, mod, "spectral", 
+                                 suffix=title_suffix, save_dir=save_dir)
 
     logger.info("Unified UMAP Pipeline completed successfully.")
 

@@ -11,14 +11,14 @@ Features:
 - System Metrics (MFU & VRAM)
 
 Author: Victor Alonso Rodriguez
-Date: January 2026
+Date: March 2026
 """
 
 import argparse
 import json
-import os
 import sys
 import pandas as pd
+from pathlib import Path
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
@@ -63,7 +63,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Plot AstroPT Training Metrics")
     
     # Parsing Arguments
-    parser.add_argument("--out_dir", type=str, required=True, help="Directory containing metrics.csv")
+    parser.add_argument("--weights_dir", type=str, required=True, help="Directory containing training weigths")
+    parser.add_argument("--logs_dir", type=str, required=True, help="Directory containing metrics.csv")
+    parser.add_argument("--save_dir", type=str, required=True, help="Plot Saving Directory")
     parser.add_argument("--csv_name", type=str, default="training_metrics.csv", help="Name of the CSV file")
     parser.add_argument("--save_name", type=str, default="training_metrics.png", help="Output image name")
     parser.add_argument("--smooth_window", type=int, default=10, help="Smoothing window for training loss")
@@ -82,10 +84,15 @@ def main():
     # Parsing argumentss
     args = parse_args()
     
-    # Load CSV
-    csv_path = os.path.join(args.out_dir, args.csv_name)
+    # Required paths
+    weights_dir = Path(args.weights_dir)
+    logs_dir = Path(args.logs_dir)
+    save_dir = Path(args.save_dir)
     
-    if not os.path.exists(csv_path):
+    # Load CSV
+    csv_path =  logs_dir / args.csv_name
+    
+    if not csv_path.is_file():
         print(f"Error: File not found at {csv_path}")
         sys.exit(1)
         
@@ -100,15 +107,14 @@ def main():
 
 
     # PLOTTING SETUP
-    
     fig, axs = plt.subplots(2, 2, figsize=(18, 17))
     
     # Customizing the title
-    config_path = os.path.join(args.out_dir, "config.json")
+    config_path = weights_dir / "config.json"
     json_name = None
     
     # Reading the json file
-    if os.path.exists(config_path):
+    if config_path.is_file():
         try:
             with open(config_path, 'r') as f:
                 config = json.load(f)
@@ -117,12 +123,8 @@ def main():
             pass
     
     # Subtitle priority
-    if args.train_name:
-        subtitle = args.train_name
-    elif json_name:
-        subtitle = json_name
-    else:
-        subtitle = os.path.basename(os.path.normpath(args.out_dir))
+    subtitle = args.train_name or json_name or weights_dir.parent.name    
+    subtitle = subtitle.replace('_', r'\_')
     
     fig.suptitle(r"\textbf{AstroPT Training Dashboard}" + f"\n[{subtitle}]", fontsize=22, y=0.95)
     
@@ -339,7 +341,7 @@ def main():
     # SAVING
     plt.tight_layout(rect=[0, 0.03, 1, 0.95], w_pad=3.0, h_pad=0.5)
     
-    save_path = os.path.join(args.out_dir, args.save_name)
+    save_path = save_dir / args.save_name
     plt.savefig(save_path, format='png', dpi=300, bbox_inches='tight')
     print(f" --> Dashboard saved to: {save_path}")
 

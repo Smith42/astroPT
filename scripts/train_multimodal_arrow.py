@@ -5,7 +5,7 @@ This script implements a Distributed Data Parallel (DDP) training loop for the
 AstroPT model, utilising the Euclid-DESI multimodal dataset (Arrow format).
 
 Author: Victor Alonso Rodriguez
-Date: January 2026
+Date: March 2026
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import inspect
 import json
 import logging
 import math
+import numpy as np
 import os
 import subprocess
 import sys
@@ -23,10 +24,10 @@ import time
 import re
 from contextlib import nullcontext
 from dataclasses import dataclass, asdict
+from pathlib import Path
 from transformers import HfArgumentParser
 from typing import Optional, List, Tuple, Dict, Any
 
-import numpy as np
 import torch
 import torch.distributed as dist
 from torch.distributed import (
@@ -72,7 +73,7 @@ class TrainingConfig:
     train_description: Optional[str] = None     # Description or comment abouth the training
 
     #--- I/O & Paths ---#
-    out_dir: Optional[str] = None               # Output directory (built dynamically at the end of the class)
+    train_dir: Optional[str] = None               # Training output directory (built dynamically at the end of the class)
     data_dir: str = "/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"   # Dataset directory
             
     #--- Data Loading ---#
@@ -171,12 +172,12 @@ class TrainingConfig:
         if self.train_date is None:
             self.train_date = datetime.datetime.now().strftime("%Y%m%d")
         # Output directory
-        if self.out_dir is None:
-            clean_name = self.train_name.lower()
+        if self.train_dir is None:
+            clean_name = self.train_name.lower() if self.train_name else "default_run"
             clean_name = re.sub(r'[^a-z0-9]', ' ', clean_name)
             tokens = clean_name.split()
             suffix_name = "_".join(tokens)
-            self.out_dir = f"logs/astropt_100M_arrow_{self.train_date}_{suffix_name}"
+            self.train_dir = f"./logs/astropt_100M_250K_arrow_{self.train_date}_{suffix_name}"
 
 def get_git_commit_hash() -> str:
     """Returns the current git commit hash or 'unknown' if not in a git repo."""
@@ -186,7 +187,7 @@ def get_git_commit_hash() -> str:
         return "unknown"
     
 
-def get_dataset_info(data_dir: str) -> dict:
+def get_dataset_info(data_dir: str | Path) -> dict:
     """
     Scans the data directory to create an informative version based on 
     filesystem metadata: latest modification time and total size.
@@ -195,16 +196,15 @@ def get_dataset_info(data_dir: str) -> dict:
         max_mtime = 0.0
         total_size = 0
         file_count = 0
+        data_path = Path(data_dir)
 
         # Walk through the directory
-        for root, _, files in os.walk(data_dir):
-            for name in files:
-                # Filter arrow files
-                if not name.endswith('.arrow') and not name.endswith('.json'):
-                    continue
-                
-                full_path = os.path.join(root, name)
-                stats = os.stat(full_path)
+        for file_path in data_path.rglob('*'):
+            
+            # Filter arrow and json files
+            if file_path.is_file() and file_path.suffix in ['.arrow', '.json']:
+                    
+                stats = file_path.stat()
                 
                 # Update max modification time
                 if stats.st_mtime > max_mtime:
@@ -229,7 +229,21 @@ def get_dataset_info(data_dir: str) -> dict:
         
     except Exception as e:
         return {"data_version_error": str(e)}
+    
 
+def project_directories_setup(base_dir: str | Path) -> Tuple[Path, Path, Path, Path, Path]:
+
+    train_dir = Path(base_dir)
+    weights_dir = train_dir / "weights"
+    embeddings_dir = train_dir / "embeddings"
+    plots_dir = train_dir / "plots"
+    logs_dir = train_dir / "logs"
+    
+    for directory in [train_dir, weights_dir, embeddings_dir, plots_dir, logs_dir]:
+        directory.mkdir(parents=True, exist_ok=True)
+        f"[INFO]: Created {directory}"
+
+    return train_dir, weights_dir, embeddings_dir, plots_dir, logs_dir
 
 def parse_time_to_seconds(time_str: str) -> float:
     """Converts a HH:MM:SS string to total seconds."""
@@ -240,7 +254,7 @@ def parse_time_to_seconds(time_str: str) -> float:
         raise ValueError(f"Invalid time format: {time_str}. Expected HH:MM:SS")
     
     
-def save_config_json(config: TrainingConfig, rank: int):
+def save_config_json(config: TrainingConfig, rank: int, save_dir: Path):
     """Saves the configuration to a JSON file for reproducibility."""
     if rank == 0:
         config_dict = asdict(config)
@@ -252,7 +266,7 @@ def save_config_json(config: TrainingConfig, rank: int):
         data_stats = get_dataset_info(config.data_dir)
         config_dict.update(data_stats)
         
-        config_path = os.path.join(config.out_dir, "config.json")
+        config_path = save_dir / "config.json"
         with open(config_path, "w") as f:
             json.dump(config_dict, f, indent=4)
             
@@ -279,7 +293,7 @@ def smart_config_merge(current_config: Any, saved_config_dict: Dict[str, Any], l
     for key, old_value in saved_config_dict.items():
         
         # Never restore the following values 
-        if key in ['out_dir', 'init_from', 'run_name', 'train_date', 'wandb_run_name']:
+        if key in ['train_dir', 'init_from', 'run_name', 'train_date', 'wandb_run_name']:
             continue
             
         # If the saved key no longer exists in the current code, skip it
@@ -313,7 +327,7 @@ def smart_config_merge(current_config: Any, saved_config_dict: Dict[str, Any], l
             # Not provided. Using the saved in the checkpoint
             if current_value != old_value:
                 setattr(current_config, key, old_value)
-                logger.info(f" --> RESTORED: '{key}' | Script: {current_value} -> Saved: {old_value}")
+                logger.info(f" --> RESTORED: '{key}' | Script: {current_value} --> Saved: {old_value}")
     
     return current_config
 
@@ -368,7 +382,8 @@ def ddp_setup() -> Tuple[bool, int, int, str]:
 
 def logging_setup(
     config: TrainingConfig, 
-    ddp_rank: int
+    ddp_rank: int,
+    save_dir: str | Path
 ) -> logging.Logger:
     """
     Configures the logging system.
@@ -377,7 +392,7 @@ def logging_setup(
     - Worker Processes (Rank > 0): Only log ERRORS to avoid cluttering the output.
 
     Args:
-        config (TrainingConfig): To know where the 'out_dir' is.
+        config (TrainingConfig): To know where the 'train_dir' is.
         ddp_rank (int): To decide verbosity (Master vs Workers).
 
     Returns:
@@ -385,8 +400,9 @@ def logging_setup(
     """
     
     # Ensuring the output directory exists
+    logs_dir = Path(save_dir)
     if ddp_rank == 0:
-        os.makedirs(config.out_dir, exist_ok=True)
+        logs_dir.mkdir(parents=True, exist_ok=True)
 
     # Defining the log format
     log_format = "[%(asctime)s] [%(levelname)s] %(message)s"
@@ -408,7 +424,7 @@ def logging_setup(
         logger.addHandler(console_handler)
         
         # Handler 2: File (training.log)
-        log_file = os.path.join(config.out_dir, "training.log")
+        log_file = logs_dir / "training.log"
         file_handler = logging.FileHandler(log_file, mode="a") # 'a' for append
         file_handler.setFormatter(logging.Formatter(log_format, datefmt=date_format))
         logger.addHandler(file_handler)
@@ -454,8 +470,11 @@ def create_dataloaders(
     # List to store the training modalities
     modalities = []
     
+    # Base dictionary for transformations
+    tf_kwargs = {}
+    
     # Define configuration for each modality
-    if images_train:
+    if config.images_train:
         image_modality_config = ModalityConfig(
             name="images",
             input_size=img_input_batch_size,
@@ -466,7 +485,13 @@ def create_dataloaders(
         )
         modalities.append(image_modality_config)
         
-    if spectra_train:
+        tf_kwargs.update({
+            'norm_type_img': config.images_norm_type,
+            'norm_scaler_img': config.images_norm_scaler,
+            'norm_const_img': config.images_norm_const,
+        })
+        
+    if config.spectra_train:
         spectra_modality_config = ModalityConfig(
             name="spectra",
             input_size=config.spectra_patch_size,
@@ -476,32 +501,19 @@ def create_dataloaders(
             embed_pos=config.spectra_embed_pos,
         )
         modalities.append(spectra_modality_config)
+        
+        tf_kwargs.update({
+            'norm_type_spec': config.spectra_norm_type,
+            'norm_scaler_spec': config.spectra_norm_scaler,
+            'norm_const_spec': config.spectra_norm_const,
+        })
     
     # Instantiate the Registry
     registry = ModalityRegistry(modalities)
     
     # Use data augmentation for training
     train_stage = 'train' if config.use_aug else 'val'
-    
-    # Base dictionary for transformations
-    tf_kwargs = {}
-    
-    # Add image parameters only if training with images
-    if images_train:
-        tf_kwargs.update({
-            'norm_type_img': config.images_norm_type,
-            'norm_scaler_img': config.images_norm_scaler,
-            'norm_const_img': config.images_norm_const,
-        })
         
-    # Add spectra parameters only if training with spectra
-    if spectra_train:
-        tf_kwargs.update({
-            'norm_type_spec': config.spectra_norm_type,
-            'norm_scaler_spec': config.spectra_norm_scaler,
-            'norm_const_spec': config.spectra_norm_const,
-        })
-
     # 4. Instantiate transforms dynamically unpacking the dictionary
     train_tf = EuclidDESIDatasetArrow.data_transforms(
         stage=train_stage, 
@@ -512,7 +524,6 @@ def create_dataloaders(
         stage='val', 
         **tf_kwargs
     )
-    
     
     # Activating the logger object
     logger = logging.getLogger("AstroPT")
@@ -767,14 +778,18 @@ def main():
     # Load configuration from CLI arguments (overriding defaults)
     config, _ = parser.parse_args_into_dataclasses(return_remaining_strings=True)
     
+    # Creating directories structure
+    (train_dir, weights_dir, 
+     embed_dir, plots_dir, logs_dir) = project_directories_setup(config.train_dir)
+    
     # Setup Logger (only Master Process logs to file/console)
-    logger = logging_setup(config, ddp_rank)
+    logger = logging_setup(config, ddp_rank, logs_dir)
     
     # Saving configuration in a .json file
-    save_config_json(config, ddp_rank)
+    save_config_json(config, ddp_rank, weights_dir)
     
     # Imporved file for workflow control
-    improve_file_path = os.path.join(config.out_dir, ".improved")
+    improve_file_path = train_dir / ".improved"
     
     # Log basic training info
     if ddp_rank == 0:
@@ -867,8 +882,8 @@ def main():
         #--- CHECKPOINT MANAGEMENT ---#
         
         # Define where the checkpoint file should be
-        ckpt_path_best = os.path.join(config.out_dir, 'ckpt_best.pt')
-        ckpt_path_last = os.path.join(config.out_dir, 'ckpt_last.pt')
+        ckpt_path_best = weights_dir / "ckpt_best.pt"
+        ckpt_path_last = weights_dir / "ckpt_last.pt"
         
         # State variables
         iter_num = 0
@@ -883,25 +898,23 @@ def main():
             ckpt_path = None
             
             # 1. Try lo load the LAST checkpoint file
-            if os.path.exists(ckpt_path_last):
+            if ckpt_path_last.is_file():
                 ckpt_path = ckpt_path_last
                 logger.info(f"Resuming from LAST checkpoint: {ckpt_path}")
                 
             # 2. If 'last' is missing, look for the latest 'ckpt_iter_XXXXXX.pt' (Mode "all")
             else:
                 # Get all files starting with 'ckpt_iter_' and ending in '.pt'
-                iter_checkpoints = [f for f in os.listdir(config.out_dir) 
-                                    if f.startswith('ckpt_iter_') and f.endswith('.pt')]
+                iter_checkpoints = list(weights_dir.glob('ckpt_iter_*.pt'))
                 
                 if iter_checkpoints:
                     # Sort them to find the latest iteration
                     iter_checkpoints.sort()
-                    latest_iter_ckpt = iter_checkpoints[-1]
-                    ckpt_path = os.path.join(config.out_dir, latest_iter_ckpt)
+                    ckpt_path = iter_checkpoints[-1]
                     logger.info(f"Resuming from LATEST HISTORY checkpoint: {ckpt_path}")
             
             # 3. Try BEST if neither LAST nor HISTORY exist
-            if ckpt_path is None and os.path.exists(ckpt_path_best):
+            if ckpt_path is None and ckpt_path_best.is_file():
                 ckpt_path = ckpt_path_best
                 logger.info(f"Resuming from BEST checkpoint: {ckpt_path}")
             
@@ -936,7 +949,7 @@ def main():
                 # Loading the correct loss
                 loaded_best_loss = checkpoint['best_val_loss']
                 
-                if os.path.exists(ckpt_path_best):
+                if ckpt_path_best.is_file():
                     try:
                         # Load metadata
                         best_ckpt_data = torch.load(ckpt_path_best, map_location=device, weights_only=False)
@@ -954,8 +967,7 @@ def main():
                 else:
                     best_val_loss = loaded_best_loss
                 
-                
-                
+
                 accumulated_time = checkpoint.get('total_run_time', 0.0)
                 
                 # Changing time to hours
@@ -966,8 +978,8 @@ def main():
                 
                 
                 # Only remove .improved file in resume mode
-                if os.path.exists(improve_file_path) and ddp_rank == 0:
-                    os.remove(improve_file_path)
+                if ddp_rank == 0:
+                    improve_file_path.unlink(missing_ok=True)
                     logger.info("Removing .improved file.")
 
             else:
@@ -995,8 +1007,8 @@ def main():
         
         # CSV Logging setup
         if ddp_rank == 0:
-            csv_path = os.path.join(config.out_dir, "training_metrics.csv")
-            if config.init_from == 'scratch' or not os.path.exists(csv_path):
+            csv_path = logs_dir / "training_metrics.csv"
+            if config.init_from == 'scratch' or not csv_path.is_file():
                 with open(csv_path, "w") as f:
                     # Headers for the CSV
                     headers = [
@@ -1028,7 +1040,7 @@ def main():
             prof = profile(
                 activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
                 schedule=schedule(wait=wait, warmup=warmup, active=active, repeat=1),
-                on_trace_ready=tensorboard_trace_handler(os.path.join(config.out_dir, "profiler_trace")),
+                on_trace_ready=tensorboard_trace_handler(str(logs_dir / "profiler_trace")),
                 record_shapes=True,
                 profile_memory=True,
                 with_stack=True
@@ -1391,7 +1403,7 @@ def main():
                             
                         if config.checkpoint_save_type == "all":
                             ckpt_iter_name = f"ckpt_iter_{iter_num:06d}.pt"
-                            ckpt_path_iter = os.path.join(config.out_dir, ckpt_iter_name)
+                            ckpt_path_iter = weights_dir / ckpt_iter_name
                             
                             # Update dictionary with current val loss for this snapshot
                             checkpoint['best_val_loss'] = val_loss 

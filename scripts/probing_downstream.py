@@ -12,7 +12,7 @@ Features:
 - Input and Target scaling (StandardScaler and Asinh for fluxes).
 
 Author: Victor Alonso Rodriguez
-Date: January 2026
+Date: March 2026
 """
 
 import argparse
@@ -21,6 +21,7 @@ import logging
 import os
 import random
 import sys
+from pathlib import Path
 from typing import Dict, Any, Tuple, List, Optional, Union
 import warnings
 
@@ -77,9 +78,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="AstroPT Downstream Prober (LP & MLP)")
     
     # Data Paths
-    parser.add_argument("--embeddings_dir", type=str, required=True, help="Directory containing .npy embeddings")
     parser.add_argument("--metadata_path", type=str, required=True, help="Path to .fits catalog")
-    parser.add_argument("--out_dir", type=str, default=None, help="Directory to save results")
+    parser.add_argument("--weights_dir", type=str, required=True, help="Directory containing training weights")
+    parser.add_argument("--emb_dir", type=str, required=True, help="Directory containing .npy embedding files")
+    parser.add_argument("--save_dir", type=str, required=True, help="Plot Saving Directory")
+    
+    parser.add_argument("--train_name", type=str, default=None, help="Custom title for plots")
     
     # Task Config
     parser.add_argument("--targets", nargs='+', default=None, help="Overwrites default target list.")
@@ -88,6 +92,7 @@ def parse_args() -> argparse.Namespace:
     # Probing Config
     parser.add_argument("--probes", nargs='+', default=['lp', 'mlp'], choices=['lp', 'mlp'], 
                         help="Type of probes to run: 'lp', 'mlp' or both.")
+    parser.add_argument("--conf_matrix", type=bool, default=False, help="Generates confusion matrix")
     
     # Training Hyperparams
     parser.add_argument("--epochs", type=int, default=50, help="Training epochs per task")
@@ -154,47 +159,67 @@ class AdaptiveMLP(nn.Module):
         return self.net(x)
 
 
-# Data Loading
-def load_data_global(embeddings_dir: str, metadata_path: str) -> Tuple[Dict[str, np.ndarray], pd.DataFrame]:
-    """
-    Loads embeddings (.npy) from a directory and metadata, aligning them by TARGETID.
-    Applies strict spectral quality filtering (SNR > 3) to discard noisy data.
-    Uses memmap for efficient loading of large embedding files.
-    """
-    # Scan for IDs
-    if not os.path.exists(embeddings_dir):
-        raise FileNotFoundError(f"Embeddings directory not found: {embeddings_dir}")
-        
-    id_candidates = ['targetid.npy', 'ids.npy', 'target_ids.npy', 'object_ids.npy']
-    id_path = None
-    for cand in id_candidates:
-        p = os.path.join(embeddings_dir, cand)
-        if os.path.exists(p):
-            id_path = p
-            break
-            
-    if not id_path:
-        raise FileNotFoundError(f"Could not find IDs ({id_candidates}) in {embeddings_dir}")
-        
-    logger.info(f"Loading IDs from {os.path.basename(id_path)}...")
-    ids = np.load(id_path)
+from pathlib import Path
+from typing import Dict, Tuple
+import numpy as np
+import pandas as pd
+from astropy.table import Table
+
+def load_data(
+        emb_dir: str | Path, 
+        metadata_path: str | Path
+    ) -> Tuple[Dict[str, np.ndarray], pd.DataFrame]:
+    """Loads embeddings (.npy) and FITS metadata."""
+    emb_dir = Path(emb_dir)
+    metadata_path = Path(metadata_path)
     
+    logger.info(f"Scanning embeddings directory: {emb_dir}...")
+    
+    if not emb_dir.exists():
+        raise FileNotFoundError(f"Embeddings directory not found: {emb_dir}")
+        
+    data_dict = {}
+    
+    # Find IDs
+    id_candidates = ['targetid.npy', 'ids.npy', 'target_ids.npy', 'object_ids.npy']
+    id_path = next((emb_dir / c for c in id_candidates if (emb_dir / c).exists()), None)
+    if not id_path: 
+        raise FileNotFoundError(f"Could not find Target IDs in {emb_dir}")
+    data_dict['targetid'] = np.load(id_path)
+
+    # Find Modalities (Using memmap for efficient RAM usage)
+    for mod in ['images', 'spectra', 'joint']:
+        candidates = list(emb_dir.glob(f"{mod}*.npy"))
+        if candidates:
+            best = next((c for c in candidates if c.name == f"{mod}.npy"), candidates[0])
+            logger.info(f"Loading {mod} from: {best.name} (memmap)")
+            data_dict[mod] = np.load(best, mmap_mode='r')
+
     # Load Metadata
-    if not os.path.exists(metadata_path):
+    if not metadata_path.exists():
         raise FileNotFoundError(f"Metadata not found: {metadata_path}")
+        
     try:
-        t = Table.read(metadata_path)
-        df = t.to_pandas()
+        catalog = Table.read(metadata_path)
+        df = catalog.to_pandas()
     except Exception as e:
         logger.error(f"Failed to read FITS: {e}")
         sys.exit(1)
-        
+    
     # Bytes decoding
     for col in df.columns:
         if df[col].dtype == object and isinstance(df[col].iloc[0], bytes):
-             df[col] = df[col].str.decode('utf-8')
+            try: df[col] = df[col].str.decode('utf-8')
+            except: pass
+            
+    if 'SURVEY' in df.columns: 
+        df['SURVEY'] = df['SURVEY'].str.lower().str.strip()
+        
+    return data_dict, df
 
-    # Spectral Quality Filter
+
+def filter_catalog(df: pd.DataFrame) -> pd.DataFrame:
+    """Applies strict spectral quality filtering (SNR > 3 & H-alpha)."""
     logger.info("Applying Spectral Quality Filter (SNR > 3)...")
     initial_len = len(df)
     
@@ -214,47 +239,39 @@ def load_data_global(embeddings_dir: str, metadata_path: str) -> Tuple[Dict[str,
         mask_halpha = pd.Series(True, index=df.index)
 
     # Combining results
-    df = df[mask_snr & mask_halpha].copy()
+    filtered_df = df[mask_snr & mask_halpha].copy()
+    final_len = len(filtered_df)
     
-    final_len = len(df)
-    logger.info(f"Filtered out {initial_len - final_len} noisy spectra from raw catalog. Retained {final_len} ({final_len/initial_len:.1%})")
+    logger.info(f"Filtered out {initial_len - final_len} noisy spectra. Retained {final_len} ({final_len/initial_len:.1%})")
+    return filtered_df
 
-    # Global Alignment
-    logger.info(f"Performing global alignment (IDs)...")
-    df['TARGETID'] = df['TARGETID'].astype('int64')
-    df = df.drop_duplicates(subset=['TARGETID']).set_index('TARGETID')
+
+def align_data(embeddings_dict: Dict[str, np.ndarray], catalog_df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, np.ndarray]]:
+    """Aligns filtered metadata with embeddings using TARGETID intersection."""
+    logger.info("Aligning embeddings with filtered metadata...")
+    emb_ids = embeddings_dict['targetid']
+    target_col = 'TARGETID' if 'TARGETID' in catalog_df.columns else 'targetid'
+    
+    catalog_df[target_col] = catalog_df[target_col].astype('int64')
+    catalog_indexed = catalog_df.drop_duplicates(subset=[target_col]).set_index(target_col)
     
     # Intersection
-    common_ids = np.intersect1d(ids, df.index.values)
-    df_aligned = df.loc[common_ids]
+    common_ids = np.intersect1d(emb_ids, catalog_indexed.index.values)
+    matched_catalog = catalog_indexed.loc[common_ids].reset_index()
     
     # Indices Mapping
-    id_to_idx = {id_val: i for i, id_val in enumerate(ids)}
-    emb_indices = [id_to_idx[uid] for uid in df_aligned.index.values]
+    id_to_idx = {id_val: i for i, id_val in enumerate(emb_ids)}
+    valid_indices = np.array([id_to_idx[uid] for uid in matched_catalog[target_col].values])
     
-    # Load & Align Embeddings
-    data_aligned = {}
-    modalities = ['images', 'spectra', 'joint']
-    
-    for mod in modalities:
-        candidates = glob.glob(os.path.join(embeddings_dir, f"{mod}*.npy"))
-        
-        if candidates:
-            best_cand = candidates[0]
-            for c in candidates:
-                if os.path.basename(c) == f"{mod}.npy":
-                    best_cand = c
-                    break
+    # Extract valid slices from Memmaps
+    aligned_embeddings = {}
+    for mod in ['images', 'spectra', 'joint']:
+        if mod in embeddings_dict:
+            # Fancy indexing triggers RAM loading only for valid items
+            aligned_embeddings[mod] = embeddings_dict[mod][valid_indices]
             
-            logger.info(f"Loading & Aligning {mod} from {os.path.basename(best_cand)}...")
-            # Memmap reading + Fancy indexing (loads subset to RAM)
-            raw_emb = np.load(best_cand, mmap_mode='r')
-            data_aligned[mod] = raw_emb[emb_indices]
-        else:
-            logger.warning(f"No embeddings found for modality: {mod}")
-        
-    logger.info(f" --> Global alignment complete. {len(df_aligned)} pure Test Set objects available for probing.")
-    return data_aligned, df_aligned
+    logger.info(f"Final aligned pure Test Set objects available for probing: {len(matched_catalog)}")
+    return matched_catalog, aligned_embeddings
 
 
 def get_task_data(
@@ -482,7 +499,7 @@ def train_engine(
     return np.concatenate(all_preds), y_test_raw
 
 
-def save_row_to_csv(row: Dict[str, Any], csv_path: str):
+def save_row_to_csv(row: Dict[str, Any], csv_path: str | Path):
     """
     Appends a single row to the CSV. Writes header if the file is new.
     
@@ -497,16 +514,24 @@ def save_row_to_csv(row: Dict[str, Any], csv_path: str):
             df[col] = np.nan
     df = df[CSV_COLUMNS]
     
-    header = not os.path.exists(csv_path)
+    csv_path = Path(csv_path)
+    header = not csv_path.is_file()
     df.to_csv(csv_path, mode='a', header=header, index=False)
 
 
 def main():
     """Main execution block."""
     args = parse_args()
-    out_dir = args.out_dir if args.out_dir else args.embeddings_dir
-    os.makedirs(out_dir, exist_ok=True)
-    csv_path = os.path.join(out_dir, "probing_results_all.csv")
+    
+    # Required paths
+    weights_dir = Path(args.weights_dir)
+    emb_dir = Path(args.emb_dir)
+    metadata_path = Path(args.metadata_path)
+    
+    save_dir = Path(args.save_dir) / "downstream_tasks"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    csv_path = save_dir / "downstream_results.csv"
     
     # Fixing the seed
     set_seed(61)
@@ -524,19 +549,48 @@ def main():
     logger.info(f"Probes to run: {probes_to_run}")
     
     # Load Data
-    raw_data, df_global = load_data_global(args.embeddings_dir, args.metadata_path)
+    raw_data_dict, raw_df = load_data(emb_dir, metadata_path)
     
-    if not raw_data:
+    if not raw_data_dict:
         logger.error("No valid embeddings found. Exiting.")
         sys.exit(1)
+    
+    # Apply scientific filters
+    filtered_df = filter_catalog(raw_df)
+    
+    # Align and extract to RAM
+    aligned_df, aligned_embeddings = align_data(raw_data_dict, filtered_df)
+    
+    # TITLE LOGIC for confusion matrix
+    config_path = weights_dir / "config.json"
+    json_name = None
+    
+    # Try reading config.json
+    if config_path.is_file():
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                json_name = config.get("train_name", None)
+        except Exception:
+            pass 
 
-    # EORDER TARGETS (Regression First, then Classification)
+    # Select ID: CLI > JSON > Folder
+    train_name = args.train_name or json_name or weights_dir.parent.name
+    raw_emb_name = emb_dir.name
+    emb_parts = [p.upper() for p in raw_emb_name.split('_')]
+    embedding_method = " + ".join(emb_parts)
+    
+    title_suffix = f"[{train_name} - {embedding_method}]"
+    title_suffix = title_suffix.replace('_', r'\_')
+
+
+    # REORDER TARGETS (Regression First, then Classification)
     reg_list = []
     cls_list = []
 
     for t in initial_targets:
-        if t in df_global.columns:
-            vals = df_global[t]
+        if t in aligned_df.columns:
+            vals = aligned_df[t]
             if t not in CLASSIFICATION_TARGETS or pd.api.types.is_numeric_dtype(vals):
                 reg_list.append(t)
             else:
@@ -561,11 +615,13 @@ def main():
         target_results = [] # To store results for this target
         
         for mode in ['images', 'spectra', 'joint']:
-            if mode not in raw_data: continue
+            if mode not in aligned_embeddings: continue
             
             # Get Data
             try:
-                X, y, task_type, processor = get_task_data(raw_data, df_global, mode, target_col)
+                X, y, task_type, processor = get_task_data(
+                    aligned_embeddings, aligned_df, mode, target_col
+                )
                 output_dim = 1 if task_type == 'regression' else len(processor.classes_)
                 
                 # Logging valid objects
@@ -609,14 +665,14 @@ def main():
                     print(f" Done.")
                     
                     # Save Confusion Matrix
-                    if task_type == 'classification':
+                    if task_type == 'classification' and args.conf_matrix:
                         cm = confusion_matrix(true_vals, preds)
                         plt.figure(figsize=(6, 5))
                         sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
                                     xticklabels=processor.classes_, yticklabels=processor.classes_)
                         plt.title(f"CM: {target_col} ({mode} - {probe.upper()})")
                         plt.tight_layout()
-                        plt.savefig(os.path.join(out_dir, f"cm_{target_col}_{mode}_{probe}.png"))
+                        plt.savefig(save_dir / f"cm_{target_col}_{mode}_{probe}.png")
                         plt.close()
                         
                 except Exception as e:

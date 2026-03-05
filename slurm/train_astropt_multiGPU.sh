@@ -18,25 +18,27 @@
 mkdir -p logs
 
 #--- Environment configuration ---#
+NOW=$(date "+[%Y-%m-%d - %H:%M:%S]")
+
 echo "------------------------------------------------------"
-echo "Training AstroPT ($SLURM_JOB_ID) on node $SLURM_NODELIST"
+echo "Training AstroPT ($SLURM_JOB_ID) on node $SLURM_NODELIST - $NOW"
 echo "------------------------------------------------------"
 
 #--- DEFAULT VALUES ---#
 REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
 PYTHON_SCRIPT="scripts/$PYTHON_SCRIPT"
-OUT_DIR="logs/astropt_100M_arrow"
 DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
+TRAIN_DIR="logs/astropt_100M_arrow"
 TRAIN_NAME="New Train"
 TRAIN_DESC="New AstroPT Training"
 TRAIN_MODE="resume"
 CHECK_MODE="both"
 
 #--- ARGUMENT PARSING (FLAGS) ---#
-while getopts ":r:o:a:n:d:m:k:" opt; do
+while getopts ":r:t:a:n:d:m:k:" opt; do
   case $opt in
     r) REPO_ROOT="$OPTARG" ;;
-    o) OUT_DIR="$OPTARG" ;;
+    t) TRAIN_DIR="$OPTARG" ;;
     a) DATA_DIR="$OPTARG" ;;
     n) TRAIN_NAME="$OPTARG" ;;
     d) TRAIN_DESC="$OPTARG" ;;
@@ -47,7 +49,7 @@ while getopts ":r:o:a:n:d:m:k:" opt; do
 done
 
 # Absolute output path
-OUT_DIR=$(readlink -f "$OUT_DIR")
+TRAIN_DIR=$(readlink -f "$TRAIN_DIR")
 
 # Changing directory to run astropt
 echo "Changing directory to: $REPO_ROOT"
@@ -66,16 +68,16 @@ export OMP_NUM_THREADS=16
 
 # Running the training
 echo "Training AstroPT in DDP GPU:"
-echo "  OUT DIR:       $OUT_DIR"
 echo "  DATA DIR:      $DATA_DIR"
+echo "  TRAIN DIR:     $TRAIN_DIR"
 echo "  TRAIN NAME:    $TRAIN_NAME"
 echo "  TRAIN MODE:    $TRAIN_MODE"
 
 # Running Python Script with torch
 # Note: --max_run_hours is set slightly lower than SBATCH time to allow clean autosave
 torchrun --standalone --nproc_per_node=4 scripts/train_multimodal_arrow.py \
-    --out_dir "$OUT_DIR" \
     --data_dir "$DATA_DIR" \
+    --train_dir "$TRAIN_DIR" \
     --train_name "$TRAIN_NAME" \
     --train_description "$TRAIN_DESC" \
     --init_from "$TRAIN_MODE" \

@@ -13,13 +13,13 @@ Features:
 - Spectral analysis with Redshift correction.
 
 Author: Victor Alonso Rodriguez
-Date: January 2026
+Date: March 2026
 """
 
 import argparse
 import json
 import logging
-import os
+from pathlib import Path
 import sys
 from typing import Optional, Any
 
@@ -86,8 +86,9 @@ MAIN_LINES = {
 def parse_args() -> argparse.Namespace:
     """Parses command line arguments."""
     parser = argparse.ArgumentParser(description="AstroPT Visual Inspector")
-    parser.add_argument("--out_dir", type=str, required=True, help="Checkpoint directory")
+    parser.add_argument("--weights_dir", type=str, required=True, help="Directory containing training weights")
     parser.add_argument("--data_dir", type=str, required=True, help="Arrow data root directory")
+    parser.add_argument("--save_dir", type=str, required=True, help="Plot Saving Directory")
     parser.add_argument("--ckpt_name", type=str, default="ckpt_best.pt", help="Checkpoint filename")
     parser.add_argument("--target_ids", nargs="+", type=int, help="Specific Target IDs to plot")
     parser.add_argument("--num_plot", type=int, default=10, help="Number of random plots")
@@ -247,7 +248,7 @@ def plot_dashboard(
     spec_pred: Optional[np.ndarray],
     has_spectra: bool,
     wl_range: Optional[tuple],
-    out_dir: str,
+    save_dir: str | Path,
     filename: str
 ):
     """Encapsulates the dashboard visualization logic."""
@@ -294,7 +295,7 @@ def plot_dashboard(
             plot_spectral_lines(ax, start, end, z_val)
 
     # Save logic
-    save_path = os.path.join(out_dir, filename)
+    save_path = Path(save_dir) / filename
     plt.savefig(save_path, format='png', dpi=300, bbox_inches='tight')
     plt.close()
     logger.info(f" --> Saved dashboard: {save_path}\n")
@@ -304,9 +305,18 @@ def main():
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
+    # Required paths
+    weights_dir = Path(args.weights_dir)
+    save_dir = Path(args.save_dir) / "images_spectra_reconstructions"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    logger.info("Analysis Directories:")
+    logger.info(f" --> [Weights]:   {weights_dir}")
+    logger.info(f" --> [Saving]:    {save_dir}")
+    
     # Extract suffix from checkpoint for naming files
-    ckpt_filename = os.path.basename(args.ckpt_name)
-    name_no_ext = os.path.splitext(ckpt_filename)[0]
+    ckpt_filename = weights_dir / args.ckpt_name
+    name_no_ext = ckpt_filename.stem
     
     if '_' in name_no_ext:
         run_suffix = f"_{name_no_ext.split('_')[-1]}" 
@@ -316,20 +326,47 @@ def main():
     logger.info(f"Run Suffix identified: {run_suffix}")
     
     # Extract training run name for plot titles
-    config_path = os.path.join(args.out_dir, "config.json")
+    config_path = weights_dir / "config.json"
     json_name = None
-    if os.path.exists(config_path):
+    if config_path.is_file():
         try:
             with open(config_path, 'r') as f:
                 json_name = json.load(f).get("train_name", None)
         except Exception: pass 
-    train_name = args.train_name or json_name or os.path.basename(os.path.normpath(args.out_dir))
+    train_name = args.train_name or json_name or weights_dir.parent.name
+    
+    # Loading weights
+    ckpt_path = weights_dir / args.ckpt_name
+    
+    if not ckpt_path.is_file():
+        logger.error(f"Checkpoint not found: {ckpt_path}. Starting smart search.")
+
+        all_ckpts = list(weights_dir.glob("*.pt"))
+        if not all_ckpts:
+            logger.error(f"FATAL: No .pt file found in {weights_dir}")
+            sys.exit(1)
+
+        best_matches = [c for c in all_ckpts if "best" in c.name]
+        last_matches = [c for c in all_ckpts if "last" in c.name]
+        
+        if best_matches:
+            ckpt_path = sorted(best_matches, key=lambda x: x.stat().st_mtime, reverse=True)[0]
+            logger.info(f"Selected by priority [BEST]: {ckpt_path.name}")
+            
+        elif last_matches:
+            ckpt_path = sorted(last_matches, key=lambda x: x.stat().st_mtime, reverse=True)[0]
+            logger.info(f"Selected by priority [LAST]: {ckpt_path.name}")
+        
+        else:
+            ckpt_path = sorted(all_ckpts, key=lambda x: x.stat().st_mtime, reverse=True)[0]
+            logger.info(f"Selected by date [RECENT]: {ckpt_path.name}")
+
+    logger.info(f"Loading checkpoint: {ckpt_path}")
+    
     
     # Load Model
-    ckpt_path = os.path.join(args.out_dir, args.ckpt_name)
     try:
         model, config, registry, raw_config_dict = load_local_model(ckpt_path, device)
-        logger.info(f"Loaded model from {ckpt_path}")
     except Exception as e:
         logger.critical(f"Model load failed: {e}")
         sys.exit(1)
@@ -338,6 +375,7 @@ def main():
     
     # Arrow data directory
     data_dir = args.data_dir if args.data_dir else raw_config_dict.get('data_dir')
+    data_dir = Path(data_dir)
     assert data_dir is not None, "data_dir cannot be None. Check your config.json or --data_dir argument."
     
     # Retrieve Normalization Constants
@@ -542,10 +580,10 @@ def main():
         if not has_image and not has_spectra: continue
 
         plot_dashboard(
-            target_id=target_id, z_val=float(raw_record.get('redshift', 0.0)),
+            target_id=target_id, z_val=z_val,
             train_name=train_name, rgb_gt=rgb_gt, rgb_pred=rgb_pred, res_map=res_map,
             has_image=has_image, wave_ang=wave_ang, spec_gt=spec_gt, spec_pred=spec_pred,
-            has_spectra=has_spectra, wl_range=args.wl_range, out_dir=args.out_dir, filename=filename
+            has_spectra=has_spectra, wl_range=args.wl_range, save_dir=save_dir, filename=filename
         )
 
     logger.info("Done.")

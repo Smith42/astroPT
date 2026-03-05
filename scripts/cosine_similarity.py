@@ -15,11 +15,10 @@ Date: January 2026
 """
 
 import argparse
-import glob
 import json
 import logging
-import os
 import sys
+from pathlib import Path
 from typing import Tuple
 
 import matplotlib.pyplot as plt
@@ -74,12 +73,11 @@ def parse_args() -> argparse.Namespace:
     """Parses command line arguments."""
     parser = argparse.ArgumentParser(description="AstroPT Alignment Analyst")
     
-    parser.add_argument("--out_dir", type=str, required=True, help="Directory containing the checkpoint (e.g., logs/train_name)")
-    parser.add_argument("--emb_dir", type=str, required=True, 
-                        help="Directory containing the .npy files (e.g., embeddings_runX_ckptY)")
+    parser.add_argument("--weights_dir", type=str, required=True, help="Directory containing training weights")
+    parser.add_argument("--emb_dir", type=str, required=True, help="Directory containing the .npy files (e.g., embeddings_runX_ckptY)")
+    parser.add_argument("--save_dir", type=str, required=True, help="Plot Saving Directory")
     parser.add_argument("--device", type=str, default="cuda", help="Device for matrix operations")
-    parser.add_argument("--batch_size", type=int, default=1000, 
-                        help="Batch size for retrieval calculation (adjust based on GPU VRAM)")
+    parser.add_argument("--batch_size", type=int, default=1000, help="Batch size for retrieval calculation (adjust based on GPU VRAM)")
     parser.add_argument("--train_name", type=str, default=None, help="Custom title for the plot (defaults to folder name)")
     
     return parser.parse_args()
@@ -170,7 +168,13 @@ def compute_diagonal_stats(
         
     return np.concatenate(all_sims)
 
-def plot_histogram(sim_values: np.ndarray, out_dir: str, stats: dict, suffix: str = "", retrieval_stats: dict = None):
+def plot_histogram(
+        sim_values: np.ndarray, 
+        save_dir: str | Path, 
+        stats: dict, 
+        suffix: str = "", 
+        retrieval_stats: dict = None
+    ):
     """Generates the distribution plot."""
     logger.info("Generating plot...")
     plt.figure(figsize=(18, 6))
@@ -200,50 +204,53 @@ def plot_histogram(sim_values: np.ndarray, out_dir: str, stats: dict, suffix: st
                        verticalalignment='top', horizontalalignment='right', bbox=props, zorder=5)
 
     # Cutomizing the plot
-    plt.title(r"\textbf{Image-Spectrum Alignment Distribution}" + f"\n[{suffix}]", fontsize=16)
+    plt.title(r"\textbf{Image-Spectrum Alignment Distribution}" + f"\n{suffix}", fontsize=16)
     plt.xlabel(r"Cosine Similarity ($\cos\theta$)", fontsize=14)
     plt.ylabel("Count", fontsize=14)
     plt.legend(loc='upper left')
     plt.grid(True, alpha=0.3, zorder='1')
     
     # Saving the plot
-    plot_path = os.path.join(out_dir, "alignment_histogram.png")
+    plot_path = Path(save_dir) / "cosine_similarity_histogram.png"
     plt.savefig(plot_path, format='png', dpi=300, bbox_inches='tight')
-    logger.info(f"-> Plot saved to {plot_path}")
+    logger.info(f" --> Plot saved to {plot_path}")
 
 def main():
     args = parse_args()
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     
+    # Required paths
+    weights_dir = Path(args.weights_dir)
+    emb_dir = Path(args.emb_dir)
+    
     # Locate Files from .npy
-    img_path = os.path.join(args.emb_dir, "images.npy")
-    spec_path = os.path.join(args.emb_dir, "spectra.npy")
+    img_path = emb_dir / "images.npy"
+    spec_path = emb_dir / "spectra.npy"
     
     img_data = None
     spec_data = None
         
     # Load with Memmap 
-    if os.path.exists(img_path) and os.path.exists(spec_path):
-        logger.info(f"Found unpacked .npy files in {args.emb_dir}")
-        logger.info("-> Using Memory Mapping (Low RAM mode)")
+    if img_path.is_file() and spec_path.is_file():
+        logger.info(f"Found unpacked .npy files in {emb_dir}")
+        logger.info(" --> Using Memory Mapping (Low RAM mode)")
         img_data = np.load(img_path, mmap_mode='r')
         spec_data = np.load(spec_path, mmap_mode='r')
 
     # Fallback to .npz file
     else:
-        logger.warning(f"Memmap files (.npy) not found in {args.emb_dir}")
-        logger.info("-> Searching for compressed .npz fallback...")
+        logger.warning(f"Memmap files (.npy) not found in {emb_dir}")
+        logger.info(" --> Searching for compressed .npz fallback...")
         
-        npz_files = glob.glob(os.path.join(args.emb_dir, "*.npz"))
+        npz_files = list(emb_dir.glob("*.npz"))
         
         if not npz_files:
-            logger.error(f"CRITICAL: No .npy files AND no .npz files found in {args.emb_dir}")
+            logger.error(f"CRITICAL: No .npy files AND no .npz files found in {emb_dir}")
             sys.exit(1)
             
         # Taking the first file
         npz_target = npz_files[0]
-        logger.info(f"-> Loading backup archive: {os.path.basename(npz_target)}")
-        logger.warning("-> CAUTION: Loading fully into RAM (Legacy Mode).")
+        logger.warning(" --> CAUTION: Loading fully into RAM.")
         
         try:
             # Load file
@@ -307,32 +314,34 @@ def main():
         logger.info("-" * 40)
     
     # Saving plot
-    save_dir = args.out_dir if hasattr(args, 'out_dir') and args.out_dir else args.emb_dir
+    save_dir = args.save_dir if hasattr(args, 'weights_dir') and weights_dir else emb_dir
+    save_dir = Path(args.save_dir)
     stats = {'mean': mean_sim, 'median': median_sim}
     
     # TITLE LOGIC
-    config_path = os.path.join(save_dir, "config.json")
-    json_name = None
+    config_path = weights_dir / "config.json"
+    json_train_name = None
     
     # Reading config.json
-    if os.path.exists(config_path):
+    if config_path.is_file():
         try:
             with open(config_path, 'r') as f:
                 config = json.load(f)
-                json_name = config.get("train_name", None)
+                json_train_name = config.get("train_name", None)
         except Exception:
             pass 
 
     # Select ID: CLI > JSON > Folder
-    if args.train_name:
-        train_name = args.train_name
-    elif json_name:
-        train_name = json_name
-    else:
-        train_name = os.path.basename(os.path.normpath(save_dir))
+    train_name = args.train_name or json_train_name or weights_dir.parent.name
+    raw_emb_name = save_dir.name
+    emb_parts = [p.upper() for p in raw_emb_name.split('_')]
+    embedding_method = " + ".join(emb_parts)
+    
+    title_suffix = f"[{train_name} - {embedding_method}]"
+    title_suffix = title_suffix.replace('_', r'\_')
     
     # Plotting the histogram
-    plot_histogram(self_sims, save_dir, stats, suffix=train_name, retrieval_stats=retrieval_stats)
+    plot_histogram(self_sims, save_dir, stats, suffix=title_suffix, retrieval_stats=retrieval_stats)
 
 if __name__ == "__main__":
     main()

@@ -17,41 +17,33 @@
 #--- DEFAULT VALUES ---#
 REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
 PYTHON_SCRIPT="scripts/plot_umaps.py"
-OUT_DIR=""
 DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
 META_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.1.fits"
 
 #--- ARGUMENT PARSING (FLAGS) ---#
-while getopts ":r:e:o:f:" opt; do
+while getopts ":r:w:s:e:a:f:" opt; do
   case $opt in
     r) REPO_ROOT="$OPTARG" ;;
+    w) WEIGHTS_DIR="$OPTARG" ;;
+    s) SAVE_DIR="$OPTARG" ;;
     e) EMB_DIR="$OPTARG" ;;
-    o) OUT_DIR="$OPTARG" ;;
+    a) DATA_DIR="$OPTARG" ;;
     f) META_PATH="$OPTARG" ;;
     \?) echo "[ERROR] Invalid option -$OPTARG" >&2; exit 1 ;;
   esac
 done
 
-# Absolute output path
-OUT_DIR=$(readlink -f "$OUT_DIR")
-
-#--- EMBEDDING DETECTION LOGIC ---#
-if [ -z "$EMB_DIR" ]; then
-    echo "[INFO] EMB_DIR not set. Searching for latest embeddings in $OUT_DIR..."
-    EMB_DIR=$(ls -td "$OUT_DIR"/embeddings_* 2>/dev/null | head -n 1)
-fi
-
-if [ -z "$EMB_DIR" ]; then
-    echo "[ERROR]: No 'embeddings_*' directory found in $OUT_DIR"
-    echo "[WARNING]: Run extract_embeddings.sh first"
-    #exit 1
-fi
-
+# Absolute paths
+WEIGHTS_DIR=$(readlink -f "$WEIGHTS_DIR")
+DATA_DIR=$(readlink -f "$DATA_DIR")
+META_PATH=$(readlink -f "$META_PATH")
 EMB_DIR=$(readlink -f "$EMB_DIR")
 
 #--- ENVIRONMENT SETUP ---#
+NOW=$(date "+[%Y-%m-%d - %H:%M:%S]")
+
 echo "-----------------------------------------------"
-echo "Starting Plotting UMAPS Job $SLURM_JOB_ID"
+echo "Starting Plotting UMAPS Job $SLURM_JOB_ID - $NOW"
 echo "-----------------------------------------------"
 
 # 1. Change directory
@@ -64,18 +56,40 @@ source .venv/bin/activate
 # 3. Activating LaTeX (Required for plots)
 export PATH="$HOME/.TinyTeX/bin/x86_64-linux:$PATH"
 
+#--- EMBEDDING DETECTION LOGIC ---#
+DETECTED_EMB=$(ls -td "${EMB_DIR}"/*/ 2>/dev/null | head -n 1)
+DETECTED_EMB="${DETECTED_EMB%/}"
+DETECTED_EMB=$(readlink -f "$DETECTED_EMB")
+
+if [ -z "$DETECTED_EMB" ]; then
+    echo "[ERROR]: No sub-directory found in $EMB_DIR"
+    echo "[WARNING]: Run extract_embeddings.sh first"
+    exit 1
+fi
+
+if [ -z "$SAVE_DIR" ]; then
+    SAVE_DIR="$DETECTED_EMB"
+fi
+SAVE_DIR=$(readlink -f "$SAVE_DIR")
+
+
 #--- EXECUTION ---#
 echo "Plotting UMAPS Configuration:"
-echo "   OUT DIR:       $EMB_DIR"
-echo "   METADATA:      $META_PATH"
-echo "   EMBEDDINGS:    $EMB_DIR"
+echo "    METADATA:       $META_PATH"
+echo "    DATA DIR:       $DATA_DIR" 
+echo "    WEIGHTS DIR:    $WEIGHTS_DIR"
+echo "    EMB DIR:        $DETECTED_EMB"
+echo "    SAVE DIR:       $SAVE_DIR (Auto-Detected)"
+
+
 
 # Run Python Script
 python "$PYTHON_SCRIPT" \
-    --out_dir "$EMB_DIR" \
-    --data_dir "$DATA_DIR" \
     --metadata_path "$META_PATH" \
-    --emb_dir "$EMB_DIR" \
+    --weights_dir "$WEIGHTS_DIR" \
+    --emb_dir "$DETECTED_EMB" \
+    --save_dir "$SAVE_DIR" \
+    --data_dir "$DATA_DIR" \
     --plot_spectral \
     --plot_visual \
     --plot_standard

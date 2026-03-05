@@ -15,7 +15,19 @@ CONFIG_ORDER = [
     'joint MLP'
 ]
 
-def load_and_merge_data(filepaths: List[str], test_names: Optional[List[str]] = None) -> pd.DataFrame:
+def parse_args() -> argparse.Namespace:
+
+    parser = argparse.ArgumentParser(description="Generate performance dashboards for downstream tasks.")
+    
+    parser.add_argument("--save_dir", type=str, required=True, help="Plot Saving Directory")
+    parser.add_argument('--save_name', default="donwstream_dashboard", help="Saving optional name")
+    parser.add_argument('--csv_path', nargs='+', required=True, help="Paths to the CSV files to compare.")
+    parser.add_argument('--names', nargs='+', help="Names of the tests for the legend (must match number of files).")
+    parser.add_argument('--targets', nargs='+', required=True, help="List of targets to plot (e.g., Z SPECTYPE HALPHA_FLUX).")
+    
+    return parser.parse_args()
+
+def load_and_merge_data(filepaths: List[str | Path], test_names: Optional[List[str]] = None) -> pd.DataFrame:
     """
     Loads multiple CSV files, assigns a test name to each, cleans empty rows, and merges them.
 
@@ -31,6 +43,7 @@ def load_and_merge_data(filepaths: List[str], test_names: Optional[List[str]] = 
 
     df_list = []
     for filepath, name in zip(filepaths, test_names):
+        filepath = Path(filepath)
         try:
             df = pd.read_csv(filepath)
             
@@ -49,7 +62,7 @@ def load_and_merge_data(filepaths: List[str], test_names: Optional[List[str]] = 
 
     return pd.concat(df_list, ignore_index=True)
 
-def generate_dashboard(df: pd.DataFrame, task_type: str, targets: List[str], output_dir: str, save_name: str) -> None:
+def generate_dashboard(df: pd.DataFrame, task_type: str, targets: List[str], save_dir: str, save_name: str) -> None:
     """
     Generates and saves a matplotlib dashboard for a specific task type.
     Dynamically drops empty metric columns based on the task type.
@@ -148,30 +161,27 @@ def generate_dashboard(df: pd.DataFrame, task_type: str, targets: List[str], out
                fontsize=12, bbox_to_anchor=(0.5, legend_y), frameon=True)
     
     # Save the figure
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
     prefix = save_name or "downstream_dashboard"
     save_name_dash = f"{prefix}_{task_type}.png"
-    out_path = Path(output_dir) / save_name_dash
-    plt.savefig(out_path, dpi=300, bbox_inches='tight')
+    save_path = Path(save_dir) / save_name_dash
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
     
-    print(f"[INFO] {task_type.capitalize()} Dashboard saved successfully at: {out_path}")
+    print(f"[INFO] {task_type.capitalize()} Dashboard saved successfully at: {save_dir}")
 
 def main():
-    """Main execution function to parse arguments and trigger plotting."""
-    parser = argparse.ArgumentParser(description="Generate performance dashboards for downstream tasks.")
     
-    parser.add_argument('--files', nargs='+', required=True, help="Paths to the CSV files to compare.")
-    parser.add_argument('--names', nargs='+', help="Names of the tests for the legend (must match number of files).")
-    parser.add_argument('--targets', nargs='+', required=True, help="List of targets to plot (e.g., Z SPECTYPE HALPHA_FLUX).")
-    parser.add_argument('--out_dir', default='./plots', help="Output directory for the generated images.")
-    parser.add_argument('--save_name', default=None, help="Saving optional name")
+    args = parse_args()
 
-    args = parser.parse_args()
+    save_dir = Path(args.save_dir) / "downstream_tasks"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    csv_paths_list = [Path(p) for p in args.csv_path]
 
     # Load Data
     try:
-        df = load_and_merge_data(args.files, args.names)
+        df = load_and_merge_data(csv_paths_list, args.names)
     except Exception as e:
         print(f"[FATAL ERROR] Failed to load data: {e}")
         return
@@ -190,8 +200,8 @@ def main():
         print(f"[WARNING] The following requested targets were not found in the data: {missing_targets}")
 
     # Generate Dashboards independently
-    generate_dashboard(df, 'regression', regression_targets, args.out_dir, args.save_name)
-    generate_dashboard(df, 'classification', classification_targets, args.out_dir, args.save_name)
+    generate_dashboard(df, 'regression', regression_targets, save_dir, args.save_name)
+    generate_dashboard(df, 'classification', classification_targets, save_dir, args.save_name)
 
 if __name__ == "__main__":
     main()

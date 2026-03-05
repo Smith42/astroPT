@@ -25,12 +25,15 @@ source .venv/bin/activate
 echo "Running Test: $T_NAME"
 
 python3 scripts/train_multimodal_arrow.py \
+    --data_dir "$DATA_DIR" \
     --train_name "$T_NAME" \
     --train_description "$T_DESC" \
-    --data_dir "$DATA_DIR" \
     --init_from "scratch" \
-    --loss_type "l1" \
-    --checkpoint_save_type "min" \
+    --loss_type "mae" \
+    --eval_interval 100 \
+    --log_interval 10 \
+    --checkpoint_save_type "all" \
+    --checkpoint_interval 100 \
     --max_run_hours "00:10:00" \
     --no-compile 
 

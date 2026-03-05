@@ -16,23 +16,29 @@
 
 #--- DEFAULT VALUES ---#
 REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
-OUT_DIR=""
 
 #--- ARGUMENT PARSING (FLAGS) ---#
-while getopts ":r:o:s:" opt; do
+while getopts ":r:t:x:" opt; do
   case $opt in
     r) REPO_ROOT="$OPTARG" ;;
-    o) OUT_DIR="$OPTARG" ;;
-    s) SUFFIX="$OPTARG" ;;
+    t) TRAIN_DIR="$OPTARG" ;;
+    x) SUFFIX="$OPTARG" ;;
     \?) echo "[ERROR] Invalid option -$OPTARG" >&2; exit 1 ;;
   esac
 done
 
 # Absolute output path
-OUT_DIR=$(readlink -f "$OUT_DIR")
+TRAIN_DIR=$(readlink -f "$OUT_DIR")
+
+#--- ENVIRONMENT SETUP ---#
+NOW=$(date "+[%Y-%m-%d - %H:%M:%S]")
+
+echo "-----------------------------------------------"
+echo "Workflow Controller Job $SLURM_JOB_ID - $NOW"
+echo "-----------------------------------------------"
 
 # Checking if .improved exists
-if [ ! -f "$OUT_DIR/.improved" ]; then
+if [ ! -f "$TRAIN_DIR/.improved" ]; then
     echo "[CRITICAL]: No detected improvements in $OUT_DIR"
     echo "[ACTION]: Cancelling dependent jobs for suffix: $SUFFIX"
 
@@ -42,10 +48,11 @@ if [ ! -f "$OUT_DIR/.improved" ]; then
         "Cos_Sim${SUFFIX}"
         "Plot_Umaps${SUFFIX}"
         "Probing_Tasks${SUFFIX}"
+        "Probing_Tasks_Dash${SUFFIX}"
     )
 
     for JOB in "${JOBS_TO_KILL[@]}"; do
-        echo " -> Cancelling: $JOB"
+        echo " --> Cancelling: $JOB"
         scancel --name="$JOB" --user=$USER
     done
 

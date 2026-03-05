@@ -15,15 +15,15 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 import gc
-
-import joblib
 import numpy as np
+from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from typing import Tuple
+
 
 from astropt.euclid_desi_arrow_dataloader import EuclidDESIDatasetArrow
 from astropt.model_utils import load_local_model
@@ -43,9 +43,10 @@ def parse_args() -> argparse.Namespace:
     """Parses command line arguments."""
     parser = argparse.ArgumentParser(description="AstroPT Production Embedding Extractor")
     
-    parser.add_argument("--out_dir", type=str, required=True, help="Directory containing the checkpoint (e.g., logs/run_name)")
+    parser.add_argument("--weights_dir", type=str, required=True, help="Directory containing training weights")
+    parser.add_argument("--data_dir", type=str, required=True, help="Arrow data root directory")
+    parser.add_argument("--save_dir", type=str, required=True, help="Plot Saving Directory")
     parser.add_argument("--ckpt_name", type=str, default="ckpt_best.pt", help="Checkpoint filename")
-    parser.add_argument("--data_dir", type=str, default=None, help="Override data directory if needed")
     parser.add_argument("--batch_size", type=int, default=64, help="Inference batch size")
     parser.add_argument("--num_workers", type=int, default=8, help="DataLoader workers")
     parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
@@ -92,10 +93,16 @@ def apply_pooling(tensor: torch.Tensor,
     else:
         raise ValueError(f"Invalid pooling method '{method}'.")
 
-def apply_pca_to_memmap(file_path, original_shape, n_components, batch_size=1024):
+def apply_pca_to_memmap(
+        file_path: str | Path, 
+        original_shape: Tuple, 
+        n_components: int = 0, 
+        batch_size: int = 1024
+    ) -> Path:
     """
     Applying PCA to memmaps files
     """
+    file_path = Path(file_path)
     logger.info(f"Starting PCA {file_path} (Target: {n_components} dims)")
     
     ipca = IncrementalPCA(n_components=n_components)
@@ -105,7 +112,7 @@ def apply_pca_to_memmap(file_path, original_shape, n_components, batch_size=1024
         chunk = arr_mmap[i:i + batch_size]
         ipca.partial_fit(chunk)
     
-    pca_path = file_path.replace(".npy", f"_pca{n_components}.npy")
+    pca_path = file_path.with_name(f"{file_path.stem}_pca{n_components}.npy")
     new_mmap = np.lib.format.open_memmap(
         pca_path, mode='w+', dtype='float32', shape=(original_shape[0], n_components)
     )
@@ -118,48 +125,68 @@ def apply_pca_to_memmap(file_path, original_shape, n_components, batch_size=1024
     logger.info(f"PCA completed. New file: {pca_path}")
     return pca_path
 
-def get_output_folder_name(
-        out_dir: str, 
-        ckpt_name: str, 
-        pool_name: str, 
-        pca_dim: int
-    ) -> str:
-    """Generates the folder name: embeddings_{parent_suffix}_{ckpt_suffix}"""
-    # Get directory suffix
-    parent_suffix = os.path.basename(os.path.normpath(out_dir))
-    
-    # Get Checkpoint Suffix
+def get_output_folder_name(ckpt_name: str, pool_name: str, pca_dim: int) -> Path:
+    """Generates a clean subfolder name: ckpt_pool_pca"""
     ckpt_suffix = ckpt_name.replace(".pt", "").replace("ckpt_", "")
     
+    name = f"{ckpt_suffix}_{pool_name}"
     if pca_dim > 0:
-        folder_name = f"embeddings_{parent_suffix}_{ckpt_suffix}_{pool_name}_pca{pca_dim}"
-    else:
-        folder_name = f"embeddings_{parent_suffix}_{ckpt_suffix}_{pool_name}"
+        name += f"_pca{pca_dim}"
         
-    return folder_name
+    return Path(name)
 
 def main():
     args = parse_args()
     
     # Load Model
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    ckpt_path = os.path.join(args.out_dir, args.ckpt_name)
     
-    if not os.path.exists(ckpt_path):
-        logger.error(f"Checkpoint not found: {ckpt_path}")
-        sys.exit(1)
+    # Required paths
+    weights_dir = Path(args.weights_dir)
+    save_dir = Path(args.save_dir)
+    
+    logger.info("Analysis Directories:")
+    logger.info(f" --> [Weights]:   {weights_dir}")
+    logger.info(f" --> [Saving]:    {save_dir}")
+    
+    # Loading weights
+    ckpt_path = weights_dir / args.ckpt_name
+    
+    if not ckpt_path.is_file():
+        logger.error(f"Checkpoint not found: {ckpt_path}. Starting smart search.")
+
+        all_ckpts = list(weights_dir.glob("*.pt"))
+        if not all_ckpts:
+            logger.error(f"FATAL: No .pt file found in {weights_dir}")
+            sys.exit(1)
+
+        best_matches = [c for c in all_ckpts if "best" in c.name]
+        last_matches = [c for c in all_ckpts if "last" in c.name]
+        
+        if best_matches:
+            ckpt_path = sorted(best_matches, key=lambda x: x.stat().st_mtime, reverse=True)[0]
+            logger.info(f"Selected by priority [BEST]: {ckpt_path.name}")
+            
+        elif last_matches:
+            ckpt_path = sorted(last_matches, key=lambda x: x.stat().st_mtime, reverse=True)[0]
+            logger.info(f"Selected by priority [LAST]: {ckpt_path.name}")
+        
+        else:
+            ckpt_path = sorted(all_ckpts, key=lambda x: x.stat().st_mtime, reverse=True)[0]
+            logger.info(f"Selected by date [RECENT]: {ckpt_path.name}")
 
     logger.info(f"Loading checkpoint: {ckpt_path}")
     
     try:
         model, config, registry, raw_config_dict = load_local_model(ckpt_path, device)
-        model.eval() # Enforcement
+        model.eval()
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
         sys.exit(1)
 
     # Arrow data directory
     data_dir = args.data_dir if args.data_dir else raw_config_dict.get('data_dir')
+    data_dir = Path(data_dir)
     assert data_dir is not None, "data_dir cannot be None. Check your config.json or --data_dir argument."
     
     # Retrieve Normalization Constants
@@ -211,28 +238,29 @@ def main():
     else:
         folder_pool_name = args.pool_method_img
     
-    folder_name = get_output_folder_name(args.out_dir, args.ckpt_name, folder_pool_name, args.pca_dim)
-    save_path = os.path.join(args.out_dir, folder_name)
-    os.makedirs(save_path, exist_ok=True)
-    logger.info(f"Output directory created: {save_path}")
+    # Specific embeddings folder
+    folder_name = get_output_folder_name(args.ckpt_name, folder_pool_name, args.pca_dim)
+    save_path = save_dir / folder_name
+    save_path.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Embeddings directory created: {save_path}")
 
     # Initialize Memmap files
     
     # Images
     mmap_images = np.lib.format.open_memmap(
-        os.path.join(save_path, 'images.npy'), mode='w+', dtype='float32', shape=(total_samples, emb_dim)
+        save_path / 'images.npy', mode='w+', dtype='float32', shape=(total_samples, emb_dim)
     )
     # Spectra
     mmap_spectra = np.lib.format.open_memmap(
-        os.path.join(save_path, 'spectra.npy'), mode='w+', dtype='float32', shape=(total_samples, emb_dim)
+        save_path / 'spectra.npy', mode='w+', dtype='float32', shape=(total_samples, emb_dim)
     )
     # Joint
     mmap_joint = np.lib.format.open_memmap(
-        os.path.join(save_path, 'joint.npy'), mode='w+', dtype='float32', shape=(total_samples, emb_dim)
+        save_path / 'joint.npy', mode='w+', dtype='float32', shape=(total_samples, emb_dim)
     )
     # Target IDs
     mmap_ids = np.lib.format.open_memmap(
-        os.path.join(save_path, 'ids.npy'), mode='w+', dtype='int64', shape=(total_samples,)
+        save_path / 'ids.npy', mode='w+', dtype='int64', shape=(total_samples,)
     )
 
     # Extraction loop
@@ -319,9 +347,10 @@ def main():
     logger.info("Generating portable .npz file from disk data...")
     
     final_paths = {
-        'images': os.path.join(save_path, 'images.npy'),
-        'spectra': os.path.join(save_path, 'spectra.npy'),
-        'joint': os.path.join(save_path, 'joint.npy')
+        'images': save_path / "images.npy",
+        'spectra': save_path / "spectra.npy",
+        'joint': save_path / "joint.npy",
+        'ids': save_path / "ids.npy"
     }
 
     if args.pca_dim > 0:
@@ -335,7 +364,7 @@ def main():
             )
             
     logger.info("Generating portable .npz file...")
-    npz_path = os.path.join(save_path, "embeddings_all.npz")
+    npz_path = save_path / "embeddings_all.npz"
     
     try:
         
@@ -344,7 +373,7 @@ def main():
             images=np.load(final_paths['images'], mmap_mode='r'),
             spectra=np.load(final_paths['spectra'], mmap_mode='r'),
             joint=np.load(final_paths['joint'], mmap_mode='r'),
-            targetid=np.load(os.path.join(save_path, 'ids.npy'), mmap_mode='r')
+            targetid=np.load(final_paths['ids'], mmap_mode='r')
         )
         logger.info(f"Compressed archive created: {npz_path}")
         

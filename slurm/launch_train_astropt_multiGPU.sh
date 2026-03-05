@@ -20,18 +20,18 @@ EXT_EMBD_SCRIPT="$SCRIPT_DIR/extract_embeddings.sh"
 COS_SIM_SCRIPT="$SCRIPT_DIR/cosine_similarity.sh"
 UMAPS_SCRIPT="$SCRIPT_DIR/plot_umaps.sh"
 PROBING_SCRIPT="$SCRIPT_DIR/probing_downstream.sh"
+PROBING_DASH_SCRIPT="$SCRIPT_DIR/probing_downstream_dashboard.sh"
 WORKFLOW_SCRIPT="$SCRIPT_DIR/workflow_controller.sh"
 
 # ARGUMENTS DEFAULT VALUES
 TRAIN_NAME="New Train"              # Training name
 TRAIN_DESC="New AstroPT Training"   # Training description
-OUT_DIR=""                          # Output directory
 
-while getopts ":n:d:o:h" opt; do
+while getopts ":n:d:t:h" opt; do
   case $opt in
     n) TRAIN_NAME="$OPTARG" ;;
     d) TRAIN_DESC="$OPTARG" ;;
-    o) OUT_DIR="$OPTARG" ;;
+    t) TRAIN_DIR="$OPTARG" ;;
     h) 
        echo "Usage: $0 [-n 'Name'] [-d 'Description'] [-o 'output_path/']"
        exit 0 
@@ -48,14 +48,18 @@ SUFIX_NAME=$(echo "$TRAIN_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/
 TRAIN_DATE="$(date +%Y%m%d)"
 DEFAULT_PATH="$REPO_ROOT/logs/astropt_100M_250K_arrow_${TRAIN_DATE}_${SUFIX_NAME}"
 
-if [ -z "$OUT_DIR" ]; then
-    OUT_DIR="$DEFAULT_PATH"
+if [ -z "$TRAIN_DIR" ]; then
+    TRAIN_DIR="$DEFAULT_PATH"
 fi
 
-# Absolute output path
-OUT_DIR=$(readlink -f "$OUT_DIR")
+# Absolute output paths
+TRAIN_DIR=$(readlink -f "$TRAIN_DIR")
+WEIGHTS_DIR="$TRAIN_DIR/weights"
+LOGS_DIR="$TRAIN_DIR/logs"
+PLOTS_DIR="$TRAIN_DIR/plots"
+EMB_DIR="$TRAIN_DIR/embeddings"
 
-echo "Target Output Directory: $OUT_DIR"
+echo "Target Training Directory: $TRAIN_DIR"
 
 # LAUNCH ANALYSIS FUNCTION
 launch_analysis() {
@@ -71,9 +75,11 @@ launch_analysis() {
                 --job-name="Plot_Metrics$JOB_SUFFIX" \
                 "$PLOT_MET_SCRIPT" \
                 -r "$REPO_ROOT" \
-                -o "$OUT_DIR"
+                -w "$WEIGHTS_DIR" \
+                -l "$LOGS_DIR" \
+                -s "$PLOTS_DIR"
             )
-    echo "    [Metric]  Job sent. ID: $J_MET (Depends on Train: any)"
+    echo "    [Metric]  Job sent.       ID: $J_MET (Depends on Train: any)"
 
     # Workflow controller
     J_WOR=$(sbatch --parsable \
@@ -81,21 +87,22 @@ launch_analysis() {
                 --job-name="Workflow_Controller$JOB_SUFFIX" \
                 "$WORKFLOW_SCRIPT" \
                 -r "$REPO_ROOT" \
-                -o "$OUT_DIR" \
-                -s "$JOB_SUFFIX"
+                -t "$TRAIN_DIR" \
+                -x "$JOB_SUFFIX"
             )
-    echo "    [Work]    Job sent. ID: $J_WOR (Depends on Train: any)"
+    echo "    [Work]    Job sent.       ID: $J_WOR (Depends on Train: any)"
 
-    # Plotting Images
+    # Plotting Images and Spectra
     local J_IMG=$(sbatch --parsable \
                 --dependency=afterok:$J_WOR \
                 --job-name="Plot_Im_Sp$JOB_SUFFIX" \
                 "$PLOT_IMG_SCRIPT" \
                 -r "$REPO_ROOT" \
-                -o "$OUT_DIR" \
+                -w "$WEIGHTS_DIR" \
+                -s "$PLOTS_DIR" \
                 -a "$DATA_DIR"
             )
-    echo "    [ImgSpec] Job sent. ID: $J_IMG (Depends on Train: any)"
+    echo "    [ImgSpec] Job sent.       ID: $J_IMG (Depends on Train: any)"
 
     # Extract Embeddings 
     local J_EMB=$(sbatch --parsable \
@@ -103,10 +110,11 @@ launch_analysis() {
                 --job-name="Extract_Embed$JOB_SUFFIX" \
                 "$EXT_EMBD_SCRIPT" \
                 -r "$REPO_ROOT" \
-                -o "$OUT_DIR" \
+                -w "$WEIGHTS_DIR" \
+                -s "$EMB_DIR" \
                 -a "$DATA_DIR"
             )
-    echo "    [Embeds]  Job sent. ID: $J_EMB (Depends on Train: any)"
+    echo "    [Embeds]  Job sent.       ID: $J_EMB (Depends on Train: any)"
 
     # Cosine Similarity
     local J_COS=$(sbatch --parsable \
@@ -114,9 +122,10 @@ launch_analysis() {
                 --job-name="Cos_Sim$JOB_SUFFIX" \
                 "$COS_SIM_SCRIPT" \
                 -r "$REPO_ROOT" \
-                -o "$OUT_DIR"
+                -w "$WEIGHTS_DIR" \
+                -e "$EMB_DIR"
             )
-    echo "    [CosSim]  Job sent. ID: $J_COS (Depends on Embeds: ok)"
+    echo "    [CosSim]  Job sent.       ID: $J_COS (Depends on Embeds: ok)"
 
     # UMAPS
     local J_UMAP=$(sbatch --parsable \
@@ -124,10 +133,12 @@ launch_analysis() {
                 --job-name="Plot_Umaps$JOB_SUFFIX" \
                 "$UMAPS_SCRIPT" \
                 -r "$REPO_ROOT" \
-                -o "$OUT_DIR" \
+                -w "$WEIGHTS_DIR" \
+                -e "$EMB_DIR" \
+                -a "$DATA_DIR" \
                 -f "$META_PATH"
             )
-    echo "    [UMAPS]   Job sent. ID: $J_UMAP (Depends on Embeds: ok)"
+    echo "    [UMAPS]   Job sent.       ID: $J_UMAP (Depends on Embeds: ok)"
 
     # PROBING DOWNSTREAM TASKS
     local J_PROB=$(sbatch --parsable \
@@ -135,13 +146,23 @@ launch_analysis() {
                 --job-name="Probing_Tasks$JOB_SUFFIX" \
                 "$PROBING_SCRIPT" \
                 -r "$REPO_ROOT" \
-                -o "$OUT_DIR" \
+                -w "$WEIGHTS_DIR" \
+                -e "$EMB_DIR" \
                 -f "$META_PATH"
             )
-    echo "    [PROBING] Job sent. ID: $J_PROB (Depends on Embeds: ok)"
+    echo "    [PROBING] Job sent.       ID: $J_PROB (Depends on Embeds: ok)"
+
+    # PROBING DOWNSTREAM TASKS DASHBOARD
+    local J_PROB_DASH=$(sbatch --parsable \
+                --dependency=afterok:$J_PROB \
+                --job-name="Probing_Tasks_Dash$JOB_SUFFIX" \
+                "$PROBING_DASH_SCRIPT" \
+                -r "$REPO_ROOT" \
+                -e "$EMB_DIR"
+            )
+    echo "    [PROB DASH] Job sent.     ID: $J_PROB_DASH (Depends on Probing: ok)"
     
-    echo "--> Analysis Batch Sent."
-    echo ""
+    echo " --> Analysis Batch Sent."
 }
 
 # PART 1 - TRAIN FROM SCRATCH
@@ -152,7 +173,7 @@ JOB_TRAIN_1=$(sbatch --parsable \
     --job-name="Train_AstroPT_DDP$JOB_SUFFIX" \
     "$TRAIN_SCRIPT" \
     -r "$REPO_ROOT" \
-    -o "$OUT_DIR" \
+    -t "$TRAIN_DIR" \
     -a "$DATA_DIR" \
     -n "$TRAIN_NAME" \
     -d "$TRAIN_DESC" \
@@ -173,7 +194,7 @@ JOB_TRAIN_2=$(sbatch --parsable \
     --job-name="Train_AstroPT_DDP$JOB_SUFFIX" \
     "$TRAIN_SCRIPT" \
     -r "$REPO_ROOT" \
-    -o "$OUT_DIR" \
+    -t "$TRAIN_DIR" \
     -a "$DATA_DIR" \
     -n "$TRAIN_NAME" \
     -d "$TRAIN_DESC" \

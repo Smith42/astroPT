@@ -96,14 +96,16 @@ def find_outliers(embeddings: np.ndarray, contamination: float) -> Tuple[np.ndar
 
 
 def make_rgb(image_tensor: np.ndarray) -> np.ndarray:
-    """Helper to create RGB from tensor (4, H, W) -> R=H, G=J, B=VIS"""
+    """Helper to create RGB from tensor (4, H, W) -> R=H, G=(J+Y)/2, B=VIS"""
     # Assuming standard order: 0=VIS, 1=H, 2=J, 3=Y (Check your dataloader!)
     # Based on previous scripts: 
     vis = image_tensor[0]
     h = image_tensor[1]
     j = image_tensor[2]
+    y = image_tensor[3] if image_tensor.shape[0] > 3 else j
     
-    rgb = np.stack([h, j, vis], axis=-1)
+    green = (j + y) / 2.0
+    rgb = np.stack([h, green, vis], axis=-1)
     
     # Robust Norm
     for i in range(3):

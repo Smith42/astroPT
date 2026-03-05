@@ -142,9 +142,12 @@ def unpatchify_image(patch_sequence: np.ndarray, mod_config: Optional[Any] = Non
     return raster_patches.reshape(h*w, p1, p2, c).reshape(h, w, p1, p2, c).transpose(0, 2, 1, 3, 4).reshape(h*p1, w*p2, c).transpose(2, 0, 1)
 
 def make_rgb(image_tensor: np.ndarray) -> np.ndarray:
-    """Creates RGB from (4, H, W) tensor using H, J, VIS bands."""
+    """Creates RGB from (4, H, W) tensor using H, (J+Y)/2, VIS bands."""
     vis, h, j = image_tensor[0], image_tensor[1], image_tensor[2]
-    rgb = np.stack([h, j, vis], axis=-1)
+    y = image_tensor[3] if image_tensor.shape[0] > 3 else j
+    
+    green = (j + y) / 2.0
+    rgb = np.stack([h, green, vis], axis=-1)
     
     for i in range(3):
         ch = rgb[:, :, i]
@@ -265,7 +268,7 @@ def main():
         
         # Inference
         with torch.no_grad():
-            with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+            with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16): # type: ignore
                 outputs, _ = model(X)
 
         # Get Ground Truth (Unmasked) from batch (CPU)

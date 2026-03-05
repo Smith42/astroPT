@@ -17,25 +17,29 @@
 #--- DEFAULT VALUES ---#
 REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
 PYTHON_SCRIPT="scripts/plot_images_spectra.py"
-OUT_DIR=""
 DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
 
 #--- ARGUMENT PARSING (FLAGS) ---#
-while getopts ":r:o:a:" opt; do
+while getopts ":r:w:s:a:" opt; do
   case $opt in
     r) REPO_ROOT="$OPTARG" ;;
-    o) OUT_DIR="$OPTARG" ;;
+    w) WEIGHTS_DIR="$OPTARG" ;;
+    s) SAVE_DIR="$OPTARG" ;;
     a) DATA_DIR="$OPTARG" ;;
     \?) echo "[ERROR] Invalid option -$OPTARG" >&2; exit 1 ;;
   esac
 done
 
 # Absolute output path
-OUT_DIR=$(readlink -f "$OUT_DIR")
+WEIGHTS_DIR=$(readlink -f "$WEIGHTS_DIR")
+SAVE_DIR=$(readlink -f "$SAVE_DIR")
+DATA_DIR=$(readlink -f "$DATA_DIR")
 
 #--- ENVIRONMENT SETUP ---#
+NOW=$(date "+[%Y-%m-%d - %H:%M:%S]")
+
 echo "-----------------------------------------------"
-echo "Plotting Images and Spectra $SLURM_JOB_ID"
+echo "Plotting Images and Spectra $SLURM_JOB_ID - $NOW"
 echo "-----------------------------------------------"
 
 # 1. Change directory
@@ -50,13 +54,15 @@ export PATH="$HOME/.TinyTeX/bin/x86_64-linux:$PATH"
 
 #--- EXECUTION ---#
 echo "Plotting Images and Spectra:"
-echo "   OUT DIR:    $OUT_DIR"
-echo "   DATA DIR:   $DATA_DIR"
+echo "    WEIGHTS DIR:  $WEIGHTS_DIR"
+echo "    DATA DIR:     $DATA_DIR" 
+echo "    SAVE DIR:     $SAVE_DIR"
 
 # Run Python Script
 python "$PYTHON_SCRIPT" \
-    --out_dir "$OUT_DIR" \
+    --weights_dir "$WEIGHTS_DIR" \
     --data_dir "$DATA_DIR" \
+    --save_dir "$SAVE_DIR" \
     --num_plot 25 \
     --target_ids \
         39627061836389042 \
@@ -76,7 +82,8 @@ python "$PYTHON_SCRIPT" \
         39089837394909544 \
         39633478949537029 \
         39633312192397870 \
-        39633414239814702
+        39633414239814702 \
+        39633493688322559
 
 echo "-----------------------------------------------"
 echo "Plotting Images and Spectra Finished"

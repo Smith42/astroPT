@@ -17,24 +17,30 @@
 #--- DEFAULT VALUES ---#
 REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
 PYTHON_SCRIPT="scripts/cosine_similarity.py"
-OUT_DIR=""
 
 #--- ARGUMENT PARSING (FLAGS) ---#
-while getopts ":r:o:" opt; do
+while getopts ":r:w:s:e:" opt; do
   case $opt in
     r) REPO_ROOT="$OPTARG" ;;
-    o) OUT_DIR="$OPTARG" ;;
+    w) WEIGHTS_DIR="$OPTARG" ;;
+    s) SAVE_DIR="$OPTARG" ;;
+    e) EMB_DIR="$OPTARG" ;;
     \?) echo "[ERROR] Invalid option -$OPTARG" >&2; exit 1 ;;
   esac
 done
 
-# Absolute output path
-OUT_DIR=$(readlink -f "$OUT_DIR")
+# Absolute paths
+WEIGHTS_DIR=$(readlink -f "$WEIGHTS_DIR")
+EMB_DIR=$(readlink -f "$EMB_DIR")
 
 #--- ENVIRONMENT SETUP ---#
+NOW=$(date "+[%Y-%m-%d - %H:%M:%S]")
+
 echo "-----------------------------------------------"
-echo "Starting Cosine Similarity Job $SLURM_JOB_ID"
+echo "Starting Cosine Similarity Job $SLURM_JOB_ID - $NOW" 
 echo "-----------------------------------------------"
+
+
 
 # 1. Change directory
 echo "Changing directory to: $REPO_ROOT"
@@ -47,23 +53,33 @@ source .venv/bin/activate
 export PATH="$HOME/.TinyTeX/bin/x86_64-linux:$PATH"
 
 #--- EMBEDDING DETECTION LOGIC ---#
-EMB_DIR=$(ls -td "$OUT_DIR"/embeddings_* 2>/dev/null | head -n 1)
+DETECTED_EMB=$(ls -td "${EMB_DIR}"/*/ 2>/dev/null | head -n 1)
+DETECTED_EMB="${DETECTED_EMB%/}"
+DETECTED_EMB=$(readlink -f "$DETECTED_EMB")
 
-if [ -z "$EMB_DIR" ]; then
-    echo "[ERROR]: No 'embeddings_*' directory found in $OUT_DIR"
+if [ -z "$DETECTED_EMB" ]; then
+    echo "[ERROR]: No sub-directory found in $EMB_DIR"
     echo "[WARNING]: Run extract_embeddings.sh first"
     exit 1
 fi
 
+if [ -z "$SAVE_DIR" ]; then
+    SAVE_DIR="$DETECTED_EMB"
+fi
+SAVE_DIR=$(readlink -f "$SAVE_DIR")
+
 #--- EXECUTION ---#
 echo "Cosine Similarity Configuration:"
-echo "   OUT DIR:   $OUT_DIR"
-echo "   EMB DIR:   $EMB_DIR (Auto-detected)"
+echo "    WEIGHTS DIR:  $WEIGHTS_DIR"
+echo "    EMB DIR:      $DETECTED_EMB"
+echo "    SAVE DIR:     $SAVE_DIR (Auto-detected)"
+
 
 # Running Python Script
 python "$PYTHON_SCRIPT" \
-    --out_dir "$OUT_DIR" \
-    --emb_dir "$EMB_DIR"
+    --weights_dir "$WEIGHTS_DIR" \
+    --emb_dir "$DETECTED_EMB" \
+    --save_dir "$SAVE_DIR"
 
 echo "-----------------------------------------------"
 echo "Cosine Similarity Finished"
