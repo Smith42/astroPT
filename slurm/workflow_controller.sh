@@ -28,7 +28,7 @@ while getopts ":r:t:x:" opt; do
 done
 
 # Absolute output path
-TRAIN_DIR=$(readlink -f "$OUT_DIR")
+TRAIN_DIR=$(readlink -f "$TRAIN_DIR")
 
 #--- ENVIRONMENT SETUP ---#
 NOW=$(date "+[%Y-%m-%d - %H:%M:%S]")
@@ -39,7 +39,7 @@ echo "-----------------------------------------------"
 
 # Checking if .improved exists
 if [ ! -f "$TRAIN_DIR/.improved" ]; then
-    echo "[CRITICAL]: No detected improvements in $OUT_DIR"
+    echo "[CRITICAL]: No detected improvements in $TRAIN_DIR"
     echo "[ACTION]: Cancelling dependent jobs for suffix: $SUFFIX"
 
     JOBS_TO_KILL=(
