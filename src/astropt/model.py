@@ -642,7 +642,7 @@ class GPT(nn.Module):
                 pred = outputs[mod_name]
                 
                 # Dynamic selection of loss function
-                if hasattr(self.config, "loss_type") and self.config.loss_type == "l1":
+                if hasattr(self.config, "loss_type") and self.config.loss_type.lower() in ["l1", "mae"]:
                     loss_fn = F.l1_loss
                 elif hasattr(self.config, "loss_type") and self.config.loss_type == "mse":
                     loss_fn = F.mse_loss
@@ -791,7 +791,7 @@ class GPT(nn.Module):
                         f"Assertion error: {pred_info['data']}, {target_info['data']}"
                     )
                     mod_config = self.modality_registry.get_config(pred_name)
-                    if self.config.loss_type == "l1":
+                    if self.config.loss_type in ["l1", "mae"]:
                         unweighted_loss = F.l1_loss(pred_data.squeeze(), target_data.squeeze())
                     elif self.config.loss_type == "mse":
                         unweighted_loss = F.mse_loss(pred_data.squeeze(), target_data.squeeze())
