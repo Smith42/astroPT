@@ -97,7 +97,7 @@ class TrainingConfig:
     backbone: str = "native"        # Model bakcbone: native or llm
     tokeniser: str = "aim"          # Model tokeniser method
     use_qlora: bool = False         # Use Quantized Low-Rank Adaptation
-    loss_type: str = "mae"          # Options: l1 / mae, mse, huber
+    loss_type: str = "huber"          # Options: l1 / mae, mse, huber
     loss_huber_delta: float = 1.0   # Delta value for controlling Huber Loss Behaviour (default 1.0)
     use_aug: bool = True            # Active data augmentation by using image rotation
     

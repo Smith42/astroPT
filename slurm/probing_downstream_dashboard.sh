@@ -72,13 +72,13 @@ python "$PYTHON_SCRIPT" \
   --csv_path \
       "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260130_asinh_mae_rot_lessmaxiters/embeddings_astropt_100M_250K_arrow_20260130_asinh_mae_rot_lessmaxiters_best_mean/downstream_results.csv" \
       "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260130_asinh_mae_rot_lessmaxiters/embeddings_astropt_100M_250K_arrow_20260130_asinh_mae_rot_lessmaxiters_best_rank/downstream_results.csv" \
-      "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260130_asinh_mae_rot_lessmaxiters/embeddings_astropt_100M_250K_arrow_20260130_asinh_mae_rot_lessmaxiters_best_meanrank/downstream_results.csv" \
+      "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260307_asinh_rot_mae/embeddings/best_meanrank/downstream_tasks/downstream_results.csv" \
       "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260202_asinh_huber_rot_lr_moreiters/embeddings_astropt_100M_250K_arrow_20260202_asinh_huber_rot_lr_moreiters_best_meanrank/downstream_results.csv" \
       "$SAVE_DIR/downstream_tasks/downstream_results.csv" \
   --names \
       "MAE Mean Pooling (0.40)" \
       "MAE Rank Pooling (0.76)" \
-      "MAE Mean-Rank Pooling (0.26)" \
+      "MAE Mean-Rank Pooling (0.24)" \
       "Huber Mean-Rank Pooling (0.37)" \
       "Last Training Pooling" \
   --targets \
