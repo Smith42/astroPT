@@ -97,7 +97,7 @@ class TrainingConfig:
     backbone: str = "native"        # Model bakcbone: native or llm
     tokeniser: str = "aim"          # Model tokeniser method
     use_qlora: bool = False         # Use Quantized Low-Rank Adaptation
-    loss_type: str = "huber"          # Options: l1 / mae, mse, huber
+    loss_type: str = "mae"          # Options: l1 / mae, mse, huber
     loss_huber_delta: float = 1.0   # Delta value for controlling Huber Loss Behaviour (default 1.0)
     use_aug: bool = True            # Active data augmentation by using image rotation
     
@@ -115,7 +115,7 @@ class TrainingConfig:
     images_norm_const: float = 1.0      # Normalization global constant for images: P99=7.603847
     
     # Spectra
-    spectra_train: bool = True               # Spectra bool flag for enabling training
+    spectra_train: bool = False             # Spectra bool flag for enabling training
     spectra_size: int = 7781                # Spectra total size
     spectra_patch_size: int = 10            # Patch size for each spectrum
     spectra_loss_weight: float = 1.0        # Spectra importance for training 

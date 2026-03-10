@@ -56,6 +56,30 @@ class EuclidDESIDatasetArrow(Dataset):
         
         # Creating the dataset with the corresponding split
         self.ds = concatenate_datasets([load_from_disk(p) for p in arrow_folders])
+        
+        # Single modality safe mechanism
+        cols_to_keep = ['targetid']
+        
+        try:
+            if modality_registry.get_config("images") is not None:
+                cols_to_keep.extend(['image_vis', 'image_nisp_h', 'image_nisp_j', 'image_nisp_y'])
+        except Exception:
+            pass
+            
+        try:
+            if modality_registry.get_config("spectra") is not None:
+                cols_to_keep.extend(['spectrum_flux', 'spectrum_wave'])
+        except Exception:
+            pass
+        
+        
+        # Ensure we only ask for columns that actually exist in the Arrow schema
+        available_cols = self.ds.column_names
+        cols_to_keep = [c for c in cols_to_keep if c in available_cols]
+        
+        # Drop the rest
+        self.ds = self.ds.select_columns(cols_to_keep)
+        
         self.ds = self.ds.with_format("numpy")
         
         logging.info(f"Dataset loaded. Total samples: {len(self.ds)}")
@@ -597,7 +621,7 @@ class EuclidDESIDatasetArrow(Dataset):
             #--- 2. LOAD VIS & NISP IMAGES ---#
             
             # Check for existence of VIS images (mandatory)
-            if item['image_vis'] is not None:
+            if item.get('image_vis') is not None:
                 
                 # Convert values to Tensor objects
                 raw_vis = item['image_vis']
@@ -615,7 +639,7 @@ class EuclidDESIDatasetArrow(Dataset):
                 nisp_keys = ['image_nisp_h', 'image_nisp_j', 'image_nisp_y']
                 
                 for key in nisp_keys:
-                    raw_data = item[key]
+                    raw_data = item.get(key)
                     if isinstance(raw_data, list):
                         raw_data = np.array(raw_data) 
                     
@@ -665,7 +689,7 @@ class EuclidDESIDatasetArrow(Dataset):
             #--- 3. LOAD SPECTRA ---#
             
             # Only proceed if we have valid flux data
-            if item['spectrum_flux'] is not None and len(item['spectrum_flux']) > 0:
+            if item.get('spectrum_flux') is not None and len(item.get('spectrum_flux', [])) > 0:
                 
                 # Flux and Wavelength MUST have the same length
                 if len(item['spectrum_flux']) != len(item['spectrum_wave']):
