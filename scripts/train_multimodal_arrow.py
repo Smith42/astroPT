@@ -103,7 +103,7 @@ class TrainingConfig:
     
     #--- Multimodality Specifics ---#
     # Images
-    images_train: bool = True           # Images bool flag for enabling training
+    images_train: bool = False          # Images bool flag for enabling training
     images_size: int = 224              # Images side size in pixels
     images_patch_size: int = 16         # Side size in pixels of each patch in an image
     images_channels: int = 4            # Channels per image (VIS + NISP Y,J,H)
@@ -115,7 +115,7 @@ class TrainingConfig:
     images_norm_const: float = 1.0      # Normalization global constant for images: P99=7.603847
     
     # Spectra
-    spectra_train: bool = False             # Spectra bool flag for enabling training
+    spectra_train: bool = True              # Spectra bool flag for enabling training
     spectra_size: int = 7781                # Spectra total size
     spectra_patch_size: int = 10            # Patch size for each spectrum
     spectra_loss_weight: float = 1.0        # Spectra importance for training 
