@@ -90,7 +90,7 @@ class TrainingConfig:
     n_head: int = 12                # Number of attention heads
     n_embd: int = 768               # Embedding dimension (width of the network)
     n_chan: int = 4                 # Input channels: 1 VIS + 3 NISP (Y, J, H)
-    block_size: int = 1024          # Context length (max tokens per sample)
+    block_size: int = 2048          # Context length (max tokens per sample)
     dropout: float = 0.0            # Regularization (0.0 for pretraining is standard)
     bias: bool = False              # Learnable bias in Linear layers (False is modern/faster)
     attn_type: str = "causal"       # Attention mechanism type
@@ -103,9 +103,9 @@ class TrainingConfig:
     
     #--- Multimodality Specifics ---#
     # Images
-    images_train: bool = False          # Images bool flag for enabling training
+    images_train: bool = True          # Images bool flag for enabling training
     images_size: int = 224              # Images side size in pixels
-    images_patch_size: int = 16         # Side size in pixels of each patch in an image
+    images_patch_size: int = 8          # Side size in pixels of each patch in an image
     images_channels: int = 4            # Channels per image (VIS + NISP Y,J,H)
     images_loss_weight: float = 1.0     # Images importance for training
     images_embed_pos: bool = True       # Images embedding positions learning
