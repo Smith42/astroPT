@@ -103,9 +103,9 @@ class TrainingConfig:
     
     #--- Multimodality Specifics ---#
     # Images
-    images_train: bool = True          # Images bool flag for enabling training
+    images_train: bool = True           # Images bool flag for enabling training
     images_size: int = 224              # Images side size in pixels
-    images_patch_size: int = 8          # Side size in pixels of each patch in an image
+    images_patch_size: int = 16         # Side size in pixels of each patch in an image
     images_channels: int = 4            # Channels per image (VIS + NISP Y,J,H)
     images_loss_weight: float = 1.0     # Images importance for training
     images_embed_pos: bool = True       # Images embedding positions learning
@@ -117,7 +117,7 @@ class TrainingConfig:
     # Spectra
     spectra_train: bool = True              # Spectra bool flag for enabling training
     spectra_size: int = 7781                # Spectra total size
-    spectra_patch_size: int = 10            # Patch size for each spectrum
+    spectra_patch_size: int = 5             # Patch size for each spectrum
     spectra_loss_weight: float = 1.0        # Spectra importance for training 
     spectra_embed_pos: bool = True          # Spectra embedding positions learning
     spectra_pos_input_size: int = 1         # Spectra position input size
