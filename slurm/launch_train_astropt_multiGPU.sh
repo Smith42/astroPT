@@ -205,6 +205,49 @@ echo "Training Job (Resume) launched.  ID: $JOB_TRAIN_2 (Depends on Train 1: ok 
 # Calling the execution function
 launch_analysis "$JOB_TRAIN_2" "$JOB_SUFFIX" "Part 2 (Resume)"
 
+LONG_TRAINING="TRUE"
+if [[ "$LONG_TRAINING" == "TRUE" ]]; then
+    # PART 3 - TRAIN FROM RESUME
+    echo "-------------------------------------------------"
+    echo "STEP 3: TRAINING FROM RESUME"
+    JOB_SUFFIX="_T3"
+    JOB_TRAIN_3=$(sbatch --parsable \
+        --dependency=afterok:$J_WOR \
+        --job-name="Train_AstroPT_DDP$JOB_SUFFIX" \
+        "$TRAIN_SCRIPT" \
+        -r "$REPO_ROOT" \
+        -t "$TRAIN_DIR" \
+        -a "$DATA_DIR" \
+        -n "$TRAIN_NAME" \
+        -d "$TRAIN_DESC" \
+        -m "resume" \
+        -k "all")
+    echo "Training Job (Resume) launched.  ID: $JOB_TRAIN_3 (Depends on Train 2: ok $JOB_TRAIN_2)"
+
+    # Calling the execution function
+    launch_analysis "$JOB_TRAIN_3" "$JOB_SUFFIX" "Part 3 (Resume)"
+
+    # PART 4 - TRAIN FROM RESUME
+    echo "-------------------------------------------------"
+    echo "STEP 4: TRAINING FROM RESUME"
+    JOB_SUFFIX="_T4"
+    JOB_TRAIN_4=$(sbatch --parsable \
+        --dependency=afterok:$J_WOR \
+        --job-name="Train_AstroPT_DDP$JOB_SUFFIX" \
+        "$TRAIN_SCRIPT" \
+        -r "$REPO_ROOT" \
+        -t "$TRAIN_DIR" \
+        -a "$DATA_DIR" \
+        -n "$TRAIN_NAME" \
+        -d "$TRAIN_DESC" \
+        -m "resume" \
+        -k "all")
+    echo "Training Job (Resume) launched.  ID: $JOB_TRAIN_4 (Depends on Train 3: ok $JOB_TRAIN_3)"
+
+    # Calling the execution function
+    launch_analysis "$JOB_TRAIN_4" "$JOB_SUFFIX" "Part 4 (Resume)"
+fi
+
 
 # QUEUE STATUS
 echo "-------------------------------------------------"
