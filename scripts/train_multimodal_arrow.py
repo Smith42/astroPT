@@ -149,7 +149,7 @@ class TrainingConfig:
     log_interval: int = 200                 # How often to print to console/WandB
     checkpoint_interval: int = 1_000        # How often to save .pt files
     checkpoint_save_type: str = "both"      # Checkpoint saving mode: best, last, both or all
-    early_stopping_patience: int = 10       # Stop if no improvement after N evals
+    early_stopping_patience: int = 5        # Stop if no improvement after N evals
 
     #--- System & Backend ---#
     device: str = "cuda"                    # CPU/GPU device interface: cpu, cuda or mps
