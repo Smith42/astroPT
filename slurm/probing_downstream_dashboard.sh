@@ -71,16 +71,14 @@ python "$PYTHON_SCRIPT" \
   --save_dir "$SAVE_DIR" \
   --csv_path \
       "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260307_asinh_rot_mae/embeddings/best_meanrank/downstream_tasks/downstream_results.csv" \
-      "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260309_asinh_rot_huber/embeddings/best_meanrank/downstream_tasks/downstream_results.csv" \
-      "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260312_asinh_rot_mae_imgpatchsize8/embeddings/best_meanrank/downstream_tasks/downstream_results.csv" \
       "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260313_asinh_rot_mae_specpatchsize5/embeddings/best_meanrank/downstream_tasks/downstream_results.csv" \
-      "$SAVE_DIR/downstream_tasks/downstream_results.csv" \
+      "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260312_asinh_rot_mae_imgpatchsize8/embeddings/best_meanrank/downstream_tasks/downstream_results.csv" \
+      /home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260315_asinh_rot_mae_imgpatchsize4/embeddings/best_meanrank/downstream_tasks/downstream_results.csv \
   --names \
-      "MAE Mean-Rank Pooling (0.24)" \
-      "Huber Mean-Rank Pooling (0.29)" \
-      "MAE Mean-Rank IMG Patch Size 8 (0.14)" \
+      "MAE Mean-Rank Pooling (IMG PS 16 / SPEC PS 10) (0.24)" \
       "MAE Mean-Rank SPEC Patch Size 5 (0.23)" \
-      "Last Training Pooling" \
+      "MAE Mean-Rank IMG Patch Size 8 (0.14)" \
+      "MAE Mean-Rank IMG Patch Size 4 (0.27)" \
   --targets \
       Z LOGMSTAR LOGSFR GR \
       flux_detection_total HALPHA_EW HALPHA_FLUX NII_6584_FLUX OIII_5007_FLUX HBETA_FLUX NII_6584_FLUX \
@@ -93,3 +91,5 @@ echo "Probing Tasks Dashboard Finished"
 echo "-----------------------------------------------"
 
 
+# "$SAVE_DIR/downstream_tasks/downstream_results.csv" \
+#       "Last Training Pooling" \
