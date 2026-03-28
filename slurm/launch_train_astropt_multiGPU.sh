@@ -16,6 +16,7 @@ META_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR
 TRAIN_SCRIPT="$SCRIPT_DIR/train_astropt_multiGPU.sh"
 PLOT_MET_SCRIPT="$SCRIPT_DIR/plot_training_metrics.sh"
 PLOT_IMG_SCRIPT="$SCRIPT_DIR/plot_images_spectra.sh"
+CROSS_REC_SCRIPT="$SCRIPT_DIR/cross_reconstruction.sh"
 EXT_EMBD_SCRIPT="$SCRIPT_DIR/extract_embeddings.sh"
 COS_SIM_SCRIPT="$SCRIPT_DIR/cosine_similarity.sh"
 UMAPS_SCRIPT="$SCRIPT_DIR/plot_umaps.sh"
@@ -106,6 +107,18 @@ launch_analysis() {
                 -a "$DATA_DIR"
             )
     echo "    [ImgSpec] Job sent.       ID: $J_IMG (Depends on Train: any)"
+
+    # Cross Reconstruction
+    local J_CROSS=$(sbatch --parsable \
+                --dependency=afterok:$J_WOR \
+                --job-name="Cross_Rec$JOB_SUFFIX" \
+                "$CROSS_REC_SCRIPT" \
+                -r "$REPO_ROOT" \
+                -w "$WEIGHTS_DIR" \
+                -s "$PLOTS_DIR" \
+                -a "$DATA_DIR"
+            )
+    echo "    [CrossRec] Job sent.      ID: $J_CROSS (Depends on Train: any)"
 
     # Extract Embeddings 
     local J_EMB=$(sbatch --parsable \

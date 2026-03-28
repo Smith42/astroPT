@@ -58,7 +58,7 @@ class EuclidDESIDatasetArrow(Dataset):
         self.ds = concatenate_datasets([load_from_disk(p) for p in arrow_folders])
         
         # Single modality safe mechanism
-        cols_to_keep = ['targetid']
+        cols_to_keep = ['targetid','redshift']
         
         try:
             if modality_registry.get_config("images") is not None:

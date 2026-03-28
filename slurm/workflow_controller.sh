@@ -44,6 +44,7 @@ if [ ! -f "$TRAIN_DIR/.improved" ]; then
 
     JOBS_TO_KILL=(
         "Plot_Im_Sp${SUFFIX}"
+        "Cross_Rec${SUFFIX}"
         "Extract_Embed${SUFFIX}"
         "Cos_Sim${SUFFIX}"
         "Plot_Umaps${SUFFIX}"
