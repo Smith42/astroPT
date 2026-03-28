@@ -4,7 +4,7 @@ AstroPT Production Embedding Extractor.
 Features:
 - Uses Numpy Memmap to write directly to disk (Low RAM usage).
 - Dynamic folder naming based on run and checkpoint.
-- Extracts: Images, Spectra, Joint, and TargetIDs.
+- Dynamically detects active modalities (Unimodal vs Multimodal) to avoid generating empty/dummy files.
 - Generates both individual .npy files (fast access) and .npz (portable).
 
 Author: Victor Alonso Rodriguez
@@ -37,6 +37,13 @@ logging.basicConfig(
     stream=sys.stdout
 )
 logger = logging.getLogger("AstroPT-ProdExtract")
+
+class SuppressVisWarnings(logging.Filter):
+    def filter(self, record):
+        return "VIS image is None in Arrow dataset" not in record.getMessage()
+
+for handler in logging.root.handlers:
+    handler.addFilter(SuppressVisWarnings())
 
 
 def parse_args() -> argparse.Namespace:
@@ -103,7 +110,7 @@ def apply_pca_to_memmap(
     Applying PCA to memmaps files
     """
     file_path = Path(file_path)
-    logger.info(f"Starting PCA {file_path} (Target: {n_components} dims)")
+    logger.info(f"Starting PCA {file_path.name} (Target: {n_components} dims)")
     
     ipca = IncrementalPCA(n_components=n_components)
     
@@ -122,7 +129,7 @@ def apply_pca_to_memmap(
         new_mmap[i:i + batch_size] = ipca.transform(chunk)
     
     new_mmap.flush()
-    logger.info(f"PCA completed. New file: {pca_path}")
+    logger.info(f"PCA completed. New file: {pca_path.name}")
     return pca_path
 
 def get_output_folder_name(ckpt_name: str, pool_name: str, pca_dim: int) -> Path:
@@ -141,7 +148,6 @@ def main():
     # Load Model
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     
-    # Required paths
     weights_dir = Path(args.weights_dir)
     save_dir = Path(args.save_dir)
     
@@ -149,12 +155,10 @@ def main():
     logger.info(f" --> [Weights]:   {weights_dir}")
     logger.info(f" --> [Saving]:    {save_dir}")
     
-    # Loading weights
     ckpt_path = weights_dir / args.ckpt_name
     
     if not ckpt_path.is_file():
         logger.error(f"Checkpoint not found: {ckpt_path}. Starting smart search.")
-
         all_ckpts = list(weights_dir.glob("*.pt"))
         if not all_ckpts:
             logger.error(f"FATAL: No .pt file found in {weights_dir}")
@@ -166,11 +170,9 @@ def main():
         if best_matches:
             ckpt_path = sorted(best_matches, key=lambda x: x.stat().st_mtime, reverse=True)[0]
             logger.info(f"Selected by priority [BEST]: {ckpt_path.name}")
-            
         elif last_matches:
             ckpt_path = sorted(last_matches, key=lambda x: x.stat().st_mtime, reverse=True)[0]
             logger.info(f"Selected by priority [LAST]: {ckpt_path.name}")
-        
         else:
             ckpt_path = sorted(all_ckpts, key=lambda x: x.stat().st_mtime, reverse=True)[0]
             logger.info(f"Selected by date [RECENT]: {ckpt_path.name}")
@@ -184,199 +186,155 @@ def main():
         logger.error(f"Failed to load model: {e}")
         sys.exit(1)
 
-    # Arrow data directory
+    # DYNAMIC MODALITY DETECTION
+    active_mods = []
+    for mod in ['images', 'spectra']:
+        try:
+            if registry.get_config(mod) is not None:
+                active_mods.append(mod)
+        except Exception:
+            pass 
+
+    if not active_mods:
+        logger.warning("Could not read registry. Inspecting config.json directly for training flags...")
+        if raw_config_dict.get('images_train', False):
+            active_mods.append('images')
+        if raw_config_dict.get('spectra_train', False):
+            active_mods.append('spectra')
+
+
+    is_multimodal = len(active_mods) > 1
+    logger.info(f"Active modalities detected: {active_mods}")
+
+    is_multimodal = len(active_mods) > 1
+    logger.info(f"Active modalities detected: {active_mods}")
+
     data_dir = args.data_dir if args.data_dir else raw_config_dict.get('data_dir')
     data_dir = Path(data_dir)
-    assert data_dir is not None, "data_dir cannot be None. Check your config.json or --data_dir argument."
     
     # Retrieve Normalization Constants
     norm_type_img = raw_config_dict.get('images_norm_type', raw_config_dict.get('img_norm_type', 'asinh'))
-    norm_scaler_img=raw_config_dict.get('images_norm_scaler',raw_config_dict.get('img_norm_scaler',1.0))
-    norm_const_img = raw_config_dict.get('images_norm_const',raw_config_dict.get('img_norm_const',1.0))
+    norm_scaler_img = raw_config_dict.get('images_norm_scaler', raw_config_dict.get('img_norm_scaler', 1.0))
+    norm_const_img = raw_config_dict.get('images_norm_const', raw_config_dict.get('img_norm_const', 1.0))
     norm_type_spec = raw_config_dict.get('spectra_norm_type', 'constant')
-    norm_scaler_spec = raw_config_dict.get('spectra_norm_scaler',1.0)
+    norm_scaler_spec = raw_config_dict.get('spectra_norm_scaler', 1.0)
     norm_const_spec = raw_config_dict.get('spectra_norm_const', 1.0)
     
-    # Aplying tranformations
     data_tf = EuclidDESIDatasetArrow.data_transforms(
-        norm_type_img=norm_type_img,
-        norm_scaler_img=norm_scaler_img,
-        norm_const_img=norm_const_img,
-        norm_type_spec=norm_type_spec,
-        norm_scaler_spec=norm_scaler_spec,
-        norm_const_spec=norm_const_spec,
+        norm_type_img=norm_type_img, norm_scaler_img=norm_scaler_img, norm_const_img=norm_const_img,
+        norm_type_spec=norm_type_spec, norm_scaler_spec=norm_scaler_spec, norm_const_spec=norm_const_spec,
     )
     
     logger.info(f"Initializing Dataset from: {data_dir}")
-    
     ds = EuclidDESIDatasetArrow(
-        arrow_folder_root=data_dir,
-        split="test",
-        modality_registry=registry,
-        spiral=True,      
-        stochastic=False,  
-        transform=data_tf
+        arrow_folder_root=data_dir, split="test", modality_registry=registry,
+        spiral=True, stochastic=False, transform=data_tf
     )
-    
-    dl = DataLoader(
-        ds, 
-        batch_size=args.batch_size, 
-        shuffle=False, 
-        num_workers=args.num_workers, 
-        pin_memory=True
-    )
+    dl = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
     
     total_samples = len(ds)
     emb_dim = config.n_embd
-    logger.info(f"Total samples to process: {total_samples}")
-    logger.info(f"Embedding dimension: {emb_dim}")
-
-    # MEMMAP Format
     
     if args.pool_method_img != args.pool_method_spec:
         folder_pool_name = args.pool_method_img + args.pool_method_spec
     else:
         folder_pool_name = args.pool_method_img
     
-    # Specific embeddings folder
     folder_name = get_output_folder_name(args.ckpt_name, folder_pool_name, args.pca_dim)
     save_path = save_dir / folder_name
     save_path.mkdir(parents=True, exist_ok=True)
     logger.info(f"Embeddings directory created: {save_path}")
 
-    # Initialize Memmap files
-    
-    # Images
-    mmap_images = np.lib.format.open_memmap(
-        save_path / 'images.npy', mode='w+', dtype='float32', shape=(total_samples, emb_dim)
-    )
-    # Spectra
-    mmap_spectra = np.lib.format.open_memmap(
-        save_path / 'spectra.npy', mode='w+', dtype='float32', shape=(total_samples, emb_dim)
-    )
-    # Joint
-    mmap_joint = np.lib.format.open_memmap(
-        save_path / 'joint.npy', mode='w+', dtype='float32', shape=(total_samples, emb_dim)
-    )
-    # Target IDs
-    mmap_ids = np.lib.format.open_memmap(
+    # DYNAMIC MEMMAP ALLOCATION
+    mmaps = {}
+    mmaps['ids'] = np.lib.format.open_memmap(
         save_path / 'ids.npy', mode='w+', dtype='int64', shape=(total_samples,)
     )
+    
+    for mod in active_mods:
+        mmaps[mod] = np.lib.format.open_memmap(
+            save_path / f'{mod}.npy', mode='w+', dtype='float32', shape=(total_samples, emb_dim)
+        )
+        
+    if is_multimodal:
+        mmaps['joint'] = np.lib.format.open_memmap(
+            save_path / 'joint.npy', mode='w+', dtype='float32', shape=(total_samples, emb_dim)
+        )
 
     # Extraction loop
     ptdtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     ctx = torch.amp.autocast(device_type="cuda", dtype=ptdtype) # type: ignore
     
     start_idx = 0
-    target_mods = ['images', 'spectra']
 
     with torch.no_grad(), ctx:
         for batch in tqdm(dl, desc="Extracting Embeddings"):
-            if batch is None:
-                continue
+            if batch is None: continue
                 
-            # 1. Coordinate batch indices
             current_batch_size = len(batch['targetid'])
             end_idx = start_idx + current_batch_size
 
-            X = EuclidDESIDatasetArrow.prepare_batch(
-                batch_data=batch,
-                modality_registry=registry,
-                device=device
-            )
-
-            # Generate raw embeddings
-            # Expected shape per modality: (batch_size, sequence_length, embedding_dim)
+            X = EuclidDESIDatasetArrow.prepare_batch(batch_data=batch, modality_registry=registry, device=device)
             embeddings = model.get_embeddings(X, draw_from_centre=True)
             
-            # Buffers for late fusion
             img_pooled = None
             spec_pooled = None
             
-            # Process individual modalities with Hybrid Pooling
-            for modality in ['images', 'spectra']:
+            # DYNAMIC MODALITY PROCESSING
+            for modality in active_mods:
                 if modality in embeddings:
-                    # Select specific pooling method based on modality nature
                     method = args.pool_method_img if modality == 'images' else args.pool_method_spec
-                    
                     pooled_tensor = apply_pooling(embeddings[modality], method=method)
-                    pooled_numpy = pooled_tensor.float().cpu().numpy()
                     
-                    if modality == 'images':
-                        img_pooled = pooled_tensor 
-                        mmap_images[start_idx:end_idx] = pooled_numpy
-                    else:
-                        spec_pooled = pooled_tensor
-                        mmap_spectra[start_idx:end_idx] = pooled_numpy
-                else:
-                    # Fallback: Zero-padding for missing modalities
-                    padding = np.zeros((current_batch_size, emb_dim), dtype='float32')
-                    if modality == 'images':
-                        mmap_images[start_idx:end_idx] = padding
-                    else:
-                        mmap_spectra[start_idx:end_idx] = padding
+                    if modality == 'images': img_pooled = pooled_tensor 
+                    else: spec_pooled = pooled_tensor
+                        
+                    mmaps[modality][start_idx:end_idx] = pooled_tensor.float().cpu().numpy()
 
-            # Hybrid Joint Embedding
-            if img_pooled is not None and spec_pooled is not None:
-                joint_tensor = (img_pooled + spec_pooled) / 2.0
-                mmap_joint[start_idx:end_idx] = joint_tensor.float().cpu().numpy()
-            elif img_pooled is not None:
-                mmap_joint[start_idx:end_idx] = img_pooled.float().cpu().numpy()
-            elif spec_pooled is not None:
-                mmap_joint[start_idx:end_idx] = spec_pooled.float().cpu().numpy()
-            else:
-                mmap_joint[start_idx:end_idx] = np.zeros((current_batch_size, emb_dim), dtype='float32')
+            # Hybrid Joint Embedding (Only if multimodal)
+            if is_multimodal and 'joint' in mmaps:
+                if img_pooled is not None and spec_pooled is not None:
+                    joint_tensor = (img_pooled + spec_pooled) / 2.0
+                    mmaps['joint'][start_idx:end_idx] = joint_tensor.float().cpu().numpy()
+                elif img_pooled is not None:
+                    mmaps['joint'][start_idx:end_idx] = img_pooled.float().cpu().numpy()
+                elif spec_pooled is not None:
+                    mmaps['joint'][start_idx:end_idx] = spec_pooled.float().cpu().numpy()
 
-            mmap_ids[start_idx:end_idx] = batch['targetid'].numpy().astype('int64')
+            mmaps['ids'][start_idx:end_idx] = batch['targetid'].numpy().astype('int64')
             start_idx = end_idx
 
-
-    # Flush changes to disk
-    mmap_images.flush()
-    mmap_spectra.flush()
-    mmap_joint.flush()
-    mmap_ids.flush()
+    # Flush changes to disk dynamically
+    for name, mmap_obj in mmaps.items():
+        mmap_obj.flush()
     
-    # Deleting the variables to close files
-    del mmap_images, mmap_spectra, mmap_joint, mmap_ids
+    del mmaps
     gc.collect()
-
     logger.info("Raw .npy extraction complete.")
 
-    # Create a portable .npz file
-    logger.info("Generating portable .npz file from disk data...")
+    # DYNAMIC NPZ PACKAGING & PCA
+    logger.info("Preparing files for PCA and .npz packaging...")
     
-    final_paths = {
-        'images': save_path / "images.npy",
-        'spectra': save_path / "spectra.npy",
-        'joint': save_path / "joint.npy",
-        'ids': save_path / "ids.npy"
-    }
+    final_paths = {'targetid': save_path / "ids.npy"}
+    for mod in active_mods:
+        final_paths[mod] = save_path / f"{mod}.npy"
+    if is_multimodal:
+        final_paths['joint'] = save_path / "joint.npy"
 
     if args.pca_dim > 0:
         logger.info(f"Applying PCA reduction to {args.pca_dim} dimensions...")
-        for key in ['images', 'spectra', 'joint']:
-
-            final_paths[key] = apply_pca_to_memmap(
-                final_paths[key], 
-                (total_samples, emb_dim), 
-                args.pca_dim
-            )
+        for key in list(final_paths.keys()):
+            if key != 'targetid':  # Do not apply PCA to target IDs
+                final_paths[key] = apply_pca_to_memmap(final_paths[key], (total_samples, emb_dim), args.pca_dim)
             
-    logger.info("Generating portable .npz file...")
+    logger.info("Generating portable .npz file with active modalities only...")
     npz_path = save_path / "embeddings_all.npz"
     
     try:
-        
-        np.savez_compressed(
-            npz_path,
-            images=np.load(final_paths['images'], mmap_mode='r'),
-            spectra=np.load(final_paths['spectra'], mmap_mode='r'),
-            joint=np.load(final_paths['joint'], mmap_mode='r'),
-            targetid=np.load(final_paths['ids'], mmap_mode='r')
-        )
+        # Dynamically load the final paths into the npz kwargs
+        npz_kwargs = {k: np.load(v, mmap_mode='r') for k, v in final_paths.items()}
+        np.savez_compressed(npz_path, **npz_kwargs)
         logger.info(f"Compressed archive created: {npz_path}")
-        
     except Exception as e:
         logger.error(f"Error creating .npz: {e}")
 

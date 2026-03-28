@@ -16,10 +16,8 @@ Date: March 2026
 
 import argparse
 import collections
-import glob
 import json
 import logging
-import os
 import sys
 import warnings
 from pathlib import Path
@@ -31,13 +29,9 @@ import pandas as pd
 import umap
 from astropy.table import Table
 from astropy.utils.exceptions import AstropyWarning
+from datasets import load_from_disk, concatenate_datasets
 from matplotlib.lines import Line2D
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
-
-try:
-    from astropt.euclid_desi_arrow_dataloader import EuclidDESIDatasetArrow
-except ImportError:
-    logging.warning("Could not import EuclidDESIDatasetArrow. Arrow-dependent plots may fail.")
 
 # Logger Configuration
 logging.basicConfig(
@@ -454,11 +448,17 @@ def plot_mosaic_grid(
     # Images - Spectra pair object validation
     # If object has no pair skip to the next
     images_placed = 0
+    error_count = 0
     for (ix, iy), candidates in occupied_cells.items():
         for dist_sq, idx, cx, cy in candidates:
             try:
                 target_id = df.iloc[idx][target_col]
-                if target_id not in id_to_idx: continue
+                
+                if target_id not in id_to_idx:
+                    if str(target_id) in id_to_idx: target_id = str(target_id)
+                    elif int(target_id) in id_to_idx: target_id = int(target_id)
+                    else: continue
+                
                 rec = ds.ds[id_to_idx[target_id]]
                 
                 vis = np.array(rec['image_vis'], dtype=np.float32)
@@ -508,6 +508,10 @@ def plot_mosaic_grid(
                 break
                 
             except Exception as e:
+                # Logging first 3 errors
+                if error_count < 3:
+                    logger.warning(f"Skiping object {target_id} beacuse error: {e}")
+                    error_count += 1
                 continue
 
     if spec_fig: plt.close(spec_fig)
@@ -562,8 +566,23 @@ def main():
     # Initialize Arrow Dataset only if needed
     arrow_ds = None
     if args.plot_visual or args.plot_spectral:
-        logger.info("Initializing Arrow DataLoader...")
-        arrow_ds = EuclidDESIDatasetArrow(data_dir, split='test', modality_registry=DummyRegistry(), transform=None)
+        logger.info("Bypassing DataLoader logic and loading raw Arrow files directly...")
+        
+        test_dirs = sorted(data_dir.glob("test_*"))
+        if not test_dirs:
+            test_dirs = [data_dir / "test"] 
+            
+        logger.info(f"Loading {len(test_dirs)} Arrow parts directly to avoid unimodal filters...")
+        
+        loaded_parts = [load_from_disk(str(d)) for d in test_dirs]
+        raw_hf_ds = concatenate_datasets(loaded_parts)
+        
+        class RawArrowWrapper:
+            def __init__(self, hf_dataset):
+                self.ds = hf_dataset
+                
+        arrow_ds = RawArrowWrapper(raw_hf_ds)
+        logger.info(f"Raw dataset loaded. Total samples: {len(arrow_ds.ds)}")
         
     # TITLE LOGIC
     config_path = weights_dir / "config.json"
