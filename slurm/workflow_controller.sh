@@ -49,6 +49,8 @@ if [ ! -f "$TRAIN_DIR/.improved" ]; then
         "Plot_Umaps${SUFFIX}"
         "Probing_Tasks${SUFFIX}"
         "Probing_Tasks_Dash${SUFFIX}"
+        "Latent_Tasks${SUFFIX}"
+        "Latent_Tasks_Dash${SUFFIX}"
     )
 
     for JOB in "${JOBS_TO_KILL[@]}"; do

@@ -21,17 +21,20 @@ COS_SIM_SCRIPT="$SCRIPT_DIR/cosine_similarity.sh"
 UMAPS_SCRIPT="$SCRIPT_DIR/plot_umaps.sh"
 PROBING_SCRIPT="$SCRIPT_DIR/probing_downstream.sh"
 PROBING_DASH_SCRIPT="$SCRIPT_DIR/probing_downstream_dashboard.sh"
+LATENT_SCRIPT="$SCRIPT_DIR/probing_latent_mapper.sh"
+LATENT_DASH_SCRIPT="$SCRIPT_DIR/probing_latent_dashboard.sh"
 WORKFLOW_SCRIPT="$SCRIPT_DIR/workflow_controller.sh"
 
 # ARGUMENTS DEFAULT VALUES
 TRAIN_NAME="New Train"              # Training name
 TRAIN_DESC="New AstroPT Training"   # Training description
 
-while getopts ":n:d:t:h" opt; do
+while getopts ":n:d:t:l:h" opt; do
   case $opt in
     n) TRAIN_NAME="$OPTARG" ;;
     d) TRAIN_DESC="$OPTARG" ;;
     t) TRAIN_DIR="$OPTARG" ;;
+    l) LONG_TRAINING="$OPTARG" ;;
     h) 
        echo "Usage: $0 [-n 'Name'] [-d 'Description'] [-o 'output_path/']"
        exit 0 
@@ -161,6 +164,28 @@ launch_analysis() {
                 -e "$EMB_DIR"
             )
     echo "    [PROB DASH] Job sent.     ID: $J_PROB_DASH (Depends on Probing: ok)"
+
+    # PROBING LATENT MAPPING TASKS
+    local J_LATENT=$(sbatch --parsable \
+                --dependency=afterok:$J_EMB \
+                --job-name="Latent_Tasks$JOB_SUFFIX" \
+                "$LATENT_SCRIPT" \
+                -r "$REPO_ROOT" \
+                -w "$WEIGHTS_DIR" \
+                -e "$EMB_DIR" \
+                -f "$META_PATH"
+            )
+    echo "    [LATENT] Job sent.        ID: $J_LATENT (Depends on Embeds: ok)"
+
+    # PROBING LATENT MAPPING DASHBOARD
+    local J_LATENT_DASH=$(sbatch --parsable \
+                --dependency=afterok:$J_LATENT \
+                --job-name="Latent_Tasks_Dash$JOB_SUFFIX" \
+                "$LATENT_DASH_SCRIPT" \
+                -r "$REPO_ROOT" \
+                -e "$EMB_DIR"
+            )
+    echo "    [LATENT DASH] Job sent.   ID: $J_LATENT_DASH (Depends on Latent: ok)"
     
     echo " --> Analysis Batch Sent."
 }
@@ -205,7 +230,12 @@ echo "Training Job (Resume) launched.  ID: $JOB_TRAIN_2 (Depends on Train 1: ok 
 # Calling the execution function
 launch_analysis "$JOB_TRAIN_2" "$JOB_SUFFIX" "Part 2 (Resume)"
 
-LONG_TRAINING="TRUE"
+
+# Implementing a third training round for longer trainings
+if [ -z "$TRAIN_DIR" ]; then
+    LONG_TRAINING="FALSE"
+fi
+
 if [[ "$LONG_TRAINING" == "TRUE" ]]; then
     # PART 3 - TRAIN FROM RESUME
     echo "-------------------------------------------------"
@@ -227,25 +257,6 @@ if [[ "$LONG_TRAINING" == "TRUE" ]]; then
     # Calling the execution function
     launch_analysis "$JOB_TRAIN_3" "$JOB_SUFFIX" "Part 3 (Resume)"
 
-    # PART 4 - TRAIN FROM RESUME
-    echo "-------------------------------------------------"
-    echo "STEP 4: TRAINING FROM RESUME"
-    JOB_SUFFIX="_T4"
-    JOB_TRAIN_4=$(sbatch --parsable \
-        --dependency=afterok:$J_WOR \
-        --job-name="Train_AstroPT_DDP$JOB_SUFFIX" \
-        "$TRAIN_SCRIPT" \
-        -r "$REPO_ROOT" \
-        -t "$TRAIN_DIR" \
-        -a "$DATA_DIR" \
-        -n "$TRAIN_NAME" \
-        -d "$TRAIN_DESC" \
-        -m "resume" \
-        -k "all")
-    echo "Training Job (Resume) launched.  ID: $JOB_TRAIN_4 (Depends on Train 3: ok $JOB_TRAIN_3)"
-
-    # Calling the execution function
-    launch_analysis "$JOB_TRAIN_4" "$JOB_SUFFIX" "Part 4 (Resume)"
 fi
 
 
