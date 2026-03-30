@@ -158,13 +158,6 @@ class AdaptiveMLP(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
-
-from pathlib import Path
-from typing import Dict, Tuple
-import numpy as np
-import pandas as pd
-from astropy.table import Table
-
 def load_data(
         emb_dir: str | Path, 
         metadata_path: str | Path

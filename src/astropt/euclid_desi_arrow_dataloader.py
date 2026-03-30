@@ -27,6 +27,7 @@ class EuclidDESIDatasetArrow(Dataset):
         spiral: bool = False,           
         stochastic = True,      
         transform: Dict = {},
+        spectra_inverse: bool = False,
     ):
         """
         Dataset to loading Euclid Images and DESI spectra
@@ -90,7 +91,7 @@ class EuclidDESIDatasetArrow(Dataset):
         self.spiral = spiral
         self.stochastic = stochastic
         self.transform = transform
-        
+        self.spectra_inverse = spectra_inverse
         
     def __len__(self) -> int:
         """Returns the total number of samples in the dataset."""
@@ -465,6 +466,11 @@ class EuclidDESIDatasetArrow(Dataset):
         # Get configuration
         cfg = self.modality_registry.get_config("spectra")
         patch_size = cfg.patch_size
+        
+        # Invert spectra for training if required
+        if self.spectra_inverse:
+            raw_spectra = torch.flip(raw_spectra, dims=[0])
+            wavelength = torch.flip(wavelength, dims=[0])
         
         # Galculate necessary padding
         # We need the total length to be a multiple of patch_size

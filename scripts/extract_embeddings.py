@@ -216,6 +216,8 @@ def main():
     norm_type_img = raw_config_dict.get('images_norm_type', raw_config_dict.get('img_norm_type', 'asinh'))
     norm_scaler_img = raw_config_dict.get('images_norm_scaler', raw_config_dict.get('img_norm_scaler', 1.0))
     norm_const_img = raw_config_dict.get('images_norm_const', raw_config_dict.get('img_norm_const', 1.0))
+    
+    inverse_spec = raw_config_dict.get('spectra_inverse', False)
     norm_type_spec = raw_config_dict.get('spectra_norm_type', 'constant')
     norm_scaler_spec = raw_config_dict.get('spectra_norm_scaler', 1.0)
     norm_const_spec = raw_config_dict.get('spectra_norm_const', 1.0)
@@ -228,7 +230,8 @@ def main():
     logger.info(f"Initializing Dataset from: {data_dir}")
     ds = EuclidDESIDatasetArrow(
         arrow_folder_root=data_dir, split="test", modality_registry=registry,
-        spiral=True, stochastic=False, transform=data_tf
+        spiral=True, stochastic=False, transform=data_tf,
+        spectra_inverse=inverse_spec,
     )
     dl = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
     

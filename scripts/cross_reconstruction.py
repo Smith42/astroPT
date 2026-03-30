@@ -330,6 +330,7 @@ def main():
     norm_scaler_img = raw_config_dict.get('images_norm_scaler', 1.0)
     norm_const_img = raw_config_dict.get('images_norm_const', 1.0)
     
+    inverse_spec = raw_config_dict.get('spectra_inverse', False)
     norm_type_spec = raw_config_dict.get('spectra_norm_type', 'asinh')
     norm_scaler_spec = raw_config_dict.get('spectra_norm_scaler', 1.0)
     norm_const_spec = raw_config_dict.get('spectra_norm_const', 1.0)
@@ -345,7 +346,8 @@ def main():
         split=args.split, 
         modality_registry=registry,
         spiral=raw_config_dict.get('spiral', True), 
-        transform=data_tf
+        transform=data_tf,
+        spectra_inverse=inverse_spec,
     )
     
     # Sample Selection
@@ -440,14 +442,21 @@ def main():
         spec_gt_raw = np.array(raw_record['spectrum_flux']).flatten()
         
         # Spec Post-processing
-        is_spec_pred = denormalize(pred_spec_seq.flatten(), norm_type_spec, norm_scaler_spec, norm_const_spec)
-        min_l = min(len(spec_gt_raw), len(is_spec_pred), len(wave_ang))
+        spec_pred = denormalize(pred_spec_seq.flatten(), norm_type_spec, norm_scaler_spec, norm_const_spec)
+        
+        true_len = len(wave_ang)
+        spec_pred = spec_pred[:true_len]
+        
+        if inverse_spec:
+            spec_pred = spec_pred[::-1]
+        
+        min_l = min(len(spec_gt_raw), len(spec_pred), len(wave_ang))
         
         # Image Post-processing
         img_gt_raw = np.stack([raw_record['image_vis'], raw_record['image_nisp_h'], 
                                raw_record['image_nisp_j'], raw_record['image_nisp_y']])
         
-        si_img_pred_phys = denormalize(
+        img_pred_phys = denormalize(
             reconstruct_image_from_patches(pred_img_seq, img_config), 
             norm_type_img, norm_scaler_img, norm_const_img
         )
@@ -457,7 +466,7 @@ def main():
         bg_val = np.percentile(img_gt_raw, 50, axis=(1,2), keepdims=True)
         
         raw_bg = img_gt_raw - bg_val
-        pred_bg = si_img_pred_phys - bg_val
+        pred_bg = img_pred_phys - bg_val
         
         raw_rgb_stack = []
         pred_rgb_stack = []
@@ -485,10 +494,10 @@ def main():
         is_img_real = make_rgb_lupton(rgb_input_gt, Q=12.0, stretch=0.5)
         si_img_pred = make_rgb_lupton(rgb_input_pred, Q=12.0, stretch=0.5)
         
-        if img_gt_raw.shape == si_img_pred_phys.shape:
-            res_map = np.mean(img_gt_raw - si_img_pred_phys, axis=0)
+        if img_gt_raw.shape == img_pred_phys.shape:
+            res_map = np.mean(img_gt_raw - img_pred_phys, axis=0)
         else:
-            logger.warning(f"Shape mismatch: GT {img_gt_raw.shape} vs Pred {si_img_pred_phys.shape}. Skipping residuals.")
+            logger.warning(f"Shape mismatch: GT {img_gt_raw.shape} vs Pred {img_pred_phys.shape}. Skipping residuals.")
             res_map = np.zeros((img_gt_raw.shape[1], img_gt_raw.shape[2]))
 
         # FILENAME AND SUFFIX LOGIC
@@ -500,7 +509,7 @@ def main():
         plot_cross_dashboard(
             target_id=target_id, z_val=z_val, 
             train_name=train_name, rgb_gt=is_img_real, rgb_pred=si_img_pred, res_map=res_map,
-            wave_ang=wave_ang[:min_l], spec_gt=spec_gt_raw[:min_l], spec_pred=is_spec_pred[:min_l],
+            wave_ang=wave_ang[:min_l], spec_gt=spec_gt_raw[:min_l], spec_pred=spec_pred[:min_l],
             save_dir=save_dir, filename=filename
         )
         

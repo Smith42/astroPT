@@ -116,6 +116,7 @@ class TrainingConfig:
     
     # Spectra
     spectra_train: bool = True              # Spectra bool flag for enabling training
+    spectra_inverse: bool = False           # Reading spectra from red to blue 
     spectra_size: int = 7781                # Spectra total size
     spectra_patch_size: int = 10            # Patch size for each spectrum
     spectra_loss_weight: float = 1.0        # Spectra importance for training 
@@ -539,7 +540,8 @@ def create_dataloaders(
         modality_registry=registry, 
         spiral=config.spiral,
         stochastic=True,
-        transform=train_tf
+        transform=train_tf,
+        spectra_inverse=config.spectra_inverse,
     )
     
     # Instantiate Validation/Test Dataset 
@@ -549,7 +551,8 @@ def create_dataloaders(
         modality_registry=registry,
         spiral=config.spiral,
         stochastic=False,
-        transform=val_tf
+        transform=val_tf,
+        spectra_inverse=config.spectra_inverse,
     )
 
     # Configure DDP Samplers

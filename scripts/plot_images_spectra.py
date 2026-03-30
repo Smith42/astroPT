@@ -382,6 +382,8 @@ def main():
     norm_type_img = raw_config_dict.get('images_norm_type', raw_config_dict.get('img_norm_type', 'asinh'))
     norm_scaler_img=raw_config_dict.get('images_norm_scaler',raw_config_dict.get('img_norm_scaler',1.0))
     norm_const_img = raw_config_dict.get('images_norm_const',raw_config_dict.get('img_norm_const',1.0))
+    
+    inverse_spec = raw_config_dict.get('spectra_inverse', False)
     norm_type_spec = raw_config_dict.get('spectra_norm_type', 'constant')
     norm_scaler_spec = raw_config_dict.get('spectra_norm_scaler',1.0)
     norm_const_spec = raw_config_dict.get('spectra_norm_const', 1.0)
@@ -402,7 +404,8 @@ def main():
         modality_registry=registry,
         spiral=True,      
         stochastic=False,  
-        transform=data_tf
+        transform=data_tf,
+        spectra_inverse=inverse_spec,
     )
     
     # Sample Selection
@@ -563,8 +566,14 @@ def main():
                 norm_scaler_spec,
                 norm_const_spec
             )
-            wave_ang = np.array(raw_record['spectrum_wave']).flatten()
             
+            wave_ang = np.array(raw_record['spectrum_wave']).flatten()
+            true_len = len(wave_ang)
+            spec_pred = spec_pred[:true_len]
+            
+            if inverse_spec:
+                spec_pred = spec_pred[::-1]
+                
             min_len = min(len(spec_gt), len(spec_pred), len(wave_ang))
             spec_gt = spec_gt[:min_len]
             spec_pred = spec_pred[:min_len]
