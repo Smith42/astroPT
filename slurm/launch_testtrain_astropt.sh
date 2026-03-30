@@ -30,11 +30,12 @@ python3 scripts/train_multimodal_arrow.py \
     --train_description "$T_DESC" \
     --init_from "scratch" \
     --loss_type "mae" \
-    --eval_interval 100 \
+    --eval_interval 50 \
     --log_interval 10 \
     --checkpoint_save_type "all" \
-    --checkpoint_interval 100 \
-    --max_run_hours "00:10:00" \
+    --checkpoint_interval 50 \
+    --max_run_hours "00:20:00" \
+    --spectra_inverse \
     --no-compile 
 
 echo "Test end."
