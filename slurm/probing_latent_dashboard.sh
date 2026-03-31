@@ -68,21 +68,26 @@ python "$PYTHON_SCRIPT" \
   --save_dir "$SAVE_DIR" \
   --input_dirs \
       "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260307_asinh_rot_mae/embeddings/best_meanrank/latent_mapper" \
-      "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260313_asinh_rot_mae_specpatchsize5/embeddings/best_meanrank/latent_mapper" \
+      "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260312_asinh_rot_mae_imgpatchsize8/embeddings/best_meanrank/latent_mapper" \
       "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260312_asinh_rot_mae_imgpatchsize8/embeddings/best_meanrank/latent_mapper" \
       "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260315_asinh_rot_mae_imgpatchsize4/embeddings/best_meanrank/latent_mapper" \
+      "$SAVE_DIR/latent_mapper" \
   --names \
       "MAE Mean-Rank Pooling (IMG PS 16 / SPEC PS 10) (0.24)" \
-      "MAE Mean-Rank SPEC Patch Size 5 (0.23)" \
       "MAE Mean-Rank IMG Patch Size 8 (0.14)" \
+      "MAE Mean-Rank IMG Patch Size 8 - Inverse Spec (0.22)" \
       "MAE Mean-Rank IMG Patch Size 4 (0.27)" \
+      ${SAVE_NAME:+--save_name "$SAVE_NAME"} \
   --targets \
       Z LOGMSTAR LOGSFR GR \
       flux_detection_total HALPHA_EW HALPHA_FLUX NII_6584_FLUX OIII_5007_FLUX HBETA_FLUX \
       sersic_sersic_vis_radius sersic_sersic_vis_index sersic_sersic_vis_axis_ratio has_spiral_arms_yes smoothness gini \
       SPECTYPE data_set_release \
-  ${SAVE_NAME:+--save_name "$SAVE_NAME"}
+  
 
 echo "-----------------------------------------------"
 echo "Latent Mapper Dashboard Finished"
 echo "-----------------------------------------------"
+
+
+# ${SAVE_NAME:+--save_name "$SAVE_NAME"}
