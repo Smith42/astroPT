@@ -158,7 +158,7 @@ launch_analysis() {
     echo "    [UMAPS]   Job sent.       ID: $J_UMAP (Depends on Embeds: ok)"
 
     # PROBING DOWNSTREAM TASKS
-    local J_PROB=$(sbatch --parsable \
+    J_PROB=$(sbatch --parsable \
                 --dependency=afterok:$J_EMB \
                 --job-name="Probing_Tasks$JOB_SUFFIX" \
                 "$PROBING_SCRIPT" \
