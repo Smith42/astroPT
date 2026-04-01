@@ -1107,7 +1107,8 @@ def main():
                 B = EuclidDESIDatasetArrow.process_modes(
                     batch_data=raw_batch, 
                     modality_registry=registry, 
-                    device=torch.device(device)
+                    device=torch.device(device),
+                    shuf=True # Important to avoide a modality always going first
                 )
                         
                 
@@ -1129,8 +1130,33 @@ def main():
                     with ctx: 
                         
                         # Forward pass
-                        _, loss = model(B["X"], targets=B["Y"])
+                        outputs, loss = model(B["X"], targets=B["Y"])
                         
+                        # --- INITIAL LOSS BALANCE CHECK (Step 0) ---
+                        if iter_num == 0 and micro_step == 0 and ddp_rank == 0:
+                            logger.info(" --> INITIAL LOSS MODALITY BALANCE CHECK (Step 0) <-- ")
+                            initial_losses = {}
+                            for mod_name in registry.names():
+                                if mod_name in outputs and mod_name in B["Y"]:
+                                    pred = outputs[mod_name]
+                                    target = B["Y"][mod_name]
+                                    mod_config = registry.get_config(mod_name)
+                                    
+                                    if config.loss_type in ["l1", "mae"]:
+                                        mod_loss = torch.nn.functional.l1_loss(pred, target).item()
+                                    elif config.loss_type == "mse":
+                                        mod_loss = torch.nn.functional.mse_loss(pred, target).item()
+                                    else:
+                                        mod_loss = torch.nn.functional.huber_loss(pred, target, delta=config.loss_huber_delta).item()
+                                    
+                                    weighted_loss = mod_loss * mod_config.loss_weight
+                                    initial_losses[f"initial_loss/{mod_name}_unweighted"] = mod_loss
+                                    initial_losses[f"initial_loss/{mod_name}_weighted"] = weighted_loss
+                                    
+                                    logger.info(f"Modality: {mod_name:<10} | Unweighted Loss: {mod_loss:.6f} | Weight: {mod_config.loss_weight} | Weighted Contrib: {weighted_loss:.6f}")
+                            if config.log_via_wandb and _WANDB_AVAILABLE:
+                                wandb.log(initial_losses, step=0)
+
                         # Skipping the batch if the loss is NaN
                         if torch.isnan(loss) or torch.isinf(loss):
                             skip_step = True

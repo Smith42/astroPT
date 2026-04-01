@@ -501,7 +501,7 @@ class EuclidDESIDatasetArrow(Dataset):
         batch_data: Dict[str, Any], 
         modality_registry: Any, 
         device: torch.device, 
-        shuf: bool = False # Ignorado para mantener sincronía alfabética
+        shuf: bool = False 
     ) -> Dict[str, Dict[str, torch.Tensor]]:
         """
         Prepares the batch for training by moving tensors to GPU and creating Input (X) 
