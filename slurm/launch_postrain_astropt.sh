@@ -10,17 +10,21 @@ echo "-------------------------------------------------"
 REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
 SCRIPT_DIR=$(dirname "$0")
 DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
+#DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_large_P50"
 META_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.1.fits"
 
 # LAUNCHING SCRIPTS
 TRAIN_SCRIPT="$SCRIPT_DIR/train_astropt_multiGPU.sh"
 PLOT_MET_SCRIPT="$SCRIPT_DIR/plot_training_metrics.sh"
 PLOT_IMG_SCRIPT="$SCRIPT_DIR/plot_images_spectra.sh"
+CROSS_REC_SCRIPT="$SCRIPT_DIR/cross_reconstruction.sh"
 EXT_EMBD_SCRIPT="$SCRIPT_DIR/extract_embeddings.sh"
 COS_SIM_SCRIPT="$SCRIPT_DIR/cosine_similarity.sh"
 UMAPS_SCRIPT="$SCRIPT_DIR/plot_umaps.sh"
 PROBING_SCRIPT="$SCRIPT_DIR/probing_downstream.sh"
 PROBING_DASH_SCRIPT="$SCRIPT_DIR/probing_downstream_dashboard.sh"
+LATENT_SCRIPT="$SCRIPT_DIR/probing_latent_mapper.sh"
+LATENT_DASH_SCRIPT="$SCRIPT_DIR/probing_latent_dashboard.sh"
 WORKFLOW_SCRIPT="$SCRIPT_DIR/workflow_controller.sh"
 
 # ARGUMENTS DEFAULT VALUES
@@ -95,6 +99,16 @@ launch_analysis() {
             )
     echo "    [ImgSpec] Job sent.       ID: $J_IMG (Depends on Train: any)"
 
+    local J_CROSS=$(sbatch --parsable \
+                --job-name="Cross_Rec" \
+                "$CROSS_REC_SCRIPT" \
+                -r "$REPO_ROOT" \
+                -w "$WEIGHTS_DIR" \
+                -s "$PLOTS_DIR" \
+                -a "$DATA_DIR"
+            )
+    echo "    [CrossRec] Job sent.      ID: $J_CROSS (Depends on Train: any)"
+
     # Extract Embeddings 
     local J_EMB=$(sbatch --parsable \
                 --job-name="Extract_Embed" \
@@ -151,6 +165,28 @@ launch_analysis() {
                 -e "$EMB_DIR"
             )
     echo "    [PROB DASH] Job sent.     ID: $J_PROB_DASH (Depends on Probing: ok)"
+
+    # PROBING LATENT MAPPING TASKS
+    local J_LATENT=$(sbatch --parsable \
+                --dependency=afterok:$J_EMB \
+                --job-name="Latent_Tasks" \
+                "$LATENT_SCRIPT" \
+                -r "$REPO_ROOT" \
+                -w "$WEIGHTS_DIR" \
+                -e "$EMB_DIR" \
+                -f "$META_PATH"
+            )
+    echo "    [LATENT] Job sent.        ID: $J_LATENT (Depends on Embeds: ok)"
+
+    # PROBING LATENT MAPPING DASHBOARD
+    local J_LATENT_DASH=$(sbatch --parsable \
+                --dependency=afterok:$J_LATENT \
+                --job-name="Latent_Tasks_Dash" \
+                "$LATENT_DASH_SCRIPT" \
+                -r "$REPO_ROOT" \
+                -e "$EMB_DIR"
+            )
+    echo "    [LATENT DASH] Job sent.   ID: $J_LATENT_DASH (Depends on Latent: ok)"
     
     echo " --> Analysis Batch Sent."
 }

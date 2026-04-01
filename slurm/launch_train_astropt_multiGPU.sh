@@ -9,8 +9,8 @@ echo "-------------------------------------------------"
 # PATH AND DIR CONFIGURATION
 REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
 SCRIPT_DIR=$(dirname "$0")
-#DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
-DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_large_P50"
+DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
+#DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_large_P50"
 META_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.1.fits"
 
 # LAUNCHING SCRIPTS
@@ -229,7 +229,7 @@ echo "-------------------------------------------------"
 echo "STEP 2: TRAINING FROM RESUME"
 JOB_SUFFIX="_T2"
 JOB_TRAIN_2=$(sbatch --parsable \
-    --dependency=afterok:$J_WOR \
+    --dependency=afterany:$J_PROB \
     --job-name="Train_AstroPT_DDP$JOB_SUFFIX" \
     "$TRAIN_SCRIPT" \
     -r "$REPO_ROOT" \
@@ -256,7 +256,7 @@ if [[ "$LONG_TRAINING" == "TRUE" ]]; then
     echo "STEP 3: TRAINING FROM RESUME"
     JOB_SUFFIX="_T3"
     JOB_TRAIN_3=$(sbatch --parsable \
-        --dependency=afterok:$J_WOR \
+        --dependency=afterany:$J_PROB \
         --job-name="Train_AstroPT_DDP$JOB_SUFFIX" \
         "$TRAIN_SCRIPT" \
         -r "$REPO_ROOT" \
