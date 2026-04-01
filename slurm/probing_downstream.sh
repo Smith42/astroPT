@@ -20,13 +20,15 @@ PYTHON_SCRIPT="scripts/probing_downstream.py"
 META_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.1.fits"
 
 #--- ARGUMENT PARSING (FLAGS) ---#
-while getopts ":r:w:s:e:f:" opt; do
+while getopts ":r:w:s:e:f:u:n:" opt; do
   case $opt in
     r) REPO_ROOT="$OPTARG" ;;
     w) WEIGHTS_DIR="$OPTARG" ;;
     s) SAVE_DIR="$OPTARG" ;;
     e) EMB_DIR="$OPTARG" ;;
     f) META_PATH="$OPTARG" ;;
+    u) SUBSET_ID_PATH="$OPTARG" ;;
+    n) SAVE_CSV_NAME="$OPTARG" ;;
     \?) echo "[ERROR] Invalid option -$OPTARG" >&2; exit 1 ;;
   esac
 done
@@ -69,6 +71,16 @@ if [ -z "$SAVE_DIR" ]; then
 fi
 SAVE_DIR=$(readlink -f "$SAVE_DIR")
 
+# Extra Arguments
+EXTRA_ARGS=()
+if [ -n "$SUBSET_ID_PATH" ]; then
+    SUBSET_ID_PATH=$(readlink -f "$SUBSET_ID_PATH")
+    EXTRA_ARGS+=("--filter_ids_path" "$SUBSET_ID_PATH")
+fi
+
+if [ -n "$SAVE_CSV_NAME" ]; then
+    EXTRA_ARGS+=("--save_name" "$SAVE_CSV_NAME")
+fi
 
 #--- EXECUTION ---#
 echo "Probing Configuration:"
@@ -86,6 +98,7 @@ python "$PYTHON_SCRIPT" \
     --epochs 50 \
     --batch_size 128 \
     --lr 1e-3
+    "${EXTRA_ARGS[@]}"
 
 echo "-----------------------------------------------"
 echo "Probing Tasks Finished"
