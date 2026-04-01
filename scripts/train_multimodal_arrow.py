@@ -638,8 +638,13 @@ def create_model(
 
     # Pythorch Compilation
     if config.compile:
+        if ddp:
+            # Work around a known Dynamo distributed partition bug where SymInt
+            # outputs can be materialized as Python ints in AOTAutograd wrappers.
+            torch._dynamo.config.optimize_ddp = False
+            torch._dynamo.config.capture_scalar_outputs = True
         logger.info("Compiling model with torch.compile...")
-        model = torch.compile(model, mode=config.compile_mode) 
+        model = torch.compile(model, mode=config.compile_mode, dynamic=False)
 
     # DDP Wrapping
     if ddp:

@@ -172,19 +172,21 @@ class SelfAttention(nn.Module):
             )
 
     def forward(self, x, block_mask=None):
-        B, T, C = (
-            x.size()
-        )  # batch size, sequence length, embedding dimensionality (n_embd)
+        # Keep sequence length implicit in reshape ops to reduce SymInt leakage
+        # across distributed compile partitions.
+        B = x.shape[0]
+        C = x.shape[2]
+        head_dim = C // self.n_head
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(
+        k = k.reshape(B, -1, self.n_head, head_dim).transpose(
             1, 2
         )  # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(
+        q = q.reshape(B, -1, self.n_head, head_dim).transpose(
             1, 2
         )  # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(
+        v = v.reshape(B, -1, self.n_head, head_dim).transpose(
             1, 2
         )  # (B, nh, T, hs)
 
@@ -202,8 +204,9 @@ class SelfAttention(nn.Module):
                 )
             else:
                 # manual implementation of attention
+                seq_len = q.size(-2)
                 att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-                att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float("-inf"))
+                att = att.masked_fill(self.bias[:, :, :seq_len, :seq_len] == 0, float("-inf"))
                 att = F.softmax(att, dim=-1)
                 att = self.attn_dropout(att)
                 y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
@@ -213,9 +216,7 @@ class SelfAttention(nn.Module):
             raise NotImplementedError(
                 "Attention type must be one of 'causal' or 'prefix'. Prefix requires PyTorch >= 2.6."
             )
-        y = (
-            y.transpose(1, 2).contiguous().view(B, T, C)
-        )  # re-assemble all head outputs side by side
+        y = y.transpose(1, 2).contiguous().reshape(B, -1, C)
 
         # output projection
         y = self.resid_dropout(self.c_proj(y))
@@ -362,6 +363,8 @@ class GPT(nn.Module):
         assert config.block_size is not None
         self.config = config
         self.modality_registry = modality_registry
+        self.mod_names = modality_registry.names()
+        self.mod_loss_weights = {m: modality_registry.get_config(m).loss_weight for m in self.mod_names}
         self.backbone = config.backbone
 
         if self.backbone == "native":
@@ -370,6 +373,10 @@ class GPT(nn.Module):
             self._init_llm_backbone(config)
         else:
             raise ValueError(f"Unknown backbone type: {self.backbone}")
+
+        # Precompute loss function configuration parameters safely
+        self.loss_type = getattr(self.config, "loss_type", "huber").lower()
+        self.loss_huber_delta = getattr(self.config, "loss_huber_delta", 1.0)
 
         # optional task head for finetuning
         self.task_head = None
@@ -565,10 +572,9 @@ class GPT(nn.Module):
         target_modality=None,
         attention_mask=None,
     ):
-        tt = sum(v.size(1) for k, v in inputs.items() if k.endswith("_positions"))
-        assert tt <= self.config.block_size, (
-            f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
-        )
+        # Determine strict static list of batch modes matching dictionary insertion order
+        batch_modes = [k for k in inputs if k in self.mod_names]
+
         if self.config.attn_type == "prefix":
             # TODO we need to make sure that the prefix hyperparameters are tuned well:
             if prefix_len is None:
@@ -589,7 +595,8 @@ class GPT(nn.Module):
         # forward the GPT model itself
         embeddings = []
         pos_embeddings = []
-        for mod_name in self.modality_registry.names():
+        # Get dynamic order from the batch, respecting Python 3.7+ dict insertion order
+        for mod_name in batch_modes:
             input_tensor = inputs[mod_name]
             embeddings.append(self.encoders[mod_name](input_tensor))
             pos = inputs[mod_name + "_positions"]
@@ -608,7 +615,7 @@ class GPT(nn.Module):
         if target_modality is not None:
             # continue sequence if target modality is in inputs
             if target_modality in inputs:
-                for mod_name in self.modality_registry.names():
+                for mod_name in batch_modes:
                     input_tensor = inputs[mod_name]
                     if mod_name == target_modality:
                         seq_len = input_tensor.size(1)
@@ -620,35 +627,32 @@ class GPT(nn.Module):
                 hidden_state = x[:, -1:, :]
                 outputs[target_modality] = self.decoders[target_modality](hidden_state)
 
-        for ii, mod_name in enumerate(self.modality_registry.names()):
+        # Reset current_idx for the main output processing loop
+        current_idx = 0
+        for ii, mod_name in enumerate(batch_modes):
             input_tensor = inputs[mod_name]
-            seq_len = input_tensor.size(1)
-            # If we have more than one mode, the last value of the past modes
-            # are used to prompt the next mode gen:
-            if ii == 0 and len(self.modality_registry.names()) > 1:
-                seq_len = seq_len - 1
-            hidden_state = x[:, current_idx : current_idx + seq_len]
+            output_seq_len = input_tensor.size(1)
+            
+            if ii == 0:
+                if len(batch_modes) > 1:
+                    output_seq_len -= 1
+                hidden_state = x[:, current_idx : current_idx + output_seq_len]
+            else:
+                output_seq_len += 1
+                hidden_state = x[:, current_idx - 1 : current_idx - 1 + output_seq_len]
+
             outputs[mod_name] = self.decoders[mod_name](hidden_state)
-            current_idx += seq_len
+            # Always advance the index by the original input tensor length
+            current_idx += input_tensor.size(1)
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             current_idx = 0
-            loss = 0
-            for mod_name in self.modality_registry.names():
+            loss = torch.tensor(0.0, device=x.device, dtype=x.dtype)
+            for mod_name in batch_modes:
                 target = targets[mod_name]
-                seq_len = target.size(1)
-                mod_config = self.modality_registry.get_config(mod_name)
+                mod_loss_weight = self.mod_loss_weights[mod_name]
                 pred = outputs[mod_name]
-                
-                # Dynamic selection of loss function
-                if hasattr(self.config, "loss_type") and self.config.loss_type.lower() in ["l1", "mae"]:
-                    loss_fn = F.l1_loss
-                elif hasattr(self.config, "loss_type") and self.config.loss_type == "mse":
-                    loss_fn = F.mse_loss
-                else:
-                    def loss_fn(p, t, reduction="mean"):
-                        return F.huber_loss(p, t, delta=self.config.loss_huber_delta, reduction=reduction)
                 
                 if self.config.attn_type == "prefix":
                     # TODO fix this and debug
@@ -671,28 +675,42 @@ class GPT(nn.Module):
                     #    prefix_mask[:, :prefix_sublen] = False
                 elif attention_mask is not None:
                     # Extract attention mask for this modality
-                    mod_mask = attention_mask[:, current_idx : current_idx + seq_len]
+                    mod_mask = attention_mask[:, current_idx : current_idx + target.size(1)]
 
                     if "aion" in mod_name:
                         unmasked_loss = F.cross_entropy(
-                            pred.reshape(-1, pogits.size(-1)),
+                            pred.reshape(-1, pred.size(-1)),
                             target.reshape(-1),
                         )
                     else:
-                        unmasked_loss = loss_fn(pred, target, reduction="none")
+                        if self.loss_type in ["l1", "mae"]:
+                            unmasked_loss = F.l1_loss(pred, target, reduction="none")
+                        elif self.loss_type == "mse":
+                            unmasked_loss = F.mse_loss(pred, target, reduction="none")
+                        else:
+                            unmasked_loss = F.huber_loss(pred, target, delta=self.loss_huber_delta, reduction="none")
                     mask = mod_mask.unsqueeze(-1)
                     masked_loss = (unmasked_loss * mask).sum() / mask.sum()
-                    loss += masked_loss * mod_config.loss_weight
+                    loss += masked_loss * mod_loss_weight
+                    current_idx += target.size(1)
                 else:
                     if "aion" in mod_name:
-                        loss += F.cross_entropy(
+                        mod_loss = F.cross_entropy(
                             pred.reshape(-1, pred.size(-1)),
                             target.reshape(-1),
-                        ) * mod_config.loss_weight
+                        )
                     else:
-                        loss += loss_fn(pred, target) * mod_config.loss_weight
-                current_idx += seq_len
-            loss /= len(self.modality_registry.names())
+                        if self.loss_type in ["l1", "mae"]:
+                            mod_loss = F.l1_loss(pred, target)
+                        elif self.loss_type == "mse":
+                            mod_loss = F.mse_loss(pred, target)
+                        else:
+                            mod_loss = F.huber_loss(pred, target, delta=self.loss_huber_delta)
+                            
+                    loss = loss + mod_loss * mod_loss_weight
+                    
+            # Ensure division by length trace perfectly as a tensor 
+            loss = loss / torch.tensor(len(batch_modes), device=loss.device, dtype=loss.dtype)
         else:
             loss = None
 
@@ -777,7 +795,7 @@ class GPT(nn.Module):
         # Calculate loss if targets provided
         if targets is not None:
             target_modality_infos = targets["modality_infos"]
-            loss = 0
+            loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype)
             loss_count = 0
             for batch_idx in range(len(pred_modality_infos)):
                 pred_info = pred_modality_infos[batch_idx]
@@ -922,7 +940,8 @@ class GPT(nn.Module):
             # generate token embeddings per modality
             embeddings = []
             pos_embeddings = []
-            for mod_name in self.modality_registry.names():
+            batch_modes = [k for k in inputs if k in self.modality_registry.names()]
+            for mod_name in batch_modes:
                 try:
                     input_tensor = inputs[mod_name]
                     print(input_tensor.shape)
@@ -951,7 +970,7 @@ class GPT(nn.Module):
             # split embeddings by modality
             result = {}
             current_idx = 0
-            for mod_name in self.modality_registry.names():
+            for mod_name in batch_modes:
                 input_tensor = inputs[mod_name]
                 seq_len = input_tensor.size(1)
                 result[mod_name] = embeddings_out[:, current_idx : current_idx + seq_len]
@@ -976,7 +995,8 @@ class GPT(nn.Module):
         # generate token embeddings per modality
         embeddings = []
         pos_embeddings = []
-        for mod_name in self.modality_registry.names():
+        batch_modes = [k for k in inputs if k in self.modality_registry.names()]
+        for mod_name in batch_modes:
             input_tensor = inputs[mod_name]
             embeddings.append(self.encoders[mod_name](input_tensor))
             pos = inputs[mod_name + "_positions"]

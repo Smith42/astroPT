@@ -158,7 +158,7 @@ launch_analysis() {
     echo "    [UMAPS]   Job sent.       ID: $J_UMAP (Depends on Embeds: ok)"
 
     # PROBING DOWNSTREAM TASKS
-    J_PROB=$(sbatch --parsable \
+    local J_PROB=$(sbatch --parsable \
                 --dependency=afterok:$J_EMB \
                 --job-name="Probing_Tasks$JOB_SUFFIX" \
                 "$PROBING_SCRIPT" \
@@ -170,7 +170,7 @@ launch_analysis() {
     echo "    [PROBING] Job sent.       ID: $J_PROB (Depends on Embeds: ok)"
 
     # PROBING DOWNSTREAM TASKS DASHBOARD
-    local J_PROB_DASH=$(sbatch --parsable \
+    J_PROB_DASH=$(sbatch --parsable \
                 --dependency=afterok:$J_PROB \
                 --job-name="Probing_Tasks_Dash$JOB_SUFFIX" \
                 "$PROBING_DASH_SCRIPT" \
@@ -229,7 +229,7 @@ echo "-------------------------------------------------"
 echo "STEP 2: TRAINING FROM RESUME"
 JOB_SUFFIX="_T2"
 JOB_TRAIN_2=$(sbatch --parsable \
-    --dependency=afterany:$J_PROB \
+    --dependency=afterany:$J_PROB_DASH \
     --job-name="Train_AstroPT_DDP$JOB_SUFFIX" \
     "$TRAIN_SCRIPT" \
     -r "$REPO_ROOT" \

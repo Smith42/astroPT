@@ -20,6 +20,7 @@ import gc
 import numpy as np
 from pathlib import Path
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from typing import Tuple
@@ -297,6 +298,12 @@ def main():
             # Hybrid Joint Embedding (Only if multimodal)
             if is_multimodal and 'joint' in mmaps:
                 if img_pooled is not None and spec_pooled is not None:
+                    
+                    # L2 normalize before averaging to give equal weight to each modality
+                    #img_norm = F.normalize(img_pooled, p=2, dim=1)
+                    #spec_norm = F.normalize(spec_pooled, p=2, dim=1)
+                    #joint_tensor = (img_norm + spec_norm) / 2.0
+                    
                     joint_tensor = (img_pooled + spec_pooled) / 2.0
                     mmaps['joint'][start_idx:end_idx] = joint_tensor.float().cpu().numpy()
                 elif img_pooled is not None:

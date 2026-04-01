@@ -535,7 +535,10 @@ class EuclidDESIDatasetArrow(Dataset):
                 pos = torch.arange(s, device=device, dtype=torch.long).unsqueeze(0).expand(b, -1)
 
             # Create Targets (Shifted by 1)
-            Y[mode] = data[:, 1:]
+            if i == 0:
+                Y[mode] = data[:, 1:]
+            else:
+                Y[mode] = data
 
             # Create Inputs (X) and their Positions
             if i == 0 and num_modes > 1:

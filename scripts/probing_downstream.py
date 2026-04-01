@@ -39,7 +39,7 @@ from sklearn.metrics import (accuracy_score, f1_score, confusion_matrix,
                              r2_score, mean_squared_error, 
                              precision_score, recall_score)
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.preprocessing import StandardScaler, LabelEncoder, normalize
 from torch.utils.data import DataLoader, TensorDataset
 
 # Logger Configuration
@@ -94,6 +94,12 @@ def parse_args() -> argparse.Namespace:
                         help="Type of probes to run: 'lp', 'mlp' or both.")
     parser.add_argument("--conf_matrix", type=bool, default=False, help="Generates confusion matrix")
     
+    # Subsets options
+    parser.add_argument("--save_name", type=str, default="downstream_results.csv", 
+                        help="Custom name for the output CSV file")
+    parser.add_argument("--filter_ids_path", type=str, default=None, 
+                        help="Path to an external ids.npy file to restrict the evaluation to a custom ID's subset")
+    
     # Training Hyperparams
     parser.add_argument("--epochs", type=int, default=50, help="Training epochs per task")
     parser.add_argument("--batch_size", type=int, default=128, help="Training batch size")
@@ -145,6 +151,7 @@ class AdaptiveMLP(nn.Module):
     def __init__(self, input_dim: int, output_dim: int):
         super().__init__()
         self.net = nn.Sequential(
+            #nn.Dropout(0.1),
             nn.Linear(input_dim, 512),
             nn.BatchNorm1d(512),
             nn.ReLU(),
@@ -239,7 +246,11 @@ def filter_catalog(df: pd.DataFrame) -> pd.DataFrame:
     return filtered_df
 
 
-def align_data(embeddings_dict: Dict[str, np.ndarray], catalog_df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, np.ndarray]]:
+def align_data(
+    embeddings_dict: Dict[str, np.ndarray], 
+    catalog_df: pd.DataFrame, 
+    external_filter_ids: Optional[np.ndarray] = None
+) -> Tuple[pd.DataFrame, Dict[str, np.ndarray]]:
     """Aligns filtered metadata with embeddings using TARGETID intersection."""
     logger.info("Aligning embeddings with filtered metadata...")
     emb_ids = embeddings_dict['targetid']
@@ -250,6 +261,12 @@ def align_data(embeddings_dict: Dict[str, np.ndarray], catalog_df: pd.DataFrame)
     
     # Intersection
     common_ids = np.intersect1d(emb_ids, catalog_indexed.index.values)
+    
+    if external_filter_ids is not None:
+        initial_count = len(common_ids)
+        common_ids = np.intersect1d(common_ids, external_filter_ids)
+        logger.info(f"Applied external ID filter: Intersected from {initial_count} down to {len(common_ids)} objects.")
+    
     matched_catalog = catalog_indexed.loc[common_ids].reset_index()
     
     # Indices Mapping
@@ -426,6 +443,11 @@ def train_engine(
     X_train = scaler_X.fit_transform(X_train)
     X_test = scaler_X.transform(X_test)
     
+    # StandardScaler is destructive for embedding geometry. Use L2 normalization instead.
+    # This preserves the vector direction (cosine similarity) while scaling magnitude.
+    #X_train = normalize(X_train, norm='l2', axis=1)
+    #X_test = normalize(X_test, norm='l2', axis=1)
+    
     # Target Scaling
     scaler_y = None
     if task_type == 'regression':
@@ -547,12 +569,22 @@ def main():
     if not raw_data_dict:
         logger.error("No valid embeddings found. Exiting.")
         sys.exit(1)
+        
+    filter_ids = None
+    if args.filter_ids_path:
+        filter_ids_path = Path(args.filter_ids_path)
+        if filter_ids_path.exists():
+            logger.info(f"Loading external IDs for Fair Benchmarking from: {filter_ids_path}")
+            filter_ids = np.load(filter_ids_path).astype('int64')
+        else:
+            logger.error(f"External filter IDs file not found: {filter_ids_path}")
+            sys.exit(1)
     
     # Apply scientific filters
     filtered_df = filter_catalog(raw_df)
     
     # Align and extract to RAM
-    aligned_df, aligned_embeddings = align_data(raw_data_dict, filtered_df)
+    aligned_df, aligned_embeddings = align_data(raw_data_dict, filtered_df, filter_ids)
     
     # TITLE LOGIC for confusion matrix
     config_path = weights_dir / "config.json"
