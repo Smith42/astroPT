@@ -33,9 +33,10 @@ TRAIN_NAME="New Train"
 TRAIN_DESC="New AstroPT Training"
 TRAIN_MODE="resume"
 CHECK_MODE="both"
+EXTRA_ARGS=""
 
 #--- ARGUMENT PARSING (FLAGS) ---#
-while getopts ":r:t:a:n:d:m:k:" opt; do
+while getopts ":r:t:a:n:d:m:k:x:" opt; do
   case $opt in
     r) REPO_ROOT="$OPTARG" ;;
     t) TRAIN_DIR="$OPTARG" ;;
@@ -44,6 +45,7 @@ while getopts ":r:t:a:n:d:m:k:" opt; do
     d) TRAIN_DESC="$OPTARG" ;;
     m) TRAIN_MODE="$OPTARG" ;;
     k) CHECK_MODE="$OPTARG" ;;
+    x) EXTRA_ARGS="$OPTARG" ;;
     \?) echo "Invalid option -$OPTARG" >&2; exit 1 ;;
   esac
 done
@@ -72,17 +74,28 @@ echo "  DATA DIR:      $DATA_DIR"
 echo "  TRAIN DIR:     $TRAIN_DIR"
 echo "  TRAIN NAME:    $TRAIN_NAME"
 echo "  TRAIN MODE:    $TRAIN_MODE"
+if [[ -n "$EXTRA_ARGS" ]]; then
+  echo "  EXTRA ARGS:    $EXTRA_ARGS"
+fi
 
 # Running Python Script with torch
 # Note: --max_run_hours is set slightly lower than SBATCH time to allow clean autosave
-torchrun --standalone --nproc_per_node=4 scripts/train_multimodal_arrow.py \
+CMD=(torchrun --standalone --nproc_per_node=4 scripts/train_multimodal_arrow.py \
     --data_dir "$DATA_DIR" \
     --train_dir "$TRAIN_DIR" \
     --train_name "$TRAIN_NAME" \
     --train_description "$TRAIN_DESC" \
     --init_from "$TRAIN_MODE" \
     --checkpoint_save_type "$CHECK_MODE" \
-    --max_run_hours "11:55:00"
+    --max_run_hours "11:55:00")
+
+if [[ -n "$EXTRA_ARGS" ]]; then
+  # shellcheck disable=SC2206
+  EXTRA_ARGS_ARRAY=($EXTRA_ARGS)
+  CMD+=("${EXTRA_ARGS_ARRAY[@]}")
+fi
+
+"${CMD[@]}"
 
 echo "------------------------------------------------------"
 echo "Training Finished"

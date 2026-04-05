@@ -30,15 +30,17 @@ WORKFLOW_SCRIPT="$SCRIPT_DIR/workflow_controller.sh"
 # ARGUMENTS DEFAULT VALUES
 TRAIN_NAME="New Train"              # Training name
 TRAIN_DESC="New AstroPT Training"   # Training description
+TRAIN_EXTRA_ARGS=""                 # Extra flags forwarded to train_multimodal_arrow.py
 
-while getopts ":n:d:t:l:h" opt; do
+while getopts ":n:d:t:l:x:h" opt; do
   case $opt in
     n) TRAIN_NAME="$OPTARG" ;;
     d) TRAIN_DESC="$OPTARG" ;;
     t) TRAIN_DIR="$OPTARG" ;;
     l) LONG_TRAINING="$OPTARG" ;;
+        x) TRAIN_EXTRA_ARGS="$OPTARG" ;;
     h) 
-       echo "Usage: $0 [-n 'Name'] [-d 'Description'] [-o 'output_path/']"
+             echo "Usage: $0 [-n 'Name'] [-d 'Description'] [-t 'output_path/'] [-x 'extra train flags']"
        exit 0 
        ;;
     \?) 
@@ -217,7 +219,8 @@ JOB_TRAIN_1=$(sbatch --parsable \
     -n "$TRAIN_NAME" \
     -d "$TRAIN_DESC" \
     -m "scratch" \
-    -k "all")
+    -k "all" \
+    -x "$TRAIN_EXTRA_ARGS")
 echo "Training Job (Scratch) launched. ID: $JOB_TRAIN_1"
 
 # Calling the execution function
@@ -238,7 +241,8 @@ JOB_TRAIN_2=$(sbatch --parsable \
     -n "$TRAIN_NAME" \
     -d "$TRAIN_DESC" \
     -m "resume" \
-    -k "all")
+    -k "all" \
+    -x "$TRAIN_EXTRA_ARGS")
 echo "Training Job (Resume) launched.  ID: $JOB_TRAIN_2 (Depends on Train 1: ok $JOB_TRAIN_1)"
 
 # Calling the execution function
@@ -265,7 +269,8 @@ if [[ "$LONG_TRAINING" == "TRUE" ]]; then
         -n "$TRAIN_NAME" \
         -d "$TRAIN_DESC" \
         -m "resume" \
-        -k "all")
+        -k "all" \
+        -x "$TRAIN_EXTRA_ARGS")
     echo "Training Job (Resume) launched.  ID: $JOB_TRAIN_3 (Depends on Train 2: ok $JOB_TRAIN_2)"
 
     # Calling the execution function

@@ -166,6 +166,18 @@ class TrainingConfig:
     wandb_run_name: Optional[str] = None    # Training name
     log_emissions: bool = False             # CodeCarbon logging
     profile: bool = False                   # Enable PyTorch Profiler (Trace analysis)
+
+    #--- Optional Diagnostics & Ablation Flags ---#
+    diagnostics_enabled: bool = False       # Enable modality diagnostics CSV/WandB logs
+    diagnostics_interval: int = 200         # Iter interval for diagnostics writes/logs
+    diagnostics_track_losses: bool = True   # Track per-modality losses
+    diagnostics_track_grads: bool = True    # Track per-branch gradient norms
+    diagnostics_file_name: str = "training_diagnostics.csv"
+    modality_dropout_prob: float = 0.0      # Probability to zero one modality in a micro-step
+    modality_dropout_mode: str = "none"     # none, images, spectra, random
+    lr_mult_images: float = 1.0             # LR multiplier for image encoder/decoder branch
+    lr_mult_spectra: float = 1.0            # LR multiplier for spectra encoder/decoder branch
+    lr_mult_backbone: float = 1.0           # LR multiplier for transformer/shared branch
     
     # Dynamic output directory with date
     def __post_init__(self):
@@ -253,6 +265,132 @@ def parse_time_to_seconds(time_str: str) -> float:
         return h * 3600 + m * 60 + s
     except ValueError:
         raise ValueError(f"Invalid time format: {time_str}. Expected HH:MM:SS")
+
+
+def validate_runtime_flags(config: TrainingConfig) -> None:
+    """Validates optional runtime flags introduced for diagnostics/ablations."""
+    allowed_dropout_modes = {"none", "images", "spectra", "random"}
+
+    if not (0.0 <= config.modality_dropout_prob <= 1.0):
+        raise ValueError("modality_dropout_prob must be in [0, 1].")
+    if config.modality_dropout_mode.lower() not in allowed_dropout_modes:
+        raise ValueError(
+            f"modality_dropout_mode must be one of: {sorted(allowed_dropout_modes)}"
+        )
+    if config.diagnostics_interval < 1:
+        raise ValueError("diagnostics_interval must be >= 1.")
+
+    for field_name in ("lr_mult_images", "lr_mult_spectra", "lr_mult_backbone"):
+        value = getattr(config, field_name)
+        if value <= 0.0:
+            raise ValueError(f"{field_name} must be > 0.")
+
+
+def _normalize_param_name(param_name: str) -> str:
+    """Normalizes wrapped parameter names from DDP/compile wrappers."""
+    clean_name = param_name
+    for prefix in ("module._orig_mod.", "module.", "_orig_mod."):
+        clean_name = clean_name.replace(prefix, "")
+    return clean_name
+
+
+def _param_branch_name(param_name: str) -> str:
+    """Maps a parameter name to an optimizer/diagnostics branch."""
+    name = _normalize_param_name(param_name)
+    if any(token in name for token in ("encoders.images", "decoders.images", "embedders.images")):
+        return "images"
+    if any(token in name for token in ("encoders.spectra", "decoders.spectra", "embedders.spectra")):
+        return "spectra"
+    return "backbone"
+
+
+def _compute_modality_losses(
+    outputs: Dict[str, torch.Tensor],
+    targets: Dict[str, torch.Tensor],
+    config: TrainingConfig,
+) -> Dict[str, float]:
+    """Computes unweighted loss per modality for diagnostics only."""
+    result: Dict[str, float] = {}
+
+    for mod_name, pred in outputs.items():
+        if mod_name not in targets:
+            continue
+        target = targets[mod_name]
+
+        if config.loss_type in ["l1", "mae"]:
+            mod_loss = torch.nn.functional.l1_loss(pred, target)
+        elif config.loss_type == "mse":
+            mod_loss = torch.nn.functional.mse_loss(pred, target)
+        else:
+            mod_loss = torch.nn.functional.huber_loss(
+                pred,
+                target,
+                delta=config.loss_huber_delta,
+            )
+        result[mod_name] = float(mod_loss.detach().item())
+
+    return result
+
+
+def maybe_apply_modality_dropout(
+    batch: Dict[str, Dict[str, torch.Tensor]],
+    config: TrainingConfig,
+) -> str:
+    """Optionally zeros a modality as a robustness stress-test; returns dropped modality or 'none'."""
+    drop_prob = float(config.modality_dropout_prob)
+    if drop_prob <= 0.0:
+        return "none"
+    if float(np.random.random()) >= drop_prob:
+        return "none"
+
+    available = [m for m in ("images", "spectra") if m in batch["X"] and m in batch["Y"]]
+    if len(available) < 1:
+        return "none"
+
+    mode = config.modality_dropout_mode.lower().strip()
+    if mode == "none":
+        return "none"
+    if mode == "random":
+        chosen = str(np.random.choice(available))
+    else:
+        chosen = mode if mode in available else "none"
+
+    if chosen == "none":
+        return "none"
+
+    batch["X"][chosen] = torch.zeros_like(batch["X"][chosen])
+    batch["Y"][chosen] = torch.zeros_like(batch["Y"][chosen])
+    return chosen
+
+
+def summarize_modality_dropout(drop_counts: Dict[str, int]) -> str:
+    """Compacts micro-step dropout events into one per-iteration label."""
+    images_cnt = drop_counts.get("images", 0)
+    spectra_cnt = drop_counts.get("spectra", 0)
+
+    if images_cnt > 0 and spectra_cnt > 0:
+        return "mixed"
+    if images_cnt > 0:
+        return "images"
+    if spectra_cnt > 0:
+        return "spectra"
+    return "none"
+
+
+def compute_branch_grad_norms(model: torch.nn.Module) -> Dict[str, float]:
+    """Computes gradient L2 norms for image/spectra/backbone branches."""
+    grad_sq = {"images": 0.0, "spectra": 0.0, "backbone": 0.0}
+
+    for name, param in model.named_parameters():
+        if param.grad is None:
+            continue
+        branch = _param_branch_name(name)
+        grad = param.grad.detach()
+        grad_sq[branch] += float(torch.sum(grad * grad).item())
+
+    norms = {k: math.sqrt(v) for k, v in grad_sq.items()}
+    norms["total"] = math.sqrt(sum(grad_sq.values()))
+    return norms
     
     
 def save_config_json(config: TrainingConfig, rank: int, save_dir: Path):
@@ -687,31 +825,66 @@ def create_optimizer(
     
     # Filter parameters that require gradients
     param_dict = {pn: p for pn, p in model.named_parameters() if p.requires_grad}
-    
-    # Separate parameters into Decay and No-Decay groups
-    decay_params = []
-    nodecay_params = []
-    
-    for n, p in param_dict.items():
-        if p.dim() >= 2:
-            # Tensors with 2 or more dimensions GET decay
-            decay_params.append(p)
-        else:
-            # Tensors with 1 dimension DO NOT GET decay
-            nodecay_params.append(p)
-            
-    # Calculate total parameters for logging
-    num_decay_params = sum(p.numel() for p in decay_params)
-    num_nodecay_params = sum(p.numel() for p in nodecay_params)
-    
-    logger.info(f"Optimizer Config: {len(decay_params)} tensors ({num_decay_params:,} params) with decay.")
-    logger.info(f"Optimizer Config: {len(nodecay_params)} tensors ({num_nodecay_params:,} params) without decay.")
 
-    # Create the param_groups list for PyTorch
-    optim_groups = [
-        {'params': decay_params, 'weight_decay': config.weight_decay},
-        {'params': nodecay_params, 'weight_decay': 0.0}
-    ]
+    # Keep legacy two-group optimizer layout unless branch multipliers are requested.
+    use_branch_lr = any(
+        abs(v - 1.0) > 1e-12
+        for v in (config.lr_mult_images, config.lr_mult_spectra, config.lr_mult_backbone)
+    )
+
+    if not use_branch_lr:
+        decay_params = []
+        nodecay_params = []
+
+        for _, p in param_dict.items():
+            if p.dim() >= 2:
+                decay_params.append(p)
+            else:
+                nodecay_params.append(p)
+
+        num_decay_params = sum(p.numel() for p in decay_params)
+        num_nodecay_params = sum(p.numel() for p in nodecay_params)
+        logger.info(
+            f"Optimizer Config: {len(decay_params)} tensors ({num_decay_params:,} params) with decay."
+        )
+        logger.info(
+            f"Optimizer Config: {len(nodecay_params)} tensors ({num_nodecay_params:,} params) without decay."
+        )
+
+        optim_groups = [
+            {"params": decay_params, "weight_decay": config.weight_decay, "lr_scale": 1.0, "group_name": "decay"},
+            {"params": nodecay_params, "weight_decay": 0.0, "lr_scale": 1.0, "group_name": "nodecay"},
+        ]
+    else:
+        branch_lr = {
+            "images": float(config.lr_mult_images),
+            "spectra": float(config.lr_mult_spectra),
+            "backbone": float(config.lr_mult_backbone),
+        }
+
+        grouped: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for name, param in param_dict.items():
+            decay_key = "decay" if param.dim() >= 2 else "nodecay"
+            branch = _param_branch_name(name)
+            key = (branch, decay_key)
+
+            if key not in grouped:
+                grouped[key] = {
+                    "params": [],
+                    "weight_decay": config.weight_decay if decay_key == "decay" else 0.0,
+                    "lr_scale": branch_lr[branch],
+                    "group_name": f"{branch}_{decay_key}",
+                }
+            grouped[key]["params"].append(param)
+
+        optim_groups = list(grouped.values())
+        logger.info("Optimizer Config: branch LR multipliers enabled.")
+        for group in optim_groups:
+            n_params = sum(p.numel() for p in group["params"])
+            logger.info(
+                f"  - {group['group_name']}: {len(group['params'])} tensors "
+                f"({n_params:,} params), wd={group['weight_decay']}, lr_scale={group['lr_scale']}"
+            )
 
     # Check for Fused AdamW (faster CUDA kernel)
     use_fused = 'fused' in inspect.signature(torch.optim.AdamW).parameters
@@ -785,6 +958,7 @@ def main():
     
     # Load configuration from CLI arguments (overriding defaults)
     config, _ = parser.parse_args_into_dataclasses(return_remaining_strings=True)
+    validate_runtime_flags(config)
     
     # Creating directories structure
     (train_dir, weights_dir, 
@@ -948,7 +1122,13 @@ def main():
                 logger.info(f"Load state result: {msg}")
                 
                 # Load Optimizer State
-                optimizer.load_state_dict(checkpoint['optimizer'])
+                try:
+                    optimizer.load_state_dict(checkpoint['optimizer'])
+                except ValueError as e:
+                    logger.warning(
+                        "Could not restore optimizer state (likely due to optimizer group changes). "
+                        f"Continuing with fresh optimizer. Details: {e}"
+                    )
                 
                 # Restore Training Counters
                 iter_num = checkpoint['iter_num']
@@ -1024,6 +1204,17 @@ def main():
                         "grad_norm", "clipped", "lr", "mfu", "mem_gb", "dt_ms", "rt_hms", "eta_hms"
                     ]
                     f.write(",".join(headers) + "\n")
+
+            diagnostics_path = logs_dir / config.diagnostics_file_name
+            if config.diagnostics_enabled and (config.init_from == 'scratch' or not diagnostics_path.is_file()):
+                with open(diagnostics_path, "w") as f:
+                    diag_headers = [
+                        "iter", "epoch", "timestamp", "dropout_mode", "dropout_applied",
+                        "loss_images", "loss_spectra",
+                        "grad_images", "grad_spectra", "grad_backbone", "grad_total",
+                        "lr_base", "lr_images", "lr_spectra", "lr_backbone"
+                    ]
+                    f.write(",".join(diag_headers) + "\n")
         
         # WANDB Configuration
         if ddp_rank == 0:
@@ -1082,11 +1273,23 @@ def main():
             # SET LEARNING RATE for this iteration
             lr = get_learning_rate(iter_num, config)
             for param_group in optimizer.param_groups:
-                param_group['lr'] = lr
+                lr_scale = float(param_group.get('lr_scale', 1.0))
+                param_group['lr'] = lr * lr_scale
                 
             
             # Variable to accumulate loss
             loss_accum_for_log = 0.0
+
+            # Optional modality diagnostics accumulators
+            modality_loss_sums = {"images": 0.0, "spectra": 0.0}
+            modality_loss_counts = {"images": 0, "spectra": 0}
+            modality_drop_counts = {"images": 0, "spectra": 0, "none": 0}
+            branch_grad_norms = {
+                "images": float("nan"),
+                "spectra": float("nan"),
+                "backbone": float("nan"),
+                "total": float("nan"),
+            }
             
             # Variable for avoid NaNs
             skip_step = False
@@ -1115,6 +1318,9 @@ def main():
                     device=torch.device(device),
                     shuf=True # Important to avoide a modality always going first
                 )
+
+                dropped_modality = maybe_apply_modality_dropout(B, config)
+                modality_drop_counts[dropped_modality] = modality_drop_counts.get(dropped_modality, 0) + 1
                         
                 
                 # DDP Context
@@ -1169,6 +1375,13 @@ def main():
                                 logger.warning(f"NaN/Inf detected in loss at iter {iter_num}, "
                                                f"micro-step {micro_step}. Skipping batch.")
                             break
+
+                        if config.diagnostics_enabled and config.diagnostics_track_losses:
+                            micro_mod_losses = _compute_modality_losses(outputs, B["Y"], config)
+                            for mod_name, mod_loss in micro_mod_losses.items():
+                                if mod_name in modality_loss_sums:
+                                    modality_loss_sums[mod_name] += mod_loss
+                                    modality_loss_counts[mod_name] += 1
                         
                         # Scale loss
                         loss = loss / config.gradient_accumulation_steps
@@ -1178,9 +1391,6 @@ def main():
                     if not skip_step:
                         scaler.scale(loss).backward()
                         loss_accum_for_log += loss.item()
-                    
-                    # Accumulate the raw loss value for logging
-                    loss_accum_for_log += loss.item()
             
             #--- END OF MICRO-BATCHES ---#
             
@@ -1203,6 +1413,15 @@ def main():
                     # Logging if gradient is clipped
                     if grad_norm > config.grad_clip:
                         is_clipped = 1.0
+
+                diagnostics_due = (
+                    config.diagnostics_enabled
+                    and (iter_num % config.diagnostics_interval == 0)
+                    and (iter_num > initial_iter or iter_num == 0)
+                )
+
+                if diagnostics_due and config.diagnostics_track_grads:
+                    branch_grad_norms = compute_branch_grad_norms(model)
                     
                     
                 # Updating the weights
@@ -1290,9 +1509,35 @@ def main():
                         f"RT {running_str} (H:M:S) | "
                         f"ETA {eta_str} (H:M:S)" 
                     )
+
+                    diagnostics_due = (
+                        config.diagnostics_enabled
+                        and (iter_num % config.diagnostics_interval == 0)
+                        and (iter_num > initial_iter or iter_num == 0)
+                    )
+
+                    loss_images_diag = (
+                        modality_loss_sums["images"] / modality_loss_counts["images"]
+                        if modality_loss_counts["images"] > 0
+                        else float("nan")
+                    )
+                    loss_spectra_diag = (
+                        modality_loss_sums["spectra"] / modality_loss_counts["spectra"]
+                        if modality_loss_counts["spectra"] > 0
+                        else float("nan")
+                    )
+                    dropout_summary = summarize_modality_dropout(modality_drop_counts)
+
+                    if diagnostics_due:
+                        logger.info(
+                            f"Diag | Drop={dropout_summary} | "
+                            f"Loss(img/spec)=({loss_images_diag:.4f}/{loss_spectra_diag:.4f}) | "
+                            f"Grad(img/spec/back)=({branch_grad_norms['images']:.2f}/"
+                            f"{branch_grad_norms['spectra']:.2f}/{branch_grad_norms['backbone']:.2f})"
+                        )
                     
                     if config.log_via_wandb and _WANDB_AVAILABLE:
-                        wandb.log({
+                        wandb_payload = {
                             "iter": iter_num,
                             "train/loss": lossf,
                             "train/lr": lr,
@@ -1302,7 +1547,20 @@ def main():
                             "train/time_ms": avg_dt * 1000,
                             "train/rt_hours": total_seconds / 3600,
                             "train/eta_hours": eta_seconds / 3600
-                        })
+                        }
+                        if diagnostics_due and config.diagnostics_enabled:
+                            wandb_payload.update(
+                                {
+                                    "diag/loss_images": loss_images_diag,
+                                    "diag/loss_spectra": loss_spectra_diag,
+                                    "diag/grad_images": branch_grad_norms["images"],
+                                    "diag/grad_spectra": branch_grad_norms["spectra"],
+                                    "diag/grad_backbone": branch_grad_norms["backbone"],
+                                    "diag/dropout_images_microsteps": modality_drop_counts.get("images", 0),
+                                    "diag/dropout_spectra_microsteps": modality_drop_counts.get("spectra", 0),
+                                }
+                            )
+                        wandb.log(wandb_payload)
                         
                     # CSV Writing
                     try:
@@ -1318,6 +1576,21 @@ def main():
                             
                     except Exception as e:
                         logger.error(f"CSV Write Error: {e}")
+
+                    if diagnostics_due and config.diagnostics_enabled:
+                        try:
+                            with open(diagnostics_path, "a") as f:
+                                timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                f.write(
+                                    f"{iter_num},{epoch_num},{timestamp_str},{config.modality_dropout_mode},"
+                                    f"{dropout_summary},{loss_images_diag:.6f},{loss_spectra_diag:.6f},"
+                                    f"{branch_grad_norms['images']:.6f},{branch_grad_norms['spectra']:.6f},"
+                                    f"{branch_grad_norms['backbone']:.6f},{branch_grad_norms['total']:.6f},"
+                                    f"{lr:.6e},{lr*config.lr_mult_images:.6e},"
+                                    f"{lr*config.lr_mult_spectra:.6e},{lr*config.lr_mult_backbone:.6e}\n"
+                                )
+                        except Exception as e:
+                            logger.error(f"Diagnostics CSV Write Error: {e}")
 
             # VALIDATION & CHECKPOINT
             if iter_num > 0 and iter_num % config.eval_interval == 0:
