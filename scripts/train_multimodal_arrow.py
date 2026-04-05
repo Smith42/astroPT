@@ -168,16 +168,16 @@ class TrainingConfig:
     profile: bool = False                   # Enable PyTorch Profiler (Trace analysis)
 
     #--- Optional Diagnostics & Ablation Flags ---#
-    diagnostics_enabled: bool = False       # Enable modality diagnostics CSV/WandB logs
+    diagnostics_enabled: bool = True        # Enable modality diagnostics CSV/WandB logs
     diagnostics_interval: int = 200         # Iter interval for diagnostics writes/logs
     diagnostics_track_losses: bool = True   # Track per-modality losses
     diagnostics_track_grads: bool = True    # Track per-branch gradient norms
     diagnostics_file_name: str = "training_diagnostics.csv"
-    modality_dropout_prob: float = 0.0      # Probability to zero one modality in a micro-step
-    modality_dropout_mode: str = "none"     # none, images, spectra, random
-    lr_mult_images: float = 1.0             # LR multiplier for image encoder/decoder branch
-    lr_mult_spectra: float = 1.0            # LR multiplier for spectra encoder/decoder branch
-    lr_mult_backbone: float = 1.0           # LR multiplier for transformer/shared branch
+    modality_dropout_prob: float = 0.15     # Probability to zero one modality in a micro-step
+    modality_dropout_mode: str = "random"   # none, images, spectra, random
+    lr_mult_images: float = 1.10            # LR multiplier for image encoder/decoder modality
+    lr_mult_spectra: float = 1.0            # LR multiplier for spectra encoder/decoder modality
+    lr_mult_backbone: float = 1.0           # LR multiplier for transformer/shared modality
     
     # Dynamic output directory with date
     def __post_init__(self):

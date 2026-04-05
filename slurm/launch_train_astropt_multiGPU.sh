@@ -31,6 +31,8 @@ WORKFLOW_SCRIPT="$SCRIPT_DIR/workflow_controller.sh"
 TRAIN_NAME="New Train"              # Training name
 TRAIN_DESC="New AstroPT Training"   # Training description
 TRAIN_EXTRA_ARGS=""                 # Extra flags forwarded to train_multimodal_arrow.py
+J_PROB_DASH=""
+LAST_PROB_JOB_ID=""
 
 while getopts ":n:d:t:l:x:h" opt; do
   case $opt in
@@ -98,6 +100,10 @@ launch_analysis() {
                 -x "$JOB_SUFFIX"
             )
     echo "    [Work]    Job sent.       ID: $J_WOR (Depends on Train: any)"
+        if [[ -z "$J_WOR" ]]; then
+            echo "    [ERROR] Workflow controller submission failed. Stopping analysis chain."
+            return 1
+        fi
 
     # Plotting Images and Spectra
     local J_IMG=$(sbatch --parsable \
@@ -134,6 +140,10 @@ launch_analysis() {
                 -a "$DATA_DIR"
             )
     echo "    [Embeds]  Job sent.       ID: $J_EMB (Depends on Train: any)"
+        if [[ -z "$J_EMB" ]]; then
+            echo "    [ERROR] Embedding extraction submission failed. Stopping analysis chain."
+            return 1
+        fi
 
     # Cosine Similarity
     local J_COS=$(sbatch --parsable \
@@ -170,6 +180,11 @@ launch_analysis() {
                 -f "$META_PATH"
             )
     echo "    [PROBING] Job sent.       ID: $J_PROB (Depends on Embeds: ok)"
+        if [[ -z "$J_PROB" ]]; then
+            echo "    [ERROR] Downstream probing submission failed. Stopping analysis chain."
+            return 1
+        fi
+        LAST_PROB_JOB_ID="$J_PROB"
 
     # PROBING DOWNSTREAM TASKS DASHBOARD
     J_PROB_DASH=$(sbatch --parsable \
@@ -180,6 +195,10 @@ launch_analysis() {
                 -e "$EMB_DIR"
             )
     echo "    [PROB DASH] Job sent.     ID: $J_PROB_DASH (Depends on Probing: ok)"
+        if [[ -z "$J_PROB_DASH" ]]; then
+            echo "    [ERROR] Downstream dashboard submission failed. Stopping analysis chain."
+            return 1
+        fi
 
     # PROBING LATENT MAPPING TASKS
     local J_LATENT=$(sbatch --parsable \
@@ -192,6 +211,10 @@ launch_analysis() {
                 -f "$META_PATH"
             )
     echo "    [LATENT] Job sent.        ID: $J_LATENT (Depends on Embeds: ok)"
+        if [[ -z "$J_LATENT" ]]; then
+            echo "    [ERROR] Latent probing submission failed. Stopping analysis chain."
+            return 1
+        fi
 
     # PROBING LATENT MAPPING DASHBOARD
     local J_LATENT_DASH=$(sbatch --parsable \
@@ -202,6 +225,10 @@ launch_analysis() {
                 -e "$EMB_DIR"
             )
     echo "    [LATENT DASH] Job sent.   ID: $J_LATENT_DASH (Depends on Latent: ok)"
+        if [[ -z "$J_LATENT_DASH" ]]; then
+            echo "    [ERROR] Latent dashboard submission failed. Stopping analysis chain."
+            return 1
+        fi
     
     echo " --> Analysis Batch Sent."
 }
@@ -222,9 +249,16 @@ JOB_TRAIN_1=$(sbatch --parsable \
     -k "all" \
     -x "$TRAIN_EXTRA_ARGS")
 echo "Training Job (Scratch) launched. ID: $JOB_TRAIN_1"
+if [[ -z "$JOB_TRAIN_1" ]]; then
+    echo "[ERROR] Step 1 training submission failed. Aborting pipeline."
+    exit 1
+fi
 
 # Calling the execution function
-launch_analysis "$JOB_TRAIN_1" "$JOB_SUFFIX" "Part 1 (SCRATCH)"
+launch_analysis "$JOB_TRAIN_1" "$JOB_SUFFIX" "Part 1 (SCRATCH)" || {
+    echo "[ERROR] Analysis submission failed for STEP 1. Aborting pipeline."
+    exit 1
+}
 
 
 # PART 2 - TRAIN FROM RESUME
@@ -244,9 +278,16 @@ JOB_TRAIN_2=$(sbatch --parsable \
     -k "all" \
     -x "$TRAIN_EXTRA_ARGS")
 echo "Training Job (Resume) launched.  ID: $JOB_TRAIN_2 (Depends on Train 1: ok $JOB_TRAIN_1)"
+if [[ -z "$JOB_TRAIN_2" ]]; then
+    echo "[ERROR] Step 2 training submission failed. Aborting pipeline."
+    exit 1
+fi
 
 # Calling the execution function
-launch_analysis "$JOB_TRAIN_2" "$JOB_SUFFIX" "Part 2 (Resume)"
+launch_analysis "$JOB_TRAIN_2" "$JOB_SUFFIX" "Part 2 (Resume)" || {
+    echo "[ERROR] Analysis submission failed for STEP 2. Aborting pipeline."
+    exit 1
+}
 
 
 # Implementing a third training round for longer trainings
@@ -260,7 +301,7 @@ if [[ "$LONG_TRAINING" == "TRUE" ]]; then
     echo "STEP 3: TRAINING FROM RESUME"
     JOB_SUFFIX="_T3"
     JOB_TRAIN_3=$(sbatch --parsable \
-        --dependency=afterany:$J_PROB \
+        --dependency=afterany:$LAST_PROB_JOB_ID \
         --job-name="Train_AstroPT_DDP$JOB_SUFFIX" \
         "$TRAIN_SCRIPT" \
         -r "$REPO_ROOT" \
@@ -272,9 +313,16 @@ if [[ "$LONG_TRAINING" == "TRUE" ]]; then
         -k "all" \
         -x "$TRAIN_EXTRA_ARGS")
     echo "Training Job (Resume) launched.  ID: $JOB_TRAIN_3 (Depends on Train 2: ok $JOB_TRAIN_2)"
+        if [[ -z "$JOB_TRAIN_3" ]]; then
+            echo "[ERROR] Step 3 training submission failed. Aborting pipeline."
+            exit 1
+        fi
 
     # Calling the execution function
-    launch_analysis "$JOB_TRAIN_3" "$JOB_SUFFIX" "Part 3 (Resume)"
+        launch_analysis "$JOB_TRAIN_3" "$JOB_SUFFIX" "Part 3 (Resume)" || {
+            echo "[ERROR] Analysis submission failed for STEP 3. Aborting pipeline."
+            exit 1
+        }
 
 fi
 
