@@ -101,27 +101,25 @@ class TrainingConfig:
     loss_huber_delta: float = 1.0   # Delta value for controlling Huber Loss Behaviour (default 1.0)
     use_aug: bool = True            # Active data augmentation by using image rotation
     
-    #--- Multimodality Specifics ---#
-    use_token_mixing: bool = False          # Enable cross-modal interleaving
+    #--- Multimodality Mixing Parameters ---#
+    use_token_mixing: bool = True          # Enable cross-modal interleaving
     token_mixing_block_size: int = 5        # Interleaving block size
-    
-    spectra_mask: bool = False              # Enable tactical masking for spectra patches
-    spectra_mask_prob: float = 0.5          # Probability to mask each spectrum patch
-    
-    images_mask: bool = False               # Enable tactical masking for image patches
-    images_mask_prob: float = 0.5           # Probability to mask each image patch
+    shuffle_modality_train: bool = True     # Shuffle modality order during training
+    shuffle_modality_val: bool = False      # Shuffle modality order during validation
 
     # Images
     images_train: bool = True           # Images bool flag for enabling training
     images_size: int = 224              # Images side size in pixels
     images_patch_size: int = 8          # Side size in pixels of each patch in an image
     images_channels: int = 4            # Channels per image (VIS + NISP Y,J,H)
-    images_loss_weight: float = 1.0     # Images importance for training
+    images_loss_weight: float = 1.2     # Images importance for training
     images_embed_pos: bool = True       # Images embedding positions learning
     images_pos_input_size: int = 1      # Images position input size
     images_norm_type: str = "asinh"     # Normalization method: constant, z_score or asinh
     images_norm_scaler: float = 1.0     # Scaler factor if normalization requieres it (default 1.0)
     images_norm_const: float = 1.0      # Normalization global constant for images: P99=7.603847
+    images_mask: bool = True            # Enable tactical masking for image patches
+    images_mask_prob: float = 0.5       # Probability to mask each image patch
     
     # Spectra
     spectra_train: bool = True              # Spectra bool flag for enabling training
@@ -134,6 +132,8 @@ class TrainingConfig:
     spectra_norm_type: str = "asinh"        # Normalization method: constant, z_score or asinh
     spectra_norm_scaler: float = 1.0        # Scaler factor if normalization requieres it (default 1.0)
     spectra_norm_const: float = 1.0         # Normalization global constant for spectra: P99=7.956048
+    spectra_mask: bool = True               # Enable tactical masking for spectra patches
+    spectra_mask_prob: float = 0.5          # Probability to mask each spectrum patch
     
     #--- Optimization of the Learning Process ---#
     learning_rate: float = 6e-4     # Learning rate per weight update
@@ -182,9 +182,9 @@ class TrainingConfig:
     diagnostics_track_losses: bool = True   # Track per-modality losses
     diagnostics_track_grads: bool = True    # Track per-branch gradient norms
     diagnostics_file_name: str = "training_diagnostics.csv"
-    modality_dropout_prob: float = 0.15     # Probability to zero one modality in a micro-step
+    modality_dropout_prob: float = 0.20     # Probability to zero one modality in a micro-step
     modality_dropout_mode: str = "random"   # none, images, spectra, random
-    lr_mult_images: float = 1.10            # LR multiplier for image encoder/decoder modality
+    lr_mult_images: float = 1.30            # LR multiplier for image encoder/decoder modality
     lr_mult_spectra: float = 1.0            # LR multiplier for spectra encoder/decoder modality
     lr_mult_backbone: float = 1.0           # LR multiplier for transformer/shared modality
     
@@ -318,13 +318,25 @@ def _compute_modality_losses(
     targets: Dict[str, torch.Tensor],
     config: TrainingConfig,
 ) -> Dict[str, float]:
-    """Computes unweighted loss per modality for diagnostics only."""
+    """Computes unweighted loss per modality for diagnostics only.
+    
+    Note: When token_mixing is active, the model internally shifts and
+    re-indexes targets to align with its outputs, but torch.compile
+    prevents in-place mutations from propagating back to the caller.
+    We handle this by truncating targets to match output shapes.
+    """
     result: Dict[str, float] = {}
 
     for mod_name, pred in outputs.items():
         if mod_name not in targets:
             continue
         target = targets[mod_name]
+
+        # Auto-align shapes when token_mixing causes length differences
+        if pred.shape[1] != target.shape[1]:
+            min_len = min(pred.shape[1], target.shape[1])
+            pred = pred[:, :min_len]
+            target = target[:, :min_len]
 
         if config.loss_type in ["l1", "mae"]:
             mod_loss = torch.nn.functional.l1_loss(pred, target)
@@ -1335,7 +1347,7 @@ def main():
                     batch_data=raw_batch, 
                     modality_registry=registry, 
                     device=torch.device(device),
-                    shuf=True, # Important to avoide a modality always going first
+                    shuf=config.shuffle_modality_train,
                     use_token_mixing=config.use_token_mixing
                 )
 
@@ -1372,6 +1384,13 @@ def main():
                                     pred = outputs[mod_name]
                                     target = B["Y"][mod_name]
                                     mod_config = registry.get_config(mod_name)
+                                    
+                                    # Auto-align shapes (token_mixing causes length differences
+                                    # that torch.compile prevents from propagating back)
+                                    if pred.shape[1] != target.shape[1]:
+                                        min_len = min(pred.shape[1], target.shape[1])
+                                        pred = pred[:, :min_len]
+                                        target = target[:, :min_len]
                                     
                                     if config.loss_type in ["l1", "mae"]:
                                         mod_loss = torch.nn.functional.l1_loss(pred, target).item()
@@ -1650,6 +1669,7 @@ def main():
                                 batch_data=vbatch, 
                                 modality_registry=registry, 
                                 device=torch.device(device),
+                                shuf=config.shuffle_modality_val,
                                 use_token_mixing=config.use_token_mixing
                             )
                             
