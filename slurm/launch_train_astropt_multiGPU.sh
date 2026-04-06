@@ -145,7 +145,7 @@ launch_analysis() {
 
     # Extract Embeddings 
     local J_EMB=$(sbatch --parsable \
-                --dependency=afterok:$J_WOR \
+                --dependency=afterany:$J_CROSS \
                 --job-name="Extract_Embed$JOB_SUFFIX" \
                 "$EXT_EMBD_SCRIPT" \
                 -r "$REPO_ROOT" \
@@ -201,7 +201,7 @@ launch_analysis() {
         LAST_PROB_JOB_ID="$J_PROB"
 
     # PROBING DOWNSTREAM TASKS DASHBOARD
-    J_PROB_DASH=$(sbatch --parsable \
+    local J_PROB_DASH=$(sbatch --parsable \
                 --dependency=afterok:$J_PROB \
                 --job-name="Probing_Tasks_Dash$JOB_SUFFIX" \
                 "$PROBING_DASH_SCRIPT" \
@@ -231,7 +231,7 @@ launch_analysis() {
         fi
 
     # PROBING LATENT MAPPING DASHBOARD
-    local J_LATENT_DASH=$(sbatch --parsable \
+    J_LATENT_DASH=$(sbatch --parsable \
                 --dependency=afterok:$J_LATENT \
                 --job-name="Latent_Tasks_Dash$JOB_SUFFIX" \
                 "$LATENT_DASH_SCRIPT" \
@@ -280,7 +280,7 @@ echo "-------------------------------------------------"
 echo "STEP 2: TRAINING FROM RESUME"
 JOB_SUFFIX="_T2"
 JOB_TRAIN_2=$(sbatch --parsable \
-    --dependency=afterany:$J_PROB_DASH \
+    --dependency=afterany:$J_LATENT_DASH \
     --job-name="Train_AstroPT_DDP$JOB_SUFFIX" \
     "$TRAIN_SCRIPT" \
     -r "$REPO_ROOT" \

@@ -128,7 +128,8 @@ def get_spiral_indices(side_len: int) -> np.ndarray:
 
 def reconstruct_image_from_patches(
     patch_sequence: np.ndarray, 
-    mod_config: Optional[Any] = None
+    mod_config: Optional[Any] = None,
+    apply_antispiral: bool = True,
 ) -> np.ndarray:
     """Reconstructs (C, H, W) image from flattened patches."""
     seq_len, patch_dim = patch_sequence.shape
@@ -146,9 +147,12 @@ def reconstruct_image_from_patches(
         logger.error(f"Cannot reconstruct: Sequence length {seq_len} is not a perfect square.")
         return np.zeros((channels, grid_side*p_size, grid_side*p_size))
 
-    # Anti-Spiral
-    spiral_indices = get_spiral_indices(grid_side)
-    raster_patches = patch_sequence[spiral_indices]
+    # Anti-Spiral (only if data was generated in spiral order)
+    if apply_antispiral:
+        spiral_indices = get_spiral_indices(grid_side)
+        raster_patches = patch_sequence[spiral_indices]
+    else:
+        raster_patches = patch_sequence
     
     # Un-Patchify
     grid = raster_patches.reshape(grid_side, grid_side, p_size, p_size, channels)
@@ -213,6 +217,35 @@ def denormalize(data: np.ndarray, method: str, scaler: float, const: float) -> n
         return data
     
     return data
+
+
+def rebuild_full_sequence_from_teacher_forcing(
+    input_tokens: torch.Tensor,
+    pred_tokens: torch.Tensor,
+    mode_name: str,
+) -> torch.Tensor:
+    """
+    Rebuilds a full-length predicted sequence from model outputs under process_modes().
+
+    process_modes + model forward can produce three valid length relations:
+    - pred_len == input_len + 1: prediction is already full sequence (no prepend)
+    - pred_len == input_len    : prepend first input token
+    - pred_len == input_len - 1: prepend first input token
+    """
+    input_len = int(input_tokens.shape[1])
+    pred_len = int(pred_tokens.shape[1])
+
+    if pred_len == input_len + 1:
+        return pred_tokens
+
+    if pred_len in (input_len, input_len - 1):
+        start_token = input_tokens[:, 0:1, :]
+        return torch.cat([start_token, pred_tokens], dim=1)
+
+    raise RuntimeError(
+        f"Unexpected teacher-forcing lengths for {mode_name}: "
+        f"input_len={input_len}, pred_len={pred_len}"
+    )
 
 
 def plot_spectral_lines(ax, min_wl, max_wl, z):
@@ -398,11 +431,13 @@ def main():
         norm_const_spec=norm_const_spec,
     )
     
+    apply_antispiral = bool(raw_config_dict.get('spiral', True))
+
     ds = EuclidDESIDatasetArrow(
         arrow_folder_root=data_dir,
         split=args.split,
         modality_registry=registry,
-        spiral=True,      
+        spiral=apply_antispiral,
         stochastic=False,  
         transform=data_tf,
         spectra_inverse=inverse_spec,
@@ -434,7 +469,7 @@ def main():
     for batch_idx, batch in enumerate(loader):
         logger.info(f"Plotting {batch_idx+1}/{len(indices_to_plot)}...")
         
-        processed = EuclidDESIDatasetArrow.process_modes(batch, registry, device)
+        processed = EuclidDESIDatasetArrow.process_modes(batch, registry, device, use_token_mixing=config.use_token_mixing)
         X = processed['X']
         
         # Inference
@@ -444,7 +479,15 @@ def main():
                     outputs, _ = model(X)
             else:
                 model.to(torch.float32)
-                X = {k: v.to(torch.float32) if isinstance(v, torch.Tensor) else v for k, v in processed['X'].items()}
+                X = {}
+                for k, v in processed['X'].items():
+                    if isinstance(v, torch.Tensor):
+                        if k.endswith('_positions'):
+                            X[k] = v.to(torch.long)
+                        else:
+                            X[k] = v.to(torch.float32)
+                    else:
+                        X[k] = v
                 outputs, _ = model(X)
         
         # Raw data
@@ -471,12 +514,18 @@ def main():
             if vis.size > 0:
                 raw_stack = np.stack([vis, h, j, y], axis=0)
                 
-                start_token = X['images'][:, 0:1, :] 
-                pred_tokens = outputs['images'] 
+                pred_tokens = outputs['images']
+                full_seq = rebuild_full_sequence_from_teacher_forcing(
+                    input_tokens=X['images'],
+                    pred_tokens=pred_tokens,
+                    mode_name='images',
+                ).float().cpu().numpy()[0]
                 
-                full_seq = torch.cat([start_token, pred_tokens], dim=1).float().cpu().numpy()[0]
-                
-                img_pred_model = reconstruct_image_from_patches(full_seq, img_config)
+                img_pred_model = reconstruct_image_from_patches(
+                    full_seq,
+                    img_config,
+                    apply_antispiral=apply_antispiral,
+                )
                 
                 # Denormalize
                 img_pred_phys = denormalize(
@@ -556,9 +605,12 @@ def main():
         if 'spectra' in outputs and raw_record['spectrum_flux'] is not None:
             spec_gt = np.array(raw_record['spectrum_flux']).flatten()
             
-            start_s = X['spectra'][:, 0:1, :]
             pred_s = outputs['spectra']
-            full_s = torch.cat([start_s, pred_s], dim=1).float().cpu().numpy().flatten()
+            full_s = rebuild_full_sequence_from_teacher_forcing(
+                input_tokens=X['spectra'],
+                pred_tokens=pred_s,
+                mode_name='spectra',
+            ).float().cpu().numpy().flatten()
             
             spec_pred = denormalize(
                 full_s, 

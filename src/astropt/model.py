@@ -350,6 +350,8 @@ class GPTConfig:
     # LLM specific parameters
     backbone: str = "native"  # native or llm
     llm_model_name: str = None
+    use_token_mixing: bool = False
+    token_mixing_block_size: int = 5
 
 
 class GPT(nn.Module):
@@ -604,46 +606,104 @@ class GPT(nn.Module):
         tok_emb = torch.cat(embeddings, dim=1)
         pos_emb = torch.cat(pos_embeddings, dim=1)
 
+        # Apply Cross-Modal Token Mixing
+        # This forces the causal attention to constantly check alternating modalities
+        interleaved_idx = None
+        if self.config.use_token_mixing and len(batch_modes) == 2 and "images" in batch_modes and "spectra" in batch_modes:
+            mod1, mod2 = batch_modes[0], batch_modes[1]
+            l1 = inputs[mod1].size(1)
+            l2 = inputs[mod2].size(1)
+
+            idx = []
+            i1, i2 = 0, 0
+            block_size = self.config.token_mixing_block_size
+            
+            # Interleave tokens iteratively
+            while i1 < l1 or i2 < l2:
+                if i1 < l1:
+                    c1 = min(block_size, l1 - i1)
+                    idx.extend(range(i1, i1 + c1))
+                    i1 += c1
+                if i2 < l2:
+                    c2 = min(block_size, l2 - i2)
+                    idx.extend(range(l1 + i2, l1 + i2 + c2))
+                    i2 += c2
+                    
+            interleaved_idx = torch.tensor(idx, device=tok_emb.device, dtype=torch.long)
+            inverse_idx = torch.argsort(interleaved_idx)
+            
+            # Reorder tensors before entering the transformer
+            tok_emb = tok_emb[:, interleaved_idx, :]
+            pos_emb = pos_emb[:, interleaved_idx, :]
+
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x, block_mask=block_mask)
         x = self.transformer.ln_f(x)
-
+        
         outputs = {}
-        current_idx = 0
 
-        if target_modality is not None:
-            # continue sequence if target modality is in inputs
-            if target_modality in inputs:
-                for mod_name in batch_modes:
-                    input_tensor = inputs[mod_name]
-                    if mod_name == target_modality:
-                        seq_len = input_tensor.size(1)
-                        hidden_state = x[:, current_idx : current_idx + seq_len]
-                        outputs[mod_name] = self.decoders[mod_name](hidden_state)
-                    current_idx += input_tensor.size(1)
-            # target modality not in inputs so start a new sequence
-            else:
-                hidden_state = x[:, -1:, :]
-                outputs[target_modality] = self.decoders[target_modality](hidden_state)
-
-        # Reset current_idx for the main output processing loop
-        current_idx = 0
-        for ii, mod_name in enumerate(batch_modes):
-            input_tensor = inputs[mod_name]
-            output_seq_len = input_tensor.size(1)
+        if interleaved_idx is not None:
+            # --- SMART CAUSAL DECODER ROUTING FOR INTERLEAVED SEQUENCES ---
+            # If Token Mixing is active, do NOT explicitly un-interleave 'x'.
+            # Instead, route each token's hidden state to the decoder of the Modality
+            # it is expected to predict next according to the interleaved index mapping.
+            # We drop the very last token from matching since it has no next token to predict.
+            hidden = x[:, :-1, :] 
+            tgt_idx = interleaved_idx[1:]
             
-            if ii == 0:
-                if len(batch_modes) > 1:
-                    output_seq_len -= 1
-                hidden_state = x[:, current_idx : current_idx + output_seq_len]
-            else:
-                output_seq_len += 1
-                hidden_state = x[:, current_idx - 1 : current_idx - 1 + output_seq_len]
+            # Identify indices matching each modality.
+            mod1, mod2 = batch_modes[0], batch_modes[1]
+            # l1 is mod1 length, so idx < l1 corresponds to mod1 target.
+            is_mod1 = tgt_idx < l1
+            is_mod2 = tgt_idx >= l1
+            
+            outputs[mod1] = self.decoders[mod1](hidden[:, is_mod1, :])
+            outputs[mod2] = self.decoders[mod2](hidden[:, is_mod2, :])
+            
+            if targets is not None:
+                # Dynamic targets adaptation! We shift targets sequence to directly align
+                # with the smart routing outputs. This bridges length boundaries without
+                # modifying external Loss implementations. 
+                targets[mod1] = targets[mod1][:, tgt_idx[is_mod1]]
+                targets[mod2] = targets[mod2][:, tgt_idx[is_mod2] - l1]
 
-            outputs[mod_name] = self.decoders[mod_name](hidden_state)
-            # Always advance the index by the original input tensor length
-            current_idx += input_tensor.size(1)
+        else:
+            # --- STANDARD LINEAR CAUSAL SEQUENCING (NO MIXING) ---
+            current_idx = 0
+    
+            if target_modality is not None:
+                # continue sequence if target modality is in inputs
+                if target_modality in inputs:
+                    for mod_name in batch_modes:
+                        input_tensor = inputs[mod_name]
+                        if mod_name == target_modality:
+                            seq_len = input_tensor.size(1)
+                            hidden_state = x[:, current_idx : current_idx + seq_len]
+                            outputs[mod_name] = self.decoders[mod_name](hidden_state)
+                        current_idx += input_tensor.size(1)
+                # target modality not in inputs so start a new sequence
+                else:
+                    hidden_state = x[:, -1:, :]
+                    outputs[target_modality] = self.decoders[target_modality](hidden_state)
+    
+            # Reset current_idx for the main output processing loop
+            current_idx = 0
+            for ii, mod_name in enumerate(batch_modes):
+                input_tensor = inputs[mod_name]
+                output_seq_len = input_tensor.size(1)
+                
+                if ii == 0:
+                    if len(batch_modes) > 1:
+                        output_seq_len -= 1
+                    hidden_state = x[:, current_idx : current_idx + output_seq_len]
+                else:
+                    output_seq_len += 1
+                    hidden_state = x[:, current_idx - 1 : current_idx - 1 + output_seq_len]
+    
+                outputs[mod_name] = self.decoders[mod_name](hidden_state)
+                # Always advance the index by the original input tensor length
+                current_idx += input_tensor.size(1)
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss

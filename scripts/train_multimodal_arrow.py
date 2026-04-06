@@ -102,6 +102,15 @@ class TrainingConfig:
     use_aug: bool = True            # Active data augmentation by using image rotation
     
     #--- Multimodality Specifics ---#
+    use_token_mixing: bool = False          # Enable cross-modal interleaving
+    token_mixing_block_size: int = 5        # Interleaving block size
+    
+    spectra_mask: bool = False              # Enable tactical masking for spectra patches
+    spectra_mask_prob: float = 0.5          # Probability to mask each spectrum patch
+    
+    images_mask: bool = False               # Enable tactical masking for image patches
+    images_mask_prob: float = 0.5           # Probability to mask each image patch
+
     # Images
     images_train: bool = True           # Images bool flag for enabling training
     images_size: int = 224              # Images side size in pixels
@@ -680,6 +689,10 @@ def create_dataloaders(
         stochastic=True,
         transform=train_tf,
         spectra_inverse=config.spectra_inverse,
+        spectra_mask=config.spectra_mask,
+        spectra_mask_prob=config.spectra_mask_prob,
+        images_mask=config.images_mask,
+        images_mask_prob=config.images_mask_prob,
     )
     
     # Instantiate Validation/Test Dataset 
@@ -691,6 +704,10 @@ def create_dataloaders(
         stochastic=False,
         transform=val_tf,
         spectra_inverse=config.spectra_inverse,
+        spectra_mask=config.spectra_mask,
+        spectra_mask_prob=config.spectra_mask_prob,
+        images_mask=config.images_mask,
+        images_mask_prob=config.images_mask_prob,
     )
 
     # Configure DDP Samplers
@@ -765,6 +782,8 @@ def create_model(
         use_qlora=config.use_qlora,
         loss_type=config.loss_type,
         backbone=config.backbone,
+        use_token_mixing=config.use_token_mixing,
+        token_mixing_block_size=config.token_mixing_block_size,
     )
     
     # Instantiate the Model
@@ -1316,7 +1335,8 @@ def main():
                     batch_data=raw_batch, 
                     modality_registry=registry, 
                     device=torch.device(device),
-                    shuf=True # Important to avoide a modality always going first
+                    shuf=True, # Important to avoide a modality always going first
+                    use_token_mixing=config.use_token_mixing
                 )
 
                 dropped_modality = maybe_apply_modality_dropout(B, config)
@@ -1501,13 +1521,14 @@ def main():
                     logger.info(
                         f"Iter {iter_num}/{config.max_iters} ({train_prog:.2%}) | "
                         f"Loss {loss_accum_for_log:.4f} | "
-                        f"LR {lr:.4e} | "
+                        f"LR {lr:.4e} (Img:{lr*config.lr_mult_images:.1e}/Spc:{lr*config.lr_mult_spectra:.1e}) | "
                         f"Norm {grad_norm:.2f} | "
                         f"MFU {mfu_display*100:.2f}% (avg) | "
                         f"Mem {mem_usage:.2f}GB | "
                         f"dt {avg_dt*1000:.2f}ms (avg) | "
-                        f"RT {running_str} (H:M:S) | "
-                        f"ETA {eta_str} (H:M:S)" 
+                        f"RT {running_str} | ETA {eta_str} | "
+                        f"Mix:{int(config.use_token_mixing)} "
+                        f"MskI:{int(config.images_mask)} MskS:{int(config.spectra_mask)}"
                     )
 
                     diagnostics_due = (
@@ -1540,13 +1561,19 @@ def main():
                         wandb_payload = {
                             "iter": iter_num,
                             "train/loss": lossf,
-                            "train/lr": lr,
+                            "train/lr_backbone": lr,
+                            "train/lr_images": lr * config.lr_mult_images,
+                            "train/lr_spectra": lr * config.lr_mult_spectra,
                             "train/grad_norm": grad_norm,
                             "train/mfu": mfu_display * 100,
                             "train/mem_gb": mem_usage,
                             "train/time_ms": avg_dt * 1000,
                             "train/rt_hours": total_seconds / 3600,
-                            "train/eta_hours": eta_seconds / 3600
+                            "train/eta_hours": eta_seconds / 3600,
+                            # Structural Tracking Flags
+                            "status/token_mixing": 1 if config.use_token_mixing else 0,
+                            "status/images_masking": 1 if config.images_mask else 0,
+                            "status/spectra_masking": 1 if config.spectra_mask else 0
                         }
                         if diagnostics_due and config.diagnostics_enabled:
                             wandb_payload.update(
@@ -1606,6 +1633,8 @@ def main():
                     model.eval() 
                     
                     val_losses = []
+                    val_iso_img2spec = []
+                    val_iso_spec2img = []
                     max_val_batches = config.eval_batches
                     
                     with torch.no_grad():
@@ -1620,17 +1649,54 @@ def main():
                             B_val = EuclidDESIDatasetArrow.process_modes(
                                 batch_data=vbatch, 
                                 modality_registry=registry, 
-                                device=torch.device(device)
+                                device=torch.device(device),
+                                use_token_mixing=config.use_token_mixing
                             )
                             
                             with ctx:
                                 _, v_loss = model(B_val["X"], targets=B_val["Y"])
                             val_losses.append(v_loss.item())
+
+                            # --- ISOLATED RECONSTRUCTION VALIDATION ---
+                            if "images" in B_val["X"] and "spectra" in B_val["X"]:
+                                # 1. Images -> Spectra (Mask out Spectra Input completely)
+                                X_img2spec = {k: v for k, v in B_val["X"].items()}
+                                X_img2spec["spectra"] = torch.zeros_like(X_img2spec["spectra"])
+                                
+                                with ctx:
+                                    out_img2spec, _ = model(X_img2spec, targets=B_val["Y"])
+                                    iso_loss_s = _compute_modality_losses(out_img2spec, B_val["Y"], config)
+                                    if "spectra" in iso_loss_s:
+                                        val_iso_img2spec.append(iso_loss_s["spectra"])
+
+                                # 2. Spectra -> Images (Mask out Images Input completely)
+                                X_spec2img = {k: v for k, v in B_val["X"].items()}
+                                X_spec2img["images"] = torch.zeros_like(X_spec2img["images"])
+
+                                with ctx:
+                                    out_spec2img, _ = model(X_spec2img, targets=B_val["Y"])
+                                    iso_loss_i = _compute_modality_losses(out_spec2img, B_val["Y"], config)
+                                    if "images" in iso_loss_i:
+                                        val_iso_spec2img.append(iso_loss_i["images"])
                     
                     val_loss = sum(val_losses) / len(val_losses)
                     
+                    avg_iso_img2spec = sum(val_iso_img2spec) / len(val_iso_img2spec) if val_iso_img2spec else float('nan')
+                    avg_iso_spec2img = sum(val_iso_spec2img) / len(val_iso_spec2img) if val_iso_spec2img else float('nan')
+
+                    logger.info(
+                        f"Val Loss: {val_loss:.4f} | "
+                        f"Zero-Shot Cross-Loss -> SpectraFromImg: {avg_iso_img2spec:.4f} | "
+                        f"ImgFromSpectra: {avg_iso_spec2img:.4f}"
+                    )
+                    
                     if config.log_via_wandb and _WANDB_AVAILABLE:
-                        wandb.log({"val/loss": val_loss, "iter": iter_num})
+                        val_payload = {"val/loss": val_loss, "iter": iter_num}
+                        if val_iso_img2spec:
+                            val_payload["val/isolated_loss_spectra_from_img"] = avg_iso_img2spec
+                        if val_iso_spec2img:
+                            val_payload["val/isolated_loss_img_from_spectra"] = avg_iso_spec2img
+                        wandb.log(val_payload)
                         
                     # CSV Write: Just Validation properties
                     try:

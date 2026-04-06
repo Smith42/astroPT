@@ -14,10 +14,17 @@
 #SBATCH --output=logs/astropt_img_spec_%j.out
 #SBATCH --error=logs/astropt_img_spec_%j.err
 
+set -euo pipefail
+
 #--- DEFAULT VALUES ---#
 REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
 PYTHON_SCRIPT="scripts/plot_images_spectra.py"
 DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
+
+# If invoked as: sbatch script.sh -- -w <weights> ...
+if [[ "${1:-}" == "--" ]]; then
+  shift
+fi
 
 #--- ARGUMENT PARSING (FLAGS) ---#
 while getopts ":r:w:s:a:" opt; do
@@ -29,6 +36,18 @@ while getopts ":r:w:s:a:" opt; do
     \?) echo "[ERROR] Invalid option -$OPTARG" >&2; exit 1 ;;
   esac
 done
+
+shift $((OPTIND - 1))
+
+if [[ -z "${WEIGHTS_DIR:-}" ]]; then
+  echo "[ERROR] WEIGHTS_DIR is required (-w <weights_dir>)" >&2
+  exit 1
+fi
+
+if [[ -z "${SAVE_DIR:-}" ]]; then
+  echo "[ERROR] SAVE_DIR is required (-s <save_dir>)" >&2
+  exit 1
+fi
 
 # Absolute output path
 WEIGHTS_DIR=$(readlink -f "$WEIGHTS_DIR")
@@ -83,7 +102,8 @@ python "$PYTHON_SCRIPT" \
         39633478949537029 \
         39633312192397870 \
         39633414239814702 \
-        39633493688322559
+        39633493688322559 \
+        39627859714640945
 
 echo "-----------------------------------------------"
 echo "Plotting Images and Spectra Finished"

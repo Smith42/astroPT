@@ -28,6 +28,10 @@ class EuclidDESIDatasetArrow(Dataset):
         stochastic = True,      
         transform: Dict = {},
         spectra_inverse: bool = False,
+        spectra_mask: bool = False,
+        spectra_mask_prob: float = 0.5,
+        images_mask: bool = False,
+        images_mask_prob: float = 0.5,
     ):
         """
         Dataset to loading Euclid Images and DESI spectra
@@ -92,6 +96,10 @@ class EuclidDESIDatasetArrow(Dataset):
         self.stochastic = stochastic
         self.transform = transform
         self.spectra_inverse = spectra_inverse
+        self.spectra_mask = spectra_mask
+        self.spectra_mask_prob = spectra_mask_prob
+        self.images_mask = images_mask
+        self.images_mask_prob = images_mask_prob
         
     def __len__(self) -> int:
         """Returns the total number of samples in the dataset."""
@@ -440,6 +448,12 @@ class EuclidDESIDatasetArrow(Dataset):
         if self.spiral:
             patch_image = self.spiralise_image(patch_image)
 
+        # Tactical masking
+        if self.stochastic and self.images_mask:
+            # Drop patches dynamically based on configured probability
+            mask = torch.rand(patch_image.shape[0], device=patch_image.device) < self.images_mask_prob
+            patch_image[mask] = 0.0
+
         return patch_image
     
     def process_spectra(self, 
@@ -490,6 +504,12 @@ class EuclidDESIDatasetArrow(Dataset):
         patch_spectra = raw_spectra.view(-1, patch_size)
         patch_wl = wavelength.view(-1, patch_size)
 
+        # Tactical masking
+        if self.stochastic and self.spectra_mask:
+            # Drop patches dynamically based on configured probability
+            mask = torch.rand(patch_spectra.shape[0], device=patch_spectra.device) < self.spectra_mask_prob
+            patch_spectra[mask] = 0.0
+
         # Apply transformations (Normalization)
         if "spectra" in self.transform:
             patch_spectra = self.transform["spectra"](patch_spectra)
@@ -501,11 +521,12 @@ class EuclidDESIDatasetArrow(Dataset):
         batch_data: Dict[str, Any], 
         modality_registry: Any, 
         device: torch.device, 
-        shuf: bool = False 
+        shuf: bool = False,
+        use_token_mixing: bool = False
     ) -> Dict[str, Dict[str, torch.Tensor]]:
         """
         Prepares the batch for training by moving tensors to GPU and creating Input (X) 
-        and Target (Y) sequences with a Hybrid Autoregressive Shift.
+        and Target (Y) sequences handling dynamic token mixing shifts.
         Automatically handles Position Types (Float vs Long indices) based on config.
         """
         
@@ -534,21 +555,26 @@ class EuclidDESIDatasetArrow(Dataset):
                 # Overwrite 'pos' with indices
                 pos = torch.arange(s, device=device, dtype=torch.long).unsqueeze(0).expand(b, -1)
 
-            # Create Targets (Shifted by 1)
-            if i == 0:
-                Y[mode] = data[:, 1:]
-            else:
-                Y[mode] = data
-
-            # Create Inputs (X) and their Positions
-            if i == 0 and num_modes > 1:
-                # First modality in sequence (context) -> Full sequence
-                X[mode] = data 
+            if use_token_mixing:
+                X[mode] = data
                 X[f"{mode}_positions"] = pos
+                Y[mode] = data
             else:
-                # Subsequent modalities -> Autoregressive input (Shifted)
-                X[mode] = data[:, :-1] 
-                X[f"{mode}_positions"] = pos[:, :-1]
+                # Create Targets (Shifted by 1)
+                if i == 0:
+                    Y[mode] = data[:, 1:]
+                else:
+                    Y[mode] = data
+    
+                # Create Inputs (X) and their Positions
+                if i == 0 and num_modes > 1:
+                    # First modality in sequence (context) -> Full sequence
+                    X[mode] = data 
+                    X[f"{mode}_positions"] = pos
+                else:
+                    # Subsequent modalities -> Autoregressive input (Shifted)
+                    X[mode] = data[:, :-1] 
+                    X[f"{mode}_positions"] = pos[:, :-1]
 
         return {"X": X, "Y": Y}
     
