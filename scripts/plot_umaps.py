@@ -83,7 +83,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--metadata_path", type=str, required=True, help="Path to .fits catalog")
     parser.add_argument("--weights_dir", type=str, required=True, help="Directory containing training weights")
     parser.add_argument("--emb_dir", type=str, required=True, help="Directory containing .npy embedding files")
-    parser.add_argument("--save_dir", type=str, required=True, help="Plot Saving Directory")
+    parser.add_argument("--save_dir", type=str, default=None, help="Plot Saving Directory")
     parser.add_argument("--subsample", type=int, default=None, help="Global limit of points for speed")
     parser.add_argument("--train_name", type=str, default=None, help="Custom title for plots")
     
@@ -545,7 +545,7 @@ def main():
     emb_dir = Path(args.emb_dir)
     data_dir = Path(args.data_dir) if args.data_dir else None
     metadata_path = Path(args.metadata_path)
-    save_dir = Path(args.save_dir) / "umaps"
+    save_dir = Path(args.save_dir) / "umaps" if args.save_dir else emb_dir / "umaps"
     save_dir.mkdir(parents=True, exist_ok=True)
     
     # Validation

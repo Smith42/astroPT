@@ -33,6 +33,12 @@ while getopts ":r:w:s:e:a:f:" opt; do
   esac
 done
 
+if [ -z "$WEIGHTS_DIR" ] || [ -z "$EMB_DIR" ]; then
+  echo "[ERROR]: WEIGHTS_DIR and EMB_DIR are required"
+  echo "Usage: $0 -w <weights_dir> -e <embedding_dir_or_root> [-s save_dir] [-a data_dir] [-f metadata_path]"
+  exit 1
+fi
+
 # Absolute paths
 WEIGHTS_DIR=$(readlink -f "$WEIGHTS_DIR")
 DATA_DIR=$(readlink -f "$DATA_DIR")
@@ -57,9 +63,13 @@ source .venv/bin/activate
 export PATH="$HOME/.TinyTeX/bin/x86_64-linux:$PATH"
 
 #--- EMBEDDING DETECTION LOGIC ---#
-DETECTED_EMB=$(ls -td "${EMB_DIR}"/*/ 2>/dev/null | head -n 1)
-DETECTED_EMB="${DETECTED_EMB%/}"
-DETECTED_EMB=$(readlink -f "$DETECTED_EMB")
+if [ -f "$EMB_DIR/images.npy" ] || [ -f "$EMB_DIR/spectra.npy" ] || [ -f "$EMB_DIR/embeddings_all.npz" ]; then
+  DETECTED_EMB="$EMB_DIR"
+else
+  DETECTED_EMB=$(ls -td "${EMB_DIR}"/*/ 2>/dev/null | head -n 1)
+  DETECTED_EMB="${DETECTED_EMB%/}"
+  DETECTED_EMB=$(readlink -f "$DETECTED_EMB")
+fi
 
 if [ -z "$DETECTED_EMB" ]; then
     echo "[ERROR]: No sub-directory found in $EMB_DIR"
@@ -67,11 +77,12 @@ if [ -z "$DETECTED_EMB" ]; then
     exit 1
 fi
 
-if [ -z "$SAVE_DIR" ]; then
-    SAVE_DIR="$DETECTED_EMB"
+if [ -n "$SAVE_DIR" ]; then
+    SAVE_DIR=$(readlink -f "$SAVE_DIR")
+    SAVE_ARG="--save_dir $SAVE_DIR"
+else
+    SAVE_ARG=""
 fi
-SAVE_DIR=$(readlink -f "$SAVE_DIR")
-
 
 #--- EXECUTION ---#
 echo "Plotting UMAPS Configuration:"
@@ -79,7 +90,11 @@ echo "    METADATA:       $META_PATH"
 echo "    DATA DIR:       $DATA_DIR" 
 echo "    WEIGHTS DIR:    $WEIGHTS_DIR"
 echo "    EMB DIR:        $DETECTED_EMB"
-echo "    SAVE DIR:       $SAVE_DIR (Auto-Detected)"
+if [ -n "$SAVE_DIR" ]; then
+    echo "    SAVE DIR:       $SAVE_DIR (User-Specified)"
+else
+    echo "    SAVE DIR:       (Auto-inferring from Python script)"
+fi
 
 
 
@@ -88,7 +103,7 @@ python "$PYTHON_SCRIPT" \
     --metadata_path "$META_PATH" \
     --weights_dir "$WEIGHTS_DIR" \
     --emb_dir "$DETECTED_EMB" \
-    --save_dir "$SAVE_DIR" \
+    $SAVE_ARG \
     --data_dir "$DATA_DIR" \
     --plot_spectral \
     --plot_visual \
