@@ -32,14 +32,19 @@ done
 
 # Absolute output path
 WEIGHTS_DIR=$(readlink -f "$WEIGHTS_DIR")
-SAVE_DIR=$(readlink -f "$SAVE_DIR")
 DATA_DIR=$(readlink -f "$DATA_DIR")
+if [ -n "$SAVE_DIR" ]; then
+    SAVE_DIR=$(readlink -f "$SAVE_DIR")
+    SAVE_DIR_ARG="--save_dir $SAVE_DIR"
+else
+    SAVE_DIR_ARG=""
+fi
 
 #--- ENVIRONMENT SETUP ---#
 NOW=$(date "+[%Y-%m-%d - %H:%M:%S]")
 
 echo "-----------------------------------------------"
-echo "Cross-Modal Reconstruction $SLURM_JOB_ID - $NOW"
+echo "Cross/Self Modal Reconstruction $SLURM_JOB_ID - $NOW"
 echo "-----------------------------------------------"
 
 # 1. Change directory
@@ -57,13 +62,15 @@ echo "Cross-Modal Generation Configuration:"
 echo "    WEIGHTS DIR:  $WEIGHTS_DIR"
 echo "    DATA DIR:     $DATA_DIR" 
 echo "    SAVE DIR:     $SAVE_DIR"
+echo "    OUTPUTS:      cross_modal + self_modal dashboards"
+echo "    METRICS:      cross_reconstructions/metrics/{reconstruction_metrics.csv,reconstruction_metrics_summary.json}"
 
 # Run Python Script
 # Nota: La generación es lenta. Se recomiendan pocos targets en cada ejecución.
 python "$PYTHON_SCRIPT" \
     --weights_dir "$WEIGHTS_DIR" \
     --data_dir "$DATA_DIR" \
-    --save_dir "$SAVE_DIR" \
+    $SAVE_DIR_ARG \
     --num_plot 25 \
     --target_ids \
         39627061836389042 \
@@ -84,8 +91,9 @@ python "$PYTHON_SCRIPT" \
         39633478949537029 \
         39633312192397870 \
         39633414239814702 \
-        39633493688322559
+        39633493688322559 \
+        39627859714640945
 
 echo "-----------------------------------------------"
-echo "Cross-Modal Reconstruction Finished"
+echo "Cross/Self Modal Reconstruction Finished"
 echo "-----------------------------------------------"
