@@ -41,9 +41,9 @@ while getopts ":n:d:t:l:x:h" opt; do
     d) TRAIN_DESC="$OPTARG" ;;
     t) TRAIN_DIR="$OPTARG" ;;
     l) LONG_TRAINING="$OPTARG" ;;
-        x) TRAIN_EXTRA_ARGS="$OPTARG" ;;
+    x) TRAIN_EXTRA_ARGS="$OPTARG" ;;
     h) 
-             echo "Usage: $0 [-n 'Name'] [-d 'Description'] [-t 'output_path/'] [-x 'extra train flags']"
+       echo "Usage: $0 [-n 'Name'] [-d 'Description'] [-t 'output_path/'] [-l TRUE] [-x 'extra train flags']"
        exit 0 
        ;;
     \?) 
@@ -291,7 +291,7 @@ JOB_TRAIN_2=$(sbatch --parsable \
     -m "resume" \
     -k "all" \
     -x "$TRAIN_EXTRA_ARGS")
-echo "Training Job (Resume) launched.  ID: $JOB_TRAIN_2 (Depends on Train 1: ok $JOB_TRAIN_1)"
+echo "Training Job (Resume) launched.  ID: $JOB_TRAIN_2 (Depends on Latent Dash T1: $J_LATENT_DASH)"
 if [[ -z "$JOB_TRAIN_2" ]]; then
     echo "[ERROR] Step 2 training submission failed. Aborting pipeline."
     exit 1
@@ -305,7 +305,8 @@ launch_analysis "$JOB_TRAIN_2" "$JOB_SUFFIX" "Part 2 (Resume)" || {
 
 
 # Implementing a third training round for longer trainings
-if [ -z "$TRAIN_DIR" ]; then
+# LONG_TRAINING must be explicitly passed via -l TRUE
+if [ -z "${LONG_TRAINING:-}" ]; then
     LONG_TRAINING="FALSE"
 fi
 
