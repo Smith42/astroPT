@@ -8,12 +8,13 @@ Features:
 - Generates both individual .npy files (fast access) and .npz (portable).
 
 Author: Victor Alonso Rodriguez
-Date: January 2026
+Date: April 2026
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 import gc
@@ -23,7 +24,8 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from typing import Tuple
+from typing import Dict, List, Tuple
+from contextlib import nullcontext
 
 
 from astropt.euclid_desi_arrow_dataloader import EuclidDESIDatasetArrow
@@ -61,6 +63,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pool_method_img", type=str, default="mean", help="Pooling method to reduce dimensionality for images")
     parser.add_argument("--pool_method_spec", type=str, default="rank", help="Pooling method to reduce dimensionality for spectra")
     parser.add_argument("--pca_dim", type=int, default=0, help="Applying PCA analysis with the resulting pca_dim dimension. 0 means disabled")
+    parser.add_argument("--order_mode", type=str, default="isolated", choices=["isolated", "causal_clean", "bidirectional_leaky"], 
+                        help="Modality processing order strategy. 'isolated' ensures 100% data leak prevention for probing."
+    )
+    parser.add_argument("--joint_mode", type=str, default="mean", choices=["mean", "l2mean", "weighted"], 
+                        help="Joint embedding fusion strategy when both modalities are available"
+    )
+    parser.add_argument("--joint_alpha", type=float, default=0.5, 
+                        help="Weight for image embeddings in weighted joint fusion: alpha*image + (1-alpha)*spectra"
+    )
+    parser.add_argument("--exp_tag", type=str, default="", help="Optional user tag appended to output folder name")
+    parser.add_argument("--draw_from_centre", action="store_true", default=False, 
+                        help="Use embeddings from middle layer instead of the final layer (default: final layer)",
+    )
     
     return parser.parse_args()
 
@@ -133,18 +148,90 @@ def apply_pca_to_memmap(
     logger.info(f"PCA completed. New file: {pca_path.name}")
     return pca_path
 
-def get_output_folder_name(ckpt_name: str, pool_name: str, pca_dim: int) -> Path:
-    """Generates a clean subfolder name: ckpt_pool_pca"""
+def _sanitize_folder_token(token: str) -> str:
+    cleaned = "".join(ch if (ch.isalnum() or ch in ["-", "_"]) else "-" for ch in token)
+    cleaned = cleaned.strip("-")
+    return cleaned if cleaned else "untagged"
+
+
+def _float_to_tag(value: float) -> str:
+    text = f"{value:.3f}".rstrip("0").rstrip(".")
+    return text.replace(".", "p")
+
+
+def get_output_folder_name(
+    ckpt_name: str,
+    pool_method_img: str,
+    pool_method_spec: str,
+    pca_dim: int,
+    draw_from_centre: bool,
+    order_mode: str,
+    joint_mode: str,
+    joint_alpha: float,
+    is_multimodal: bool,
+    exp_tag: str,
+) -> Path:
+    """Generate a descriptive experiment folder name based on extraction flags."""
     ckpt_suffix = ckpt_name.replace(".pt", "").replace("ckpt_", "")
-    
-    name = f"{ckpt_suffix}_{pool_name}"
+
+    order_map = {
+        "isolated": "ord-iso",
+        "causal_clean": "ord-clean",
+        "bidirectional_leaky": "ord-bi_leak",
+    }
+
+    parts = [
+        _sanitize_folder_token(ckpt_suffix),
+        f"img-{_sanitize_folder_token(pool_method_img)}",
+        f"spec-{_sanitize_folder_token(pool_method_spec)}",
+        "layer-mid" if draw_from_centre else "layer-final",
+    ]
+
+    if is_multimodal:
+        parts.append(order_map[order_mode])
+        if joint_mode == "weighted":
+            parts.append(f"joint-w{_float_to_tag(joint_alpha)}")
+        elif joint_mode == "l2mean":
+            parts.append("joint-l2mean")
+        else:
+            parts.append("joint-mean")
+
     if pca_dim > 0:
-        name += f"_pca{pca_dim}"
-        
-    return Path(name)
+        parts.append(f"pca{pca_dim}")
+
+    if exp_tag.strip():
+        parts.append(_sanitize_folder_token(exp_tag.strip()))
+
+    return Path("_".join(parts))
+
+
+def reorder_modal_inputs(
+    inputs: Dict[str, torch.Tensor],
+    modality_order: List[str],
+) -> Dict[str, torch.Tensor]:
+    """Return a copy of inputs where modality tensors follow a specific insertion order."""
+    ordered = {}
+
+    # Insert modality tensors first, in requested order.
+    for mod in modality_order:
+        pos_key = f"{mod}_positions"
+        if mod in inputs and pos_key in inputs:
+            ordered[mod] = inputs[mod]
+            ordered[pos_key] = inputs[pos_key]
+
+    # Preserve any remaining keys (if present).
+    for key, val in inputs.items():
+        if key not in ordered:
+            ordered[key] = val
+
+    return ordered
 
 def main():
     args = parse_args()
+
+    if not 0.0 <= args.joint_alpha <= 1.0:
+        logger.error("--joint_alpha must be between 0.0 and 1.0")
+        sys.exit(1)
     
     # Load Model
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -206,9 +293,13 @@ def main():
 
     is_multimodal = len(active_mods) > 1
     logger.info(f"Active modalities detected: {active_mods}")
-
-    is_multimodal = len(active_mods) > 1
-    logger.info(f"Active modalities detected: {active_mods}")
+    logger.info(
+        f"Embedding layer source: {'middle layer' if args.draw_from_centre else 'final layer'}"
+    )
+    logger.info(
+        f"Experiment config: order_mode={args.order_mode}, joint_mode={args.joint_mode}, "
+        f"joint_alpha={args.joint_alpha}, exp_tag={args.exp_tag if args.exp_tag else 'none'}"
+    )
 
     data_dir = args.data_dir if args.data_dir else raw_config_dict.get('data_dir')
     data_dir = Path(data_dir)
@@ -239,12 +330,18 @@ def main():
     total_samples = len(ds)
     emb_dim = config.n_embd
     
-    if args.pool_method_img != args.pool_method_spec:
-        folder_pool_name = args.pool_method_img + args.pool_method_spec
-    else:
-        folder_pool_name = args.pool_method_img
-    
-    folder_name = get_output_folder_name(args.ckpt_name, folder_pool_name, args.pca_dim)
+    folder_name = get_output_folder_name(
+        ckpt_name=args.ckpt_name,
+        pool_method_img=args.pool_method_img,
+        pool_method_spec=args.pool_method_spec,
+        pca_dim=args.pca_dim,
+        draw_from_centre=args.draw_from_centre,
+        order_mode=args.order_mode,
+        joint_mode=args.joint_mode,
+        joint_alpha=args.joint_alpha,
+        is_multimodal=is_multimodal,
+        exp_tag=args.exp_tag,
+    )
     save_path = save_dir / folder_name
     save_path.mkdir(parents=True, exist_ok=True)
     logger.info(f"Embeddings directory created: {save_path}")
@@ -266,8 +363,11 @@ def main():
         )
 
     # Extraction loop
-    ptdtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    ctx = torch.amp.autocast(device_type="cuda", dtype=ptdtype) # type: ignore
+    if device.type == "cuda":
+        ptdtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        ctx = torch.amp.autocast(device_type="cuda", dtype=ptdtype) # type: ignore
+    else:
+        ctx = nullcontext()
     
     start_idx = 0
 
@@ -278,8 +378,66 @@ def main():
             current_batch_size = len(batch['targetid'])
             end_idx = start_idx + current_batch_size
 
-            X = EuclidDESIDatasetArrow.prepare_batch(batch_data=batch, modality_registry=registry, device=device)
-            embeddings = model.get_embeddings(X, draw_from_centre=True)
+            X = EuclidDESIDatasetArrow.prepare_batch(
+                batch_data=batch,
+                modality_registry=registry,
+                device=device,
+            )
+
+            # SAFE EMBEDDINGS EXTRACTION 
+            embeddings = {}
+            if is_multimodal and ("images" in active_mods) and ("spectra" in active_mods):
+                if args.order_mode == "isolated":
+                    # 100% Causal Isolation: Only pass one modality per forward pass
+                    for mod in active_mods:
+                        isolated_X = {mod: X[mod], f"{mod}_positions": X[f"{mod}_positions"]}
+                        emb = model.get_embeddings(
+                            isolated_X,
+                            draw_from_centre=args.draw_from_centre,
+                        )
+                        embeddings[mod] = emb[mod]
+                        
+                elif args.order_mode == "causal_clean":
+                    # Causal Mask Isolation: Disable token mixing, place desired mod first.
+                    original_mixing = getattr(model.config, 'use_token_mixing', False)
+                    if original_mixing:
+                        model.config.use_token_mixing = False
+                        
+                    emb_img_first = model.get_embeddings(
+                        reorder_modal_inputs(X, ["images", "spectra"]),
+                        draw_from_centre=args.draw_from_centre,
+                    )
+                    emb_spec_first = model.get_embeddings(
+                        reorder_modal_inputs(X, ["spectra", "images"]),
+                        draw_from_centre=args.draw_from_centre,
+                    )
+                    
+                    if original_mixing:
+                        model.config.use_token_mixing = True
+                        
+                    embeddings["images"] = emb_img_first["images"]
+                    embeddings["spectra"] = emb_spec_first["spectra"]
+                    
+                elif args.order_mode == "bidirectional_leaky":
+                    if batch_idx == 0:
+                        logger.warning("Using bidirectional_leaky! Embeddings are cross-contaminated via averaging. NOT valid for zero-shot downstream probing.")
+                        
+                    emb_forward = model.get_embeddings(
+                        reorder_modal_inputs(X, ["images", "spectra"]),
+                        draw_from_centre=args.draw_from_centre,
+                    )
+                    emb_reverse = model.get_embeddings(
+                        reorder_modal_inputs(X, ["spectra", "images"]),
+                        draw_from_centre=args.draw_from_centre,
+                    )
+                    for modality in active_mods:
+                        if modality in emb_forward and modality in emb_reverse:
+                            embeddings[modality] = 0.5 * (emb_forward[modality] + emb_reverse[modality])
+            else:
+                embeddings = model.get_embeddings(
+                    X,
+                    draw_from_centre=args.draw_from_centre,
+                )
             
             img_pooled = None
             spec_pooled = None
@@ -298,13 +456,16 @@ def main():
             # Hybrid Joint Embedding (Only if multimodal)
             if is_multimodal and 'joint' in mmaps:
                 if img_pooled is not None and spec_pooled is not None:
-                    
-                    # L2 normalize before averaging to give equal weight to each modality
-                    #img_norm = F.normalize(img_pooled, p=2, dim=1)
-                    #spec_norm = F.normalize(spec_pooled, p=2, dim=1)
-                    #joint_tensor = (img_norm + spec_norm) / 2.0
-                    
-                    joint_tensor = (img_pooled + spec_pooled) / 2.0
+
+                    if args.joint_mode == "l2mean":
+                        img_norm = F.normalize(img_pooled, p=2, dim=1)
+                        spec_norm = F.normalize(spec_pooled, p=2, dim=1)
+                        joint_tensor = (img_norm + spec_norm) / 2.0
+                    elif args.joint_mode == "weighted":
+                        joint_tensor = args.joint_alpha * img_pooled + (1.0 - args.joint_alpha) * spec_pooled
+                    else:
+                        joint_tensor = (img_pooled + spec_pooled) / 2.0
+
                     mmaps['joint'][start_idx:end_idx] = joint_tensor.float().cpu().numpy()
                 elif img_pooled is not None:
                     mmaps['joint'][start_idx:end_idx] = img_pooled.float().cpu().numpy()
@@ -347,6 +508,28 @@ def main():
         logger.info(f"Compressed archive created: {npz_path}")
     except Exception as e:
         logger.error(f"Error creating .npz: {e}")
+
+    metadata_path = save_path / "experiment_config.json"
+    metadata = {
+        "ckpt_name": args.ckpt_name,
+        "resolved_checkpoint": str(ckpt_path),
+        "active_modalities": active_mods,
+        "is_multimodal": is_multimodal,
+        "pool_method_img": args.pool_method_img,
+        "pool_method_spec": args.pool_method_spec,
+        "pca_dim": args.pca_dim,
+        "draw_from_centre": args.draw_from_centre,
+        "order_mode": args.order_mode,
+        "joint_mode": args.joint_mode,
+        "joint_alpha": args.joint_alpha,
+        "exp_tag": args.exp_tag,
+    }
+    try:
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2)
+        logger.info(f"Experiment metadata saved: {metadata_path}")
+    except Exception as e:
+        logger.error(f"Error writing metadata file: {e}")
 
     logger.info("Extraction Pipeline Finished Successfully.")
 
