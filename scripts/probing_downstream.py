@@ -16,7 +16,7 @@ Date: March 2026
 """
 
 import argparse
-import glob
+import json
 import logging
 import os
 import random
@@ -60,7 +60,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Targets
 DEFAULT_TARGETS = ['Z', 'LOGMSTAR', 'LOGSFR', 'GR', 
-                    'flux_detection_total', 'HALPHA_EW', 'HALPHA_FLUX', 'NII_6584_FLUX', 'OIII_5007_FLUX', 'HBETA_FLUX', 'NII_6584_FLUX', 
+                    'flux_detection_total', 'HALPHA_EW', 'HALPHA_FLUX', 'NII_6584_FLUX', 'OIII_5007_FLUX', 'HBETA_FLUX',
                     'sersic_sersic_vis_radius', 'sersic_sersic_vis_index', 'sersic_sersic_vis_axis_ratio',
                     'has_spiral_arms_yes', 'smoothness', 'gini', 'SPECTYPE', 'data_set_release']
 
@@ -73,6 +73,21 @@ CSV_COLUMNS = [
     'Accuracy', 'Precision', 'Recall', 'F1_score', 'FPR'
 ]
 
+SEED_STATS_COLUMNS = [
+    'Target', 'Task', 'Modality', 'Probe', 'N_Seeds',
+    'R2_mean', 'R2_std', 'RMSE_mean', 'RMSE_std', 'Bias_mean', 'Bias_std',
+    'NMAD_mean', 'NMAD_std', 'Outliers_mean', 'Outliers_std',
+    'Accuracy_mean', 'Accuracy_std', 'Precision_mean', 'Precision_std',
+    'Recall_mean', 'Recall_std', 'F1_score_mean', 'F1_score_std',
+    'FPR_mean', 'FPR_std', 'AvgBestEpoch'
+]
+
+DEFAULT_EASY_TARGETS = {
+    'SPECTYPE',
+    'data_set_release',
+    'has_spiral_arms_yes',
+}
+
 def parse_args() -> argparse.Namespace:
     """Parses command line arguments."""
     parser = argparse.ArgumentParser(description="AstroPT Downstream Prober (LP & MLP)")
@@ -81,7 +96,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--metadata_path", type=str, required=True, help="Path to .fits catalog")
     parser.add_argument("--weights_dir", type=str, required=True, help="Directory containing training weights")
     parser.add_argument("--emb_dir", type=str, required=True, help="Directory containing .npy embedding files")
-    parser.add_argument("--save_dir", type=str, required=True, help="Plot Saving Directory")
+    parser.add_argument("--save_dir", type=str, default=None, help="Plot Saving Directory")
     
     parser.add_argument("--train_name", type=str, default=None, help="Custom title for plots")
     
@@ -92,7 +107,7 @@ def parse_args() -> argparse.Namespace:
     # Probing Config
     parser.add_argument("--probes", nargs='+', default=['lp', 'mlp'], choices=['lp', 'mlp'], 
                         help="Type of probes to run: 'lp', 'mlp' or both.")
-    parser.add_argument("--conf_matrix", type=bool, default=False, help="Generates confusion matrix")
+    parser.add_argument("--conf_matrix", action="store_true", help="Generates confusion matrix")
     
     # Subsets options
     parser.add_argument("--save_name", type=str, default="downstream_results.csv", 
@@ -104,6 +119,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=50, help="Training epochs per task")
     parser.add_argument("--batch_size", type=int, default=128, help="Training batch size")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--seeds", nargs='+', type=int, default=[61, 21, 278], help="Random seeds for repeated probing")
+    parser.add_argument("--easy_targets", nargs='+', default=list(DEFAULT_EASY_TARGETS), help="Targets where MLP runs fewer epochs")
+    parser.add_argument("--mlp_easy_epoch_factor", type=float, default=0.6, help="Epoch scaling factor for easy targets in MLP")
+    parser.add_argument("--mlp_weight_decay", type=float, default=1e-3, help="MLP weight decay regularization")
+    parser.add_argument("--mlp_val_split", type=float, default=0.1, help="Validation split fraction for MLP early stopping")
+    parser.add_argument("--mlp_patience", type=int, default=8, help="Early stopping patience for MLP")
+    parser.add_argument("--mlp_min_delta", type=float, default=1e-4, help="Minimum validation loss improvement for MLP early stopping")
     
     return parser.parse_args()
 
@@ -123,11 +145,13 @@ class AsinhScaler(BaseEstimator, TransformerMixin):
 # Fixed seed for different experiments
 def set_seed(seed=61):
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
     random.seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    if torch.cuda.is_available():
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
     os.environ['PYTHONHASHSEED'] = str(seed)
     logger.info(f"Seed set to {seed} for reproducibility.")
 
@@ -208,6 +232,8 @@ def load_data(
     
     # Bytes decoding
     for col in df.columns:
+        if len(df) == 0:
+            break
         if df[col].dtype == object and isinstance(df[col].iloc[0], bytes):
             try: df[col] = df[col].str.decode('utf-8')
             except: pass
@@ -268,6 +294,9 @@ def align_data(
         logger.info(f"Applied external ID filter: Intersected from {initial_count} down to {len(common_ids)} objects.")
     
     matched_catalog = catalog_indexed.loc[common_ids].reset_index()
+
+    if len(matched_catalog) == 0:
+        raise ValueError("No common TARGETIDs between embeddings and filtered catalog.")
     
     # Indices Mapping
     id_to_idx = {id_val: i for i, id_val in enumerate(emb_ids)}
@@ -279,6 +308,12 @@ def align_data(
         if mod in embeddings_dict:
             # Fancy indexing triggers RAM loading only for valid items
             aligned_embeddings[mod] = embeddings_dict[mod][valid_indices]
+
+    for mod_name, arr in aligned_embeddings.items():
+        if len(arr) != len(matched_catalog):
+            raise ValueError(
+                f"Alignment mismatch for {mod_name}: {len(arr)} embeddings vs {len(matched_catalog)} rows"
+            )
             
     logger.info(f"Final aligned pure Test Set objects available for probing: {len(matched_catalog)}")
     return matched_catalog, aligned_embeddings
@@ -302,8 +337,14 @@ def get_task_data(
     Returns:
         Tuple containing filtered X, y, task_type ('regression'/'classification'), and the label processor.
     """
+    if modality not in raw_data:
+        raise ValueError(f"Modality '{modality}' not found in aligned embeddings.")
     if target_col not in df.columns:
         raise ValueError(f"Column '{target_col}' not found.")
+    if len(raw_data[modality]) != len(df):
+        raise ValueError(
+            f"Length mismatch for modality '{modality}': {len(raw_data[modality])} vs {len(df)}"
+        )
         
     vals = df[target_col]
     
@@ -415,8 +456,13 @@ def train_engine(
     epochs: int, 
     lr: float, 
     batch_size: int, 
-    target_name: str = ""
-) -> Tuple[np.ndarray, np.ndarray]:
+    target_name: str = "",
+    seed: int = 61,
+    mlp_val_split: float = 0.1,
+    mlp_patience: int = 8,
+    mlp_min_delta: float = 1e-4,
+    mlp_weight_decay: float = 1e-3,
+) -> Tuple[np.ndarray, np.ndarray, int]:
     """
     Main Training Loop. Handles Scaling, Model Creation, and Training.
     NO logging inside here to keep the terminal clean.
@@ -433,20 +479,27 @@ def train_engine(
         target_name: Name of the target (used for scaler selection).
 
     Returns:
-        Tuple of (Predictions, True Values) for the test set.
+        Tuple of (Predictions, True Values, Best Epoch) for the test set.
     """
+    set_seed(seed)
+
+    if len(X) < 20:
+        raise ValueError(f"Too few samples for stable probing split: {len(X)}")
+
     # Split datasets
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    stratify_labels = y if task_type == 'classification' and len(np.unique(y)) > 1 else None
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=0.2,
+        random_state=42,
+        stratify=stratify_labels,
+    )
     
-    # Input Scaling
-    scaler_X = StandardScaler()
-    X_train = scaler_X.fit_transform(X_train)
-    X_test = scaler_X.transform(X_test)
-    
-    # StandardScaler is destructive for embedding geometry. Use L2 normalization instead.
-    # This preserves the vector direction (cosine similarity) while scaling magnitude.
-    #X_train = normalize(X_train, norm='l2', axis=1)
-    #X_test = normalize(X_test, norm='l2', axis=1)
+    # Scaling: L2 Normalization preserves hypersphere vector geometry (cosine similarity). 
+    # StandardScaler scales variance and shifts mean, distorting geometry.
+    X_train = normalize(X_train, norm='l2', axis=1)
+    X_test = normalize(X_test, norm='l2', axis=1)
     
     # Target Scaling
     scaler_y = None
@@ -466,7 +519,28 @@ def train_engine(
         torch.FloatTensor(X_train), 
         torch.FloatTensor(y_train) if task_type == 'regression' else torch.LongTensor(y_train)
     )
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=(len(train_ds) > batch_size))
+
+    val_loader = None
+    if probe_type == 'mlp' and mlp_val_split > 0.0:
+        val_stratify = y_train if task_type == 'classification' and len(np.unique(y_train)) > 1 else None
+        X_train_sub, X_val, y_train_sub, y_val = train_test_split(
+            X_train,
+            y_train,
+            test_size=mlp_val_split,
+            random_state=seed,
+            stratify=val_stratify,
+        )
+        train_ds = TensorDataset(
+            torch.FloatTensor(X_train_sub),
+            torch.FloatTensor(y_train_sub) if task_type == 'regression' else torch.LongTensor(y_train_sub),
+        )
+        val_ds = TensorDataset(
+            torch.FloatTensor(X_val),
+            torch.FloatTensor(y_val) if task_type == 'regression' else torch.LongTensor(y_val),
+        )
+        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=(len(train_ds) > batch_size))
+        val_loader = DataLoader(val_ds, batch_size=batch_size * 2, shuffle=False)
     
     # Model Selection
     input_dim = X_train.shape[1]
@@ -475,13 +549,27 @@ def train_engine(
         weight_decay = 1e-5 
     elif probe_type == 'mlp':
         model = AdaptiveMLP(input_dim, output_dim).to(DEVICE)
-        weight_decay = 0.0 
+        weight_decay = mlp_weight_decay 
     
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     criterion = nn.MSELoss() if task_type == 'regression' else nn.CrossEntropyLoss()
+    scheduler = None
+    if probe_type == 'mlp' and val_loader is not None:
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=0.5,
+            patience=max(2, mlp_patience // 2),
+            min_lr=1e-6,
+        )
     
     # Training Loop
     model.train()
+    best_state = None
+    best_val_loss = float('inf')
+    best_epoch = epochs
+    patience_counter = 0
+
     for epoch in range(epochs):
         for xb, yb in train_loader:
             xb, yb = xb.to(DEVICE), yb.to(DEVICE)
@@ -491,6 +579,38 @@ def train_engine(
             loss = criterion(preds, yb)
             loss.backward()
             optimizer.step()
+
+        if probe_type == 'mlp' and val_loader is not None:
+            model.eval()
+            val_losses = []
+            with torch.no_grad():
+                for xb, yb in val_loader:
+                    xb, yb = xb.to(DEVICE), yb.to(DEVICE)
+                    preds = model(xb)
+                    if task_type == 'regression':
+                        preds = preds.squeeze()
+                    val_loss = criterion(preds, yb)
+                    val_losses.append(val_loss.item())
+
+            mean_val_loss = float(np.mean(val_losses)) if val_losses else float('inf')
+            if scheduler is not None:
+                scheduler.step(mean_val_loss)
+
+            if mean_val_loss < (best_val_loss - mlp_min_delta):
+                best_val_loss = mean_val_loss
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                best_epoch = epoch + 1
+                patience_counter = 0
+            else:
+                patience_counter += 1
+
+            model.train()
+
+            if patience_counter >= mlp_patience:
+                break
+
+    if probe_type == 'mlp' and best_state is not None:
+        model.load_state_dict(best_state)
 
     # Inference
     model.eval()
@@ -511,7 +631,7 @@ def train_engine(
                 batch_preds = torch.argmax(logits, dim=1).cpu().numpy()
             all_preds.append(batch_preds)
             
-    return np.concatenate(all_preds), y_test_raw
+    return np.concatenate(all_preds), y_test_raw, best_epoch
 
 
 def save_row_to_csv(row: Dict[str, Any], csv_path: str | Path):
@@ -530,8 +650,91 @@ def save_row_to_csv(row: Dict[str, Any], csv_path: str | Path):
     df = df[CSV_COLUMNS]
     
     csv_path = Path(csv_path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
     header = not csv_path.is_file()
     df.to_csv(csv_path, mode='a', header=header, index=False)
+
+
+def save_seed_stats_row_to_csv(row: Dict[str, Any], csv_path: str | Path):
+    """Append one row with per-metric mean/std across seeds."""
+    df = pd.DataFrame([row])
+    for col in SEED_STATS_COLUMNS:
+        if col not in df.columns:
+            df[col] = np.nan
+    df = df[SEED_STATS_COLUMNS]
+
+    csv_path = Path(csv_path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    header = not csv_path.is_file()
+    df.to_csv(csv_path, mode='a', header=header, index=False)
+
+
+def aggregate_seed_metrics(
+    metrics_per_seed: List[Dict[str, float]],
+    best_epochs: List[int],
+) -> Tuple[Dict[str, float], Dict[str, float], float]:
+    """Aggregate mean/std metric dictionaries and average best epoch."""
+    if not metrics_per_seed:
+        raise ValueError("No successful seed runs to aggregate.")
+
+    keys = sorted({k for d in metrics_per_seed for k in d.keys()})
+    means = {}
+    stds = {}
+    for k in keys:
+        vals = [float(d[k]) for d in metrics_per_seed if k in d]
+        if not vals:
+            continue
+        means[k] = float(np.mean(vals))
+        stds[k] = float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0
+
+    avg_best_epoch = float(np.mean(best_epochs)) if best_epochs else float('nan')
+    return means, stds, avg_best_epoch
+
+
+def compute_transfer_gap_rows(target_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build per-target/probe transfer gap rows between image and spectra embeddings."""
+    if not target_results:
+        return []
+
+    rows = []
+    df_target = pd.DataFrame(target_results)
+    if df_target.empty:
+        return rows
+
+    for probe in sorted(df_target['Probe'].dropna().unique()):
+        probe_df = df_target[df_target['Probe'] == probe]
+        img_row = probe_df[probe_df['Modality'] == 'images']
+        spec_row = probe_df[probe_df['Modality'] == 'spectra']
+        if img_row.empty or spec_row.empty:
+            continue
+
+        img_row = img_row.iloc[0]
+        spec_row = spec_row.iloc[0]
+        task = img_row['Task']
+
+        if task == 'regression' and pd.notna(img_row.get('R2')) and pd.notna(spec_row.get('R2')):
+            primary_metric = 'R2'
+            img_val = float(img_row['R2'])
+            spec_val = float(spec_row['R2'])
+        elif task == 'classification' and pd.notna(img_row.get('F1_score')) and pd.notna(spec_row.get('F1_score')):
+            primary_metric = 'F1_score'
+            img_val = float(img_row['F1_score'])
+            spec_val = float(spec_row['F1_score'])
+        else:
+            continue
+
+        rows.append({
+            'Target': img_row['Target'],
+            'Task': task,
+            'Probe': probe,
+            'PrimaryMetric': primary_metric,
+            'ImageValue': img_val,
+            'SpectraValue': spec_val,
+            'Gap_ImageMinusSpectra': img_val - spec_val,
+            'AbsGap': abs(img_val - spec_val),
+        })
+
+    return rows
 
 
 def main():
@@ -543,13 +746,15 @@ def main():
     emb_dir = Path(args.emb_dir)
     metadata_path = Path(args.metadata_path)
     
-    save_dir = Path(args.save_dir) / "downstream_tasks"
+    save_dir = Path(args.save_dir) / "downstream_tasks" if args.save_dir else emb_dir / "downstream_tasks"
     save_dir.mkdir(parents=True, exist_ok=True)
     
-    csv_path = save_dir / "downstream_results.csv"
+    csv_path = save_dir / args.save_name
+    seed_stats_csv_path = save_dir / "downstream_results_seedstats.csv"
+    gap_csv_path = save_dir / "cross_modal_transfer_gap.csv"
     
-    # Fixing the seed
-    set_seed(61)
+    # Fixing the seed baseline for deterministic preprocessing order
+    set_seed(args.seeds[0])
     
     # Prepare Initial Targets List
     initial_targets = DEFAULT_TARGETS.copy()
@@ -559,9 +764,11 @@ def main():
     initial_targets = list(dict.fromkeys(initial_targets))
     
     # Prepare Probes List
-    probes_to_run = args.probes
+    # LP is always executed as the official per-target baseline.
+    probes_to_run = ['lp'] + [p for p in args.probes if p != 'lp']
     logger.info(f"Initial Target List: {initial_targets}")
     logger.info(f"Probes to run: {probes_to_run}")
+    logger.info(f"Seeds: {args.seeds}")
     
     # Load Data
     raw_data_dict, raw_df = load_data(emb_dir, metadata_path)
@@ -628,6 +835,9 @@ def main():
     logger.info(f"Ordered Processing List: {final_targets}")
 
 
+    all_gap_rows = []
+    easy_targets = set(args.easy_targets)
+
     # MAIN LOOP
     for target_col in final_targets:
         print("\n" + "-"*40)
@@ -662,15 +872,37 @@ def main():
             
             # Loop over Probes 
             for probe in probes_to_run:
-                print(f"    -> Running {mode.upper()} / {probe.upper()}...", end="", flush=True)
+                print(f"    -> Running {mode.upper()} / {probe.upper()}...\n", end="", flush=True)
                 
                 try:
-                    preds, true_vals = train_engine(
-                        X, y, probe, task_type, output_dim, 
-                        args.epochs, args.lr, args.batch_size, target_col
-                    )
-                    
-                    metrics = compute_metrics(true_vals, preds, task_type, target_col)
+                    effective_epochs = args.epochs
+                    if probe == 'mlp' and target_col in easy_targets:
+                        effective_epochs = max(10, int(args.epochs * args.mlp_easy_epoch_factor))
+
+                    metrics_per_seed = []
+                    best_epochs = []
+                    for seed in args.seeds:
+                        preds, true_vals, best_epoch = train_engine(
+                            X,
+                            y,
+                            probe,
+                            task_type,
+                            output_dim,
+                            effective_epochs,
+                            args.lr,
+                            args.batch_size,
+                            target_col,
+                            seed=seed,
+                            mlp_val_split=args.mlp_val_split,
+                            mlp_patience=args.mlp_patience,
+                            mlp_min_delta=args.mlp_min_delta,
+                            mlp_weight_decay=args.mlp_weight_decay,
+                        )
+                        seed_metrics = compute_metrics(true_vals, preds, task_type, target_col)
+                        metrics_per_seed.append(seed_metrics)
+                        best_epochs.append(best_epoch)
+
+                    metrics_mean, metrics_std, avg_best_epoch = aggregate_seed_metrics(metrics_per_seed, best_epochs)
                     
                     # Store Results
                     row = {
@@ -679,15 +911,35 @@ def main():
                         "Modality": mode,
                         "Probe": probe.upper()
                     }
-                    row.update(metrics)
+                    row.update(metrics_mean)
                     
                     # SAVE TO CSV IMMEDIATELY
                     save_row_to_csv(row, csv_path)
+
+                    seed_stats_row = {
+                        "Target": target_col,
+                        "Task": task_type,
+                        "Modality": mode,
+                        "Probe": probe.upper(),
+                        "N_Seeds": len(metrics_per_seed),
+                        "AvgBestEpoch": avg_best_epoch,
+                    }
+                    for k, v in metrics_mean.items():
+                        seed_stats_row[f"{k}_mean"] = v
+                    for k, v in metrics_std.items():
+                        seed_stats_row[f"{k}_std"] = v
+                    save_seed_stats_row_to_csv(seed_stats_row, seed_stats_csv_path)
                     
                     # Add to local list for table
                     target_results.append(row)
-                    
-                    print(f" Done.")
+
+                    # Print compact mean ± std using primary metric
+                    if task_type == 'regression' and 'R2' in metrics_mean:
+                        print(f" Done. [R2: {metrics_mean['R2']:.4f} +/- {metrics_std.get('R2', 0.0):.4f}]")
+                    elif task_type == 'classification' and 'F1_score' in metrics_mean:
+                        print(f" Done. [F1: {metrics_mean['F1_score']:.4f} +/- {metrics_std.get('F1_score', 0.0):.4f}]")
+                    else:
+                        print(" Done.")
                     
                     # Save Confusion Matrix
                     if task_type == 'classification' and args.conf_matrix:
@@ -697,7 +949,8 @@ def main():
                                     xticklabels=processor.classes_, yticklabels=processor.classes_)
                         plt.title(f"CM: {target_col} ({mode} - {probe.upper()})")
                         plt.tight_layout()
-                        plt.savefig(save_dir / f"cm_{target_col}_{mode}_{probe}.png")
+                        safe_target = str(target_col).replace('/', '_').replace(' ', '_')
+                        plt.savefig(save_dir / f"cm_{safe_target}_{mode}_{probe}.png")
                         plt.close()
                         
                 except Exception as e:
@@ -714,7 +967,27 @@ def main():
             print(df_target[cols_to_show].to_string(index=False))
             print("-" * 40 + "\n")
 
+            # Cross-modal transfer gap summary for this target
+            gap_rows = compute_transfer_gap_rows(target_results)
+            all_gap_rows.extend(gap_rows)
+            if gap_rows:
+                gap_df = pd.DataFrame(gap_rows)
+                gap_cols = [
+                    'Target', 'Task', 'Probe', 'PrimaryMetric',
+                    'ImageValue', 'SpectraValue', 'Gap_ImageMinusSpectra', 'AbsGap'
+                ]
+                print(f"--- Cross-Modal Gap for {target_col} ---")
+                print(gap_df[gap_cols].to_string(index=False))
+                print("-" * 40 + "\n")
+
     logger.info(f" --> Results saved in: {csv_path}")
+    logger.info(f" --> Seed stats saved in: {seed_stats_csv_path}")
+
+    if all_gap_rows:
+        gap_df_all = pd.DataFrame(all_gap_rows)
+        gap_df_all = gap_df_all.sort_values(['AbsGap', 'Target'], ascending=[False, True])
+        gap_df_all.to_csv(gap_csv_path, index=False)
+        logger.info(f" --> Cross-modal gap summary saved in: {gap_csv_path}")
 
 if __name__ == "__main__":
     main()

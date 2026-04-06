@@ -14,26 +14,48 @@
 #SBATCH --output=logs/astropt_probing_dash_%j.out
 #SBATCH --error=logs/astropt_probing_dash_%j.err
 
+set -euo pipefail
+
 #--- DEFAULT VALUES ---#
 REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
 PYTHON_SCRIPT="scripts/probing_downstream_dashboard.py"
+ALL_TARGETS_MODE=0
+
+# If invoked as: sbatch script.sh -- -e <emb_root> ...
+if [[ "${1:-}" == "--" ]]; then
+  shift
+fi
 
 #--- ARGUMENT PARSING (FLAGS) ---#
-while getopts ":r:e:o:n:" opt; do
+while getopts ":r:e:s:n:Ah" opt; do
   case $opt in
     r) REPO_ROOT="$OPTARG" ;;
     s) SAVE_DIR="$OPTARG" ;;
     e) EMB_DIR="$OPTARG" ;;
     n) SAVE_NAME="$OPTARG" ;;
+    A) ALL_TARGETS_MODE=1 ;;
+    h)
+      echo "Usage: $0 -e EMB_DIR [-s SAVE_DIR] [-n SAVE_NAME] [-A] [-r REPO_ROOT]"
+      echo "  -A: Plot all downstream targets and compare all runs found in EMB_DIR/*/downstream_tasks/downstream_results.csv"
+      exit 0
+      ;;
     \?) echo "[ERROR] Invalid option -$OPTARG" >&2; exit 1 ;;
   esac
 done
+
+shift $((OPTIND - 1))
+
+if [[ -z "${EMB_DIR:-}" ]]; then
+    echo "[ERROR]: EMB_DIR is required (-e <embeddings_root>)"
+    exit 1
+fi
+EMB_DIR=$(readlink -f "$EMB_DIR")
 
 #--- ENVIRONMENT SETUP ---#
 NOW=$(date "+[%Y-%m-%d - %H:%M:%S]")
 
 echo "--------------------------------------------------"
-echo "Starting Probing Tasks Dashboard Job $SLURM_JOB_ID - $NOW"
+echo "Starting Probing Tasks Dashboard Job ${SLURM_JOB_ID:-local} - $NOW"
 echo "--------------------------------------------------"
 
 # 1. Change directory
@@ -46,44 +68,81 @@ source .venv/bin/activate
 # 3. Activating LaTeX (Required for confusion matrix plots)
 export PATH="$HOME/.TinyTeX/bin/x86_64-linux:$PATH"
 
-#--- EMBEDDING DETECTION LOGIC ---#
-DETECTED_EMB=$(ls -td "${EMB_DIR}"/*/ 2>/dev/null | head -n 1)
-DETECTED_EMB="${DETECTED_EMB%/}"
-DETECTED_EMB=$(readlink -f "$DETECTED_EMB")
-
-if [ -z "$DETECTED_EMB" ]; then
-    echo "[ERROR]: No sub-directory found in $EMB_DIR"
-    echo "[WARNING]: Run extract_embeddings.sh first"
-    exit 1
+# SAVE_DIR is now optional; python script will auto-save near the chosen CSV
+SAVE_ARG=""
+if [ -n "${SAVE_DIR:-}" ]; then
+    SAVE_DIR=$(readlink -f "$SAVE_DIR")
+    SAVE_ARG="--save_dir $SAVE_DIR"
 fi
 
-if [ -z "$SAVE_DIR" ]; then
-    SAVE_DIR="$DETECTED_EMB"
+SAVE_NAME_ARGS=()
+if [[ -n "${SAVE_NAME:-}" ]]; then
+  SAVE_NAME_ARGS=(--save_name "$SAVE_NAME")
 fi
-SAVE_DIR=$(readlink -f "$SAVE_DIR")
 
 #--- EXECUTION ---#
 echo "Probing Dashboard Configuration:"
-echo "    SAVE DIR:       $SAVE_DIR (Auto-Detected)"
+echo "    EMB ROOT:       $EMB_DIR"
+echo "    ALL TARGETS:    $ALL_TARGETS_MODE"
 
-# Run Python Script
-python "$PYTHON_SCRIPT" \
-  --save_dir "$SAVE_DIR" \
-  --csv_path \
-      "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260307_asinh_rot_mae/embeddings/best_meanrank/downstream_tasks/downstream_results.csv" \
-      "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260312_asinh_rot_mae_imgpatchsize8/embeddings/best_meanrank/downstream_tasks/downstream_results.csv" \
-      "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260312_asinh_rot_mae_imgpatchsize8_copy/embeddings/best_meanrank/downstream_tasks/downstream_results.csv" \
-      "$SAVE_DIR/downstream_results.csv" \
-  --names \
-      "MAE Mean-Rank Pooling (IMG PS 16 / SPEC PS 10) (0.24)" \
-      "MAE Mean-Rank IMG Patch Size 8 (0.14)" \
-      "MAE Mean-Rank IMG Patch Size 8 (0.14) EMBEDDING CHANGES" \
-      "MAE Mean-Rank IMG Patch Size 8 SHUFFLE TRUE" \
-  --targets \
-      Z LOGMSTAR LOGSFR GR \
-      flux_detection_total HALPHA_EW HALPHA_FLUX NII_6584_FLUX OIII_5007_FLUX HBETA_FLUX NII_6584_FLUX \
-      sersic_sersic_vis_radius sersic_sersic_vis_index sersic_sersic_vis_axis_ratio has_spiral_arms_yes smoothness gini \
-      SPECTYPE data_set_release \
+if [[ "$ALL_TARGETS_MODE" -eq 1 ]]; then
+  RUN_CSVS=()
+  RUN_NAMES=()
+
+  while IFS= read -r csv_path; do
+    RUN_CSVS+=("$csv_path")
+    run_dir=$(basename "$(dirname "$(dirname "$csv_path")")")
+    RUN_NAMES+=("$run_dir")
+  done < <(find "$EMB_DIR" -mindepth 3 -maxdepth 3 -type f -path "*/downstream_tasks/downstream_results.csv" | sort)
+
+  if [[ ${#RUN_CSVS[@]} -eq 0 ]]; then
+    echo "[ERROR]: No downstream_results.csv found under $EMB_DIR/*/downstream_tasks/"
+    exit 1
+  fi
+
+  echo "    N RUNS FOUND:    ${#RUN_CSVS[@]}"
+
+  python "$PYTHON_SCRIPT" \
+    $SAVE_ARG \
+    --csv_path "${RUN_CSVS[@]}" \
+    --names "${RUN_NAMES[@]}" \
+    --all_targets \
+    "${SAVE_NAME_ARGS[@]}"
+else
+  # Define the base log directory
+  LOGS_BASE="/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs"
+
+  # Define the past baseline runs you want to compare
+  # The python script will automatically find their downstream_results.csv and their names!
+  RUNS_TO_COMPARE=(
+      "${LOGS_BASE}/astropt_100M_250K_arrow_20260310_asinh_rot_mae_images"
+      "${LOGS_BASE}/astropt_100M_250K_arrow_20260311_asinh_rot_mae_spectra"
+      "${LOGS_BASE}/astropt_100M_250K_arrow_20260401_asinh_rot_mae_imgpatchsize8/embeddings/best_img-mean_spec-rank_layer-final_ord-specfirst_joint-mean_ord_spectra_first"
+      "${LOGS_BASE}/astropt_100M_250K_arrow_20260405_asinh_rot_mae_img8_randrop0p15_imglrx1p10"
+  )
+
+  # Auto-add the CURRENT run being evaluated by the automated SLURM pipeline
+  # We extract the run root by removing the /embeddings... suffix from EMB_DIR
+  CURRENT_RUN_DIR=$(echo "$EMB_DIR" | sed 's|/embeddings.*||')
+  
+  # Ensure it is not duplicated if it was already in the baseline list
+  if [[ ! " ${RUNS_TO_COMPARE[*]} " =~ " ${CURRENT_RUN_DIR} " ]]; then
+      RUNS_TO_COMPARE+=("$CURRENT_RUN_DIR")
+  fi
+
+  # Comparative mode using auto-discovery
+  python "$PYTHON_SCRIPT" \
+    $SAVE_ARG \
+    --run_dirs "${RUNS_TO_COMPARE[@]}" \
+    --targets \
+        Z LOGMSTAR LOGSFR GR \
+        flux_detection_total HALPHA_EW HALPHA_FLUX NII_6584_FLUX OIII_5007_FLUX HBETA_FLUX NII_6584_FLUX \
+        sersic_sersic_vis_radius sersic_sersic_vis_index sersic_sersic_vis_axis_ratio has_spiral_arms_yes smoothness gini \
+        SPECTYPE data_set_release \
+      "${SAVE_NAME_ARGS[@]}"
+fi
+
+
 
 echo "-----------------------------------------------"
 echo "Probing Tasks Dashboard Finished"

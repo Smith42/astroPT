@@ -5,9 +5,9 @@
 #SBATCH --partition=gpu
 #SBATCH --nodes=1                
 #SBATCH --ntasks=1               
-#SBATCH --cpus-per-task=16       
+#SBATCH --cpus-per-task=32       
 #SBATCH --gpus-per-task=1        
-#SBATCH --mem=64G                
+#SBATCH --mem=128G                
 #SBATCH --time=01:00:00         
 
 #--- LOGS FILES ---#
@@ -18,6 +18,16 @@
 REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
 PYTHON_SCRIPT="scripts/probing_downstream.py"
 META_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.1.fits"
+EPOCHS=50
+BATCH_SIZE=128
+LEARNING_RATE=1e-3
+SEEDS="61,21,278"
+MLP_VAL_SPLIT=0.1
+MLP_PATIENCE=8
+MLP_MIN_DELTA=1e-4
+MLP_WEIGHT_DECAY=1e-3
+MLP_EASY_EPOCH_FACTOR=0.6
+EASY_TARGETS="SPECTYPE,data_set_release,has_spiral_arms_yes"
 
 #--- ARGUMENT PARSING (FLAGS) ---#
 while getopts ":r:w:s:e:f:u:n:" opt; do
@@ -32,6 +42,12 @@ while getopts ":r:w:s:e:f:u:n:" opt; do
     \?) echo "[ERROR] Invalid option -$OPTARG" >&2; exit 1 ;;
   esac
 done
+
+if [ -z "$WEIGHTS_DIR" ] || [ -z "$EMB_DIR" ]; then
+        echo "[ERROR]: WEIGHTS_DIR and EMB_DIR are required"
+        echo "Usage: $0 -w <weights_dir> -e <embeddings_root> [-s save_dir] [other flags]"
+        exit 1
+fi
 
 # Absolute output path
 WEIGHTS_DIR=$(readlink -f "$WEIGHTS_DIR")
@@ -56,9 +72,13 @@ source .venv/bin/activate
 export PATH="$HOME/.TinyTeX/bin/x86_64-linux:$PATH"
 
 #--- EMBEDDING DETECTION LOGIC ---#
-DETECTED_EMB=$(ls -td "${EMB_DIR}"/*/ 2>/dev/null | head -n 1)
-DETECTED_EMB="${DETECTED_EMB%/}"
-DETECTED_EMB=$(readlink -f "$DETECTED_EMB")
+if [ -f "$EMB_DIR/images.npy" ] || [ -f "$EMB_DIR/spectra.npy" ] || [ -f "$EMB_DIR/embeddings_all.npz" ]; then
+    DETECTED_EMB="$EMB_DIR"
+else
+    DETECTED_EMB=$(ls -td "${EMB_DIR}"/*/ 2>/dev/null | head -n 1)
+    DETECTED_EMB="${DETECTED_EMB%/}"
+    DETECTED_EMB=$(readlink -f "$DETECTED_EMB")
+fi
 
 if [ -z "$DETECTED_EMB" ]; then
     echo "[ERROR]: No sub-directory found in $EMB_DIR"
@@ -66,10 +86,12 @@ if [ -z "$DETECTED_EMB" ]; then
     exit 1
 fi
 
-if [ -z "$SAVE_DIR" ]; then
-    SAVE_DIR="$DETECTED_EMB"
+if [ -n "$SAVE_DIR" ]; then
+    SAVE_DIR=$(readlink -f "$SAVE_DIR")
+    SAVE_ARG="--save_dir $SAVE_DIR"
+else
+    SAVE_ARG=""
 fi
-SAVE_DIR=$(readlink -f "$SAVE_DIR")
 
 # Extra Arguments
 EXTRA_ARGS=()
@@ -82,22 +104,43 @@ if [ -n "$SAVE_CSV_NAME" ]; then
     EXTRA_ARGS+=("--save_name" "$SAVE_CSV_NAME")
 fi
 
+# Parse comma-separated values into repeated CLI args
+IFS=',' read -r -a SEEDS_ARRAY <<< "$SEEDS"
+IFS=',' read -r -a EASY_TARGETS_ARRAY <<< "$EASY_TARGETS"
+
+EXTRA_ARGS+=("--probes" "lp" "mlp")
+EXTRA_ARGS+=("--seeds" "${SEEDS_ARRAY[@]}")
+EXTRA_ARGS+=("--mlp_val_split" "$MLP_VAL_SPLIT")
+EXTRA_ARGS+=("--mlp_patience" "$MLP_PATIENCE")
+EXTRA_ARGS+=("--mlp_min_delta" "$MLP_MIN_DELTA")
+EXTRA_ARGS+=("--mlp_weight_decay" "$MLP_WEIGHT_DECAY")
+EXTRA_ARGS+=("--mlp_easy_epoch_factor" "$MLP_EASY_EPOCH_FACTOR")
+EXTRA_ARGS+=("--easy_targets" "${EASY_TARGETS_ARRAY[@]}")
+
 #--- EXECUTION ---#
 echo "Probing Configuration:"
 echo "    METADATA:       $META_PATH"
 echo "    WEIGHTS DIR:    $WEIGHTS_DIR"
 echo "    EMB DIR:        $DETECTED_EMB"
-echo "    SAVE DIR:       $SAVE_DIR (Auto-Detected)"
+if [ -n "$SAVE_DIR" ]; then
+    echo "    SAVE DIR:       $SAVE_DIR (User-Specified)"
+else
+    echo "    SAVE DIR:       (Auto-inferring from Python script)"
+fi
+echo "    SEEDS:          ${SEEDS_ARRAY[*]}"
+echo "    EPOCHS:         $EPOCHS"
+echo "    BATCH SIZE:     $BATCH_SIZE"
+echo "    LR:             $LEARNING_RATE"
 
 # Run Python Script
 python "$PYTHON_SCRIPT" \
     --metadata_path "$META_PATH" \
     --weights_dir "$WEIGHTS_DIR" \
     --emb_dir "$DETECTED_EMB" \
-    --save_dir "$SAVE_DIR" \
-    --epochs 50 \
-    --batch_size 128 \
-    --lr 1e-3
+    $SAVE_ARG \
+    --epochs "$EPOCHS" \
+    --batch_size "$BATCH_SIZE" \
+    --lr "$LEARNING_RATE" \
     "${EXTRA_ARGS[@]}"
 
 echo "-----------------------------------------------"
