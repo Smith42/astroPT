@@ -1,31 +1,33 @@
 """
-AstroPT Cross-Modal Latent Mapper & k-NN Evaluator.
+AstroPT Cross-Modal Latent Retrieval Evaluator.
 
-This script trains a Multi-Layer Perceptron (MLP) to translate embeddings from a 
-source modality (e.g., images) to a target modality (e.g., joint). 
-It then evaluates the physical meaning of these mapped embeddings by performing 
-a k-Nearest Neighbors (k-NN) search against a gallery of real target embeddings.
-Predictions are made using an Inverse Distance Weighted average (or weighted voting)
-of the neighbors' physical properties.
+This script evaluates how well the model's latent spaces are aligned across modalities
+by performing a Zero-Shot k-Nearest Neighbors cross-modal retrieval.
+
+The idea: take an image embedding, find the k closest spectra embeddings in latent space,
+and predict physical properties using Inverse Distance Weighting of those neighbors.
+If the prediction is good, it means the model has learned a shared representation where
+images and spectra that describe the same physical object land near each other.
+
+This is a ZERO-SHOT evaluation only. No mapping network is trained — we test whether
+the spaces are naturally aligned, which is the valid scientific measure.
 
 Author: Victor Alonso Rodriguez
-Date: March 2026
+Date: April 2026
 """
 
 import argparse
+import json
 import logging
 import os
 import random
 import sys
 import warnings
 from pathlib import Path
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, Optional, List
 
 import numpy as np
 import pandas as pd
-import torch
-import torch.nn as nn
-import torch.optim as optim
 from astropy.table import Table
 from astropy.utils.exceptions import AstropyWarning
 from sklearn.metrics import (accuracy_score, f1_score, confusion_matrix, 
@@ -33,8 +35,7 @@ from sklearn.metrics import (accuracy_score, f1_score, confusion_matrix,
                              precision_score, recall_score)
 from sklearn.model_selection import train_test_split
 from sklearn.neighbors import NearestNeighbors
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from torch.utils.data import DataLoader, TensorDataset
+from sklearn.preprocessing import LabelEncoder
 
 # Logger Configuration
 logging.basicConfig(
@@ -43,13 +44,11 @@ logging.basicConfig(
     level=logging.INFO,
     stream=sys.stdout
 )
-logger = logging.getLogger("AstroPT-LatentMapper")
+logger = logging.getLogger("AstroPT-LatentRetrieval")
 
 warnings.simplefilter('ignore', category=AstropyWarning)
 warnings.filterwarnings('ignore', module='astropy.io.fits')
 
-# Device Configuration
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Targets Definition
 DEFAULT_TARGETS = ['Z', 'LOGMSTAR', 'LOGSFR', 'GR', 
@@ -63,83 +62,75 @@ CLASSIFICATION_TARGETS = ['SPECTYPE', 'data_set_release']
 CSV_COLUMNS = [
     'Target', 'Task', 'Mapping', 'k_Neighbors',
     'R2', 'RMSE', 'Bias', 'NMAD', 'Outliers',
-    'Accuracy', 'Precision', 'Recall', 'F1_score', 'FPR'
+    'Accuracy', 'Precision', 'Recall', 'F1_score', 'FPR',
+    'MRR', 'Cosine_at_k'
 ]
 
 
 def parse_args() -> argparse.Namespace:
     """Parses command line arguments."""
-    parser = argparse.ArgumentParser(description="AstroPT Cross-Modal Latent Mapper")
+    parser = argparse.ArgumentParser(description="AstroPT Cross-Modal Latent Retrieval Evaluator")
     
     # Data Paths
     parser.add_argument("--metadata_path", type=str, required=True, help="Path to .fits catalog")
-    parser.add_argument("--weights_dir", type=str, required=True, help="Directory containing training weights")
+    parser.add_argument("--weights_dir", type=str, required=True, help="Directory containing training weights and config.json")
     parser.add_argument("--emb_dir", type=str, required=True, help="Directory containing .npy embedding files")
-    parser.add_argument("--save_dir", type=str, required=True, help="Plot Saving Directory")
+    parser.add_argument("--save_dir", type=str, default=None, help="Plot Saving Directory (defaults to emb_dir/latent_mapper)")
     parser.add_argument("--overwrite", action="store_true", help="If set, deletes existing CSV files before saving new results.")
     
     # Mapping Configuration
     parser.add_argument("--source", type=str, default="images", choices=['images', 'spectra', 'joint'], help="Source modality to map FROM")
     parser.add_argument("--target", type=str, default="joint", choices=['images', 'spectra', 'joint'], help="Target modality to map TO (Ignored if --all_targets is used)")
     parser.add_argument("--all_targets", action="store_true", help="If set, maps the source to ALL other available modalities sequentially.")
-    parser.add_argument("--k_neighbors", type=int, default=5, help="Number of neighbors for k-NN physical retrieval")
-    parser.add_argument("--use_mlp", action="store_true", help="If set, trains an MLP to translate embeddings. Otherwise, performs direct Zero-Shot mapping.")
-    
-    # Training Hyperparams
-    parser.add_argument("--epochs", type=int, default=100, help="Training epochs for the mapper")
-    parser.add_argument("--batch_size", type=int, default=256, help="Training batch size")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--k_neighbors", type=int, default=10, help="Number of neighbors for k-NN physical retrieval")
     
     return parser.parse_args()
 
 
 def set_seed(seed: int = 61):
     """Fixes random seeds for reproducibility."""
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
     random.seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
     os.environ['PYTHONHASHSEED'] = str(seed)
     logger.info(f"Seed set to {seed} for reproducibility.")
 
 
-class LatentMapperMLP(nn.Module):
-    """
-    MLP architecture designed to translate a latent vector from one 
-    modality space to another modality space.
-    """
-    def __init__(self, input_dim: int, output_dim: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, 1024),
-            nn.BatchNorm1d(1024),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(1024, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(512, output_dim)
-        )
+def check_unimodal(weights_dir: Path) -> bool:
+    """Reads config.json and returns True if the model is unimodal (should skip)."""
+    config_path = weights_dir / "config.json"
+    if not config_path.is_file():
+        logger.warning(f"config.json not found in {weights_dir}. Assuming multimodal.")
+        return False
+    
+    try:
+        with open(config_path, 'r') as f:
+            config = json.load(f)
         
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # L2 normalization of the output to match cosine spaces
-        out = self.net(x)
-        return torch.nn.functional.normalize(out, p=2, dim=1)
+        img_train = config.get("images_train", config.get("img_train", True))
+        spec_train = config.get("spectra_train", config.get("spec_train", True))
+        
+        if not img_train or not spec_train:
+            logger.warning(f"Unimodal architecture detected: images_train={img_train}, spectra_train={spec_train}")
+            logger.info("Cross-Modal Latent Retrieval requires multimodal training. Exiting cleanly.")
+            return True
+            
+    except Exception as e:
+        logger.warning(f"Failed to read config.json: {e}. Assuming multimodal.")
+    
+    return False
 
 
-# Reusing Downstream Data Loaders
 def load_data(emb_dir: Path, metadata_path: Path) -> Tuple[Dict[str, np.ndarray], pd.DataFrame]:
     """Loads embeddings (.npy) and FITS metadata."""
     logger.info(f"Scanning embeddings directory: {emb_dir}...")
-    if not emb_dir.exists(): raise FileNotFoundError(f"Embeddings not found: {emb_dir}")
+    if not emb_dir.exists(): 
+        raise FileNotFoundError(f"Embeddings not found: {emb_dir}")
         
     data_dict = {}
     id_candidates = ['targetid.npy', 'ids.npy', 'target_ids.npy', 'object_ids.npy']
     id_path = next((emb_dir / c for c in id_candidates if (emb_dir / c).exists()), None)
-    if not id_path: raise FileNotFoundError("Could not find Target IDs.")
+    if not id_path: 
+        raise FileNotFoundError("Could not find Target IDs.")
     data_dict['targetid'] = np.load(id_path)
 
     for mod in ['images', 'spectra', 'joint']:
@@ -160,8 +151,10 @@ def load_data(emb_dir: Path, metadata_path: Path) -> Tuple[Dict[str, np.ndarray]
         if df[col].dtype == object and isinstance(df[col].iloc[0], bytes):
             try: df[col] = df[col].str.decode('utf-8')
             except: pass
-    if 'SURVEY' in df.columns: df['SURVEY'] = df['SURVEY'].str.lower().str.strip()
+    if 'SURVEY' in df.columns: 
+        df['SURVEY'] = df['SURVEY'].str.lower().str.strip()
     return data_dict, df
+
 
 def filter_catalog(df: pd.DataFrame) -> pd.DataFrame:
     """Applies strict spectral quality filtering (SNR > 3 & H-alpha)."""
@@ -170,11 +163,13 @@ def filter_catalog(df: pd.DataFrame) -> pd.DataFrame:
     if 'HALPHA_FLUX' in df.columns and 'HALPHA_FLUX_IVAR' in df.columns:
         halpha_err = np.where(df['HALPHA_FLUX_IVAR'] > 0, 1.0 / np.sqrt(df['HALPHA_FLUX_IVAR'].clip(lower=1e-10)), np.inf)
         mask_halpha = df['HALPHA_FLUX'] > (3.0 * halpha_err)
-    else: mask_halpha = pd.Series(True, index=df.index)
+    else: 
+        mask_halpha = pd.Series(True, index=df.index)
 
     filtered_df = df[mask_snr & mask_halpha].copy()
     logger.info(f"Filtered out noisy spectra. Retained {len(filtered_df)} ({len(filtered_df)/initial_len:.1%})")
     return filtered_df
+
 
 def align_data(embeddings_dict: Dict[str, np.ndarray], catalog_df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, np.ndarray]]:
     """Aligns filtered metadata with embeddings using TARGETID intersection."""
@@ -199,67 +194,69 @@ def align_data(embeddings_dict: Dict[str, np.ndarray], catalog_df: pd.DataFrame)
     return matched_catalog, aligned_embeddings
 
 
-def train_latent_mapper(
-    X_train: np.ndarray, y_train: np.ndarray, 
-    X_test: np.ndarray, 
-    epochs: int, lr: float, batch_size: int
-) -> np.ndarray:
-    """
-    Trains the MLP to map Source -> Target embeddings.
-    Uses CosineEmbeddingLoss to optimize angular similarity.
-    """
-    logger.info(f"Training Latent Mapper MLP for {epochs} epochs...")
-    
-    # Input Standard Scaling
-    scaler_X = StandardScaler()
-    X_train_scaled = scaler_X.fit_transform(X_train)
-    X_test_scaled = scaler_X.transform(X_test)
-    
-    # Target embeddings are normalized for cosine similarity
-    y_train_tensor = torch.FloatTensor(y_train).to(DEVICE)
-    y_train_norm = torch.nn.functional.normalize(y_train_tensor, p=2, dim=1)
-    
-    train_ds = TensorDataset(torch.FloatTensor(X_train_scaled), y_train_norm.cpu())
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    
-    input_dim = X_train.shape[1]
-    output_dim = y_train.shape[1]
-    model = LatentMapperMLP(input_dim, output_dim).to(DEVICE)
-    
-    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
-    criterion = nn.CosineEmbeddingLoss()
-    
-    model.train()
-    for epoch in range(epochs):
-        for xb, yb in train_loader:
-            xb, yb = xb.to(DEVICE), yb.to(DEVICE)
-            optimizer.zero_grad()
-            preds = model(xb)
-            
-            target_ones = torch.ones(xb.size(0)).to(DEVICE)
-            loss = criterion(preds, yb, target_ones)
-            
-            loss.backward()
-            optimizer.step()
+def l2_normalize(X: np.ndarray) -> np.ndarray:
+    """L2-normalizes each row to unit norm, preserving hypersphere geometry."""
+    norms = np.linalg.norm(X, axis=1, keepdims=True)
+    norms = np.clip(norms, 1e-8, None)  # Avoid division by zero
+    return X / norms
 
-    # Inference on Test Set
-    model.eval()
-    test_ds = TensorDataset(torch.FloatTensor(X_test_scaled))
-    test_loader = DataLoader(test_ds, batch_size=batch_size*2, shuffle=False)
+
+def compute_mrr(query_ids: np.ndarray, gallery_ids: np.ndarray, 
+                neighbor_indices: np.ndarray) -> float:
+    """
+    Compute Mean Reciprocal Rank (MRR).
     
-    all_preds = []
-    with torch.no_grad():
-        for xb in test_loader:
-            xb = xb[0].to(DEVICE)
-            preds = model(xb)
-            all_preds.append(preds.cpu().numpy())
-            
-    logger.info("Latent Mapper Training Complete.")
-    return np.concatenate(all_preds)
+    For each query, we check at which rank position the true match (same TARGETID)
+    appears among the k nearest neighbors in the gallery. If the true match is at
+    rank r, the reciprocal rank is 1/r. MRR is the mean across all queries.
+    
+    This measures how well the cross-modal alignment places corresponding objects
+    close together in latent space.
+    """
+    reciprocal_ranks = []
+    
+    for i, query_id in enumerate(query_ids):
+        neighbor_gallery_ids = gallery_ids[neighbor_indices[i]]
+        
+        # Find position of the correct match (same TARGETID)
+        matches = np.where(neighbor_gallery_ids == query_id)[0]
+        
+        if len(matches) > 0:
+            # rank is 1-indexed
+            rank = matches[0] + 1
+            reciprocal_ranks.append(1.0 / rank)
+        else:
+            reciprocal_ranks.append(0.0)
+    
+    return float(np.mean(reciprocal_ranks))
+
+
+def compute_cosine_at_k(query_embeddings: np.ndarray, gallery_embeddings: np.ndarray,
+                         neighbor_indices: np.ndarray) -> float:
+    """
+    Compute mean cosine similarity between each query and its k nearest neighbors.
+    
+    Higher values indicate tighter cross-modal clustering — the projected embeddings
+    land close to their retrieved neighbors in angular space.
+    """
+    cosines = []
+    
+    for i in range(len(query_embeddings)):
+        q = query_embeddings[i]
+        neighbors = gallery_embeddings[neighbor_indices[i]]
+        
+        # Cosine similarity: dot product of L2-normalized vectors
+        q_norm = q / (np.linalg.norm(q) + 1e-8)
+        n_norms = neighbors / (np.linalg.norm(neighbors, axis=1, keepdims=True) + 1e-8)
+        
+        sims = np.dot(n_norms, q_norm)
+        cosines.append(np.mean(sims))
+    
+    return float(np.mean(cosines))
 
 
 def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray, task_type: str, target_name: str) -> Dict[str, float]:
-    """Computes downstream metrics (Reused from standard probing)."""
+    """Computes downstream metrics."""
     if task_type == 'regression':
         diff = y_pred - y_true
         r2 = r2_score(y_true, y_pred)
@@ -307,13 +304,24 @@ def main():
     set_seed(61)
     
     emb_dir = Path(args.emb_dir)
+    weights_dir = Path(args.weights_dir)
     metadata_path = Path(args.metadata_path)
-    save_dir = Path(args.save_dir) / "latent_mapper"
+    
+    # --- UNIMODAL GUARD ---
+    if check_unimodal(weights_dir):
+        sys.exit(0)
+    
+    # Save directory
+    if args.save_dir:
+        save_dir = Path(args.save_dir) / "latent_mapper"
+    else:
+        save_dir = emb_dir / "latent_mapper"
     save_dir.mkdir(parents=True, exist_ok=True)
     
-    logger.info(f"--- LATENT MAPPER INITIATED ---")
+    logger.info(f"--- CROSS-MODAL LATENT RETRIEVAL INITIATED ---")
     logger.info(f"Source Modality: {args.source.upper()}")
-    logger.info(f"Retrieval Method: Weighted k-NN (k={args.k_neighbors})")
+    logger.info(f"Retrieval Method: Zero-Shot Weighted k-NN (k={args.k_neighbors})")
+    logger.info(f"Save Directory: {save_dir}")
     
     # Load & Prepare Data
     raw_data_dict, raw_df = load_data(emb_dir, metadata_path)
@@ -325,6 +333,10 @@ def main():
         sys.exit(1)
         
     X_full = aligned_embeddings[args.source]
+    
+    # Get TARGETIDs for MRR computation
+    target_col = 'TARGETID' if 'TARGETID' in aligned_df.columns else 'targetid'
+    all_ids = aligned_df[target_col].values
     
     # Split Indices
     indices = np.arange(len(aligned_df))
@@ -339,12 +351,12 @@ def main():
 
     # MAIN MAPPING LOOP
     for current_target in target_modalities:
-        logger.info(f"\n" + "-"*40)
-        logger.info(f"MAPPING FLOW: {args.source.upper()} ---> {current_target.upper()}")
-        logger.info("-"*40)
+        logger.info(f"\n" + "-"*60)
+        logger.info(f"ZERO-SHOT RETRIEVAL: {args.source.upper()} ---> {current_target.upper()}")
+        logger.info("-"*60)
         
-        mapping_name = f"{args.source}->{current_target}{' (MLP)' if args.use_mlp else ' (Zero-Shot)'}"
-        csv_path = save_dir / f"mapper_{args.source}_to_{current_target}_{'mlp' if args.use_mlp else 'zeroshot'}.csv"
+        mapping_name = f"{args.source}->{current_target}"
+        csv_path = save_dir / f"mapper_{args.source}_to_{current_target}_zeroshot.csv"
         
         if args.overwrite and csv_path.exists():
             logger.info(f"Overwrite flag is SET. Deleting previous file: {csv_path.name}")
@@ -352,39 +364,43 @@ def main():
         
         Y_full = aligned_embeddings[current_target]
         
-        # Train Mapper
-        if args.use_mlp:
-            logger.info(f"Executing Phase 1: Training Modality Translator ({current_target}) with MLP...")
-            y_pred_test_emb = train_latent_mapper(
-                X_train=X_full[train_idx], y_train=Y_full[train_idx],
-                X_test=X_full[test_idx],
-                epochs=args.epochs, lr=args.lr, batch_size=args.batch_size
-            )
-        else:
-            logger.info(f"Executing Phase 1: Direct Zero-Shot Alignment ({args.source.upper()} -> {current_target.upper()})...")
-            X_test_tensor = torch.FloatTensor(X_full[test_idx])
-            y_pred_test_emb = torch.nn.functional.normalize(X_test_tensor, p=2, dim=1).numpy()
+        # --- ZERO-SHOT: L2 normalize source embeddings (no training, no MLP) ---
+        logger.info(f"Phase 1: L2 Normalizing {args.source.upper()} embeddings for Zero-Shot alignment...")
+        X_query = l2_normalize(np.array(X_full[test_idx]))
         
-        # Fit k-NN on the true target embeddings (Gallery)
-        logger.info(f"Executing Phase 2: Fitting k-NN on {current_target.upper()} Gallery (Train Set)...")
-        gallery_embeddings = Y_full[train_idx]
+        # --- Fit k-NN on the true target embeddings (Gallery) ---
+        logger.info(f"Phase 2: Fitting k-NN on {current_target.upper()} Gallery (Train Set, {len(train_idx)} objects)...")
+        gallery_embeddings = np.array(Y_full[train_idx])
+        gallery_norm = l2_normalize(gallery_embeddings)
         
-        # L2 normalize gallery for cosine metric
-        gallery_norm = gallery_embeddings / np.linalg.norm(gallery_embeddings, axis=1, keepdims=True)
         knn = NearestNeighbors(n_neighbors=args.k_neighbors, metric='cosine')
         knn.fit(gallery_norm)
         
-        logger.info("Querying neighbors for fictitious target embeddings...")
-        distances, neighbor_indices = knn.kneighbors(y_pred_test_emb)
+        logger.info("Querying neighbors for source embeddings in target space...")
+        distances, neighbor_indices = knn.kneighbors(X_query)
         
-        # Physical Evaluation Loop
-        logger.info(f"Executing Phase 3: Physical Evaluation via Retrieved Weighted {current_target.upper()} Neighbors")
+        # --- Cross-Modal Retrieval Metrics ---
+        logger.info("Phase 3: Computing Cross-Modal Retrieval Metrics...")
         
-        for target_col in DEFAULT_TARGETS:
-            if target_col not in aligned_df.columns: continue
+        # MRR: Do the matched objects (same TARGETID) end up as neighbors?
+        query_ids = all_ids[test_idx]
+        gallery_ids = all_ids[train_idx]
+        mrr = compute_mrr(query_ids, gallery_ids, neighbor_indices)
+        logger.info(f"  -> MRR (Mean Reciprocal Rank): {mrr:.4f}")
+        
+        # Cosine@k: How angularly close are the retrieved neighbors?
+        cosine_at_k = compute_cosine_at_k(X_query, gallery_norm, neighbor_indices)
+        logger.info(f"  -> Cosine@{args.k_neighbors}: {cosine_at_k:.4f}")
+        
+        # --- Physical Evaluation Loop ---
+        logger.info(f"Phase 4: Physical Evaluation via Retrieved Weighted {current_target.upper()} Neighbors")
+        
+        for target_prop in DEFAULT_TARGETS:
+            if target_prop not in aligned_df.columns: 
+                continue
             
-            vals = aligned_df[target_col]
-            task_type = 'classification' if target_col in CLASSIFICATION_TARGETS else 'regression'
+            vals = aligned_df[target_prop]
+            task_type = 'classification' if target_prop in CLASSIFICATION_TARGETS else 'regression'
             
             y_true_test = vals.values[test_idx]
             y_train_gallery = vals.values[train_idx]
@@ -394,7 +410,8 @@ def main():
             else:
                 valid_test_mask = pd.notna(y_true_test) & (y_true_test != "") & (y_true_test != "N/A")
                 
-            if not valid_test_mask.any(): continue
+            if not valid_test_mask.any(): 
+                continue
             
             neighbor_props = y_train_gallery[neighbor_indices]
             
@@ -449,9 +466,14 @@ def main():
                 
             # Metrics Calculation
             try:
-                metrics = compute_metrics(final_y_true, final_y_pred, task_type, target_col)
+                metrics = compute_metrics(final_y_true, final_y_pred, task_type, target_prop)
+                
+                # Add retrieval metrics to the row
+                metrics['MRR'] = mrr
+                metrics['Cosine_at_k'] = cosine_at_k
+                
                 row = {
-                    "Target": target_col, 
+                    "Target": target_prop, 
                     "Task": task_type, 
                     "Mapping": mapping_name,
                     "k_Neighbors": args.k_neighbors
@@ -460,10 +482,10 @@ def main():
                 save_row_to_csv(row, csv_path)
                 
                 main_metric = f"R2: {metrics['R2']:.3f}" if task_type == 'regression' else f"Acc: {metrics['Accuracy']:.3f}"
-                print(f"  -> {target_col:25} | {main_metric}")
+                print(f"  -> {target_prop:25} | {main_metric}")
                 
             except Exception as e:
-                logger.error(f"Failed metrics for {target_col}: {e}")
+                logger.error(f"Failed metrics for {target_prop}: {e}")
 
         logger.info(f"Mapping {args.source}->{current_target} Evaluation complete. Saved to: {csv_path.name}")
 

@@ -39,21 +39,39 @@ while getopts ":r:w:s:e:f:x:y:k:" opt; do
   esac
 done
 
-# Absolute output path
-WEIGHTS_DIR=$(readlink -f "$WEIGHTS_DIR")
-META_PATH=$(readlink -f "$META_PATH")
-EMB_DIR=$(readlink -f "$EMB_DIR")
-
 #--- ENVIRONMENT SETUP ---#
 NOW=$(date "+[%Y-%m-%d - %H:%M:%S]")
 
 echo "-----------------------------------------------"
-echo "Starting Latent Mapper Job $SLURM_JOB_ID - $NOW"
-echo "Mapping Mode: $SOURCE -> $TARGET (k=$K_NEIGHBORS)"
+echo "Starting Latent Retrieval Job $SLURM_JOB_ID - $NOW"
+echo "Retrieval Mode: $SOURCE -> $TARGET (k=$K_NEIGHBORS)"
 echo "-----------------------------------------------"
 
 cd "$REPO_ROOT" || { echo "[ERROR]: Cannot find REPO_ROOT: $REPO_ROOT"; exit 1; }
 source .venv/bin/activate
+
+# Validate required paths
+if [ -z "${WEIGHTS_DIR:-}" ] || [ -z "${EMB_DIR:-}" ]; then
+    echo "[ERROR]: Both -w (WEIGHTS_DIR) and -e (EMB_DIR) are required."
+    exit 1
+fi
+
+WEIGHTS_DIR=$(readlink -f "$WEIGHTS_DIR")
+META_PATH=$(readlink -f "$META_PATH")
+EMB_DIR=$(readlink -f "$EMB_DIR")
+
+#--- UNIMODAL GUARD (Bash level) ---#
+CONFIG_FILE="$WEIGHTS_DIR/config.json"
+if [ -f "$CONFIG_FILE" ]; then
+    IMG_TRAIN=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE')); print(c.get('images_train', c.get('img_train', True)))")
+    SPEC_TRAIN=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE')); print(c.get('spectra_train', c.get('spec_train', True)))")
+
+    if [[ "$IMG_TRAIN" == "False" ]] || [[ "$SPEC_TRAIN" == "False" ]]; then
+        echo "[INFO] Unimodal architecture detected (img=$IMG_TRAIN, spec=$SPEC_TRAIN)."
+        echo "[INFO] Cross-Modal Latent Retrieval requires multimodal training. Exiting cleanly."
+        exit 0
+    fi
+fi
 
 #--- EMBEDDING DETECTION LOGIC ---#
 DETECTED_EMB=$(ls -td "${EMB_DIR}"/*/ 2>/dev/null | head -n 1)
@@ -65,17 +83,25 @@ if [ -z "$DETECTED_EMB" ]; then
     exit 1
 fi
 
-if [ -z "$SAVE_DIR" ]; then
-    SAVE_DIR="$DETECTED_EMB"
+# SAVE_DIR defaults to the embedding subfolder
+SAVE_ARG=""
+if [ -n "${SAVE_DIR:-}" ]; then
+    SAVE_DIR=$(readlink -f "$SAVE_DIR")
+    SAVE_ARG="--save_dir $SAVE_DIR"
 fi
-SAVE_DIR=$(readlink -f "$SAVE_DIR")
 
 #--- EXECUTION ---#
+echo "Latent Retrieval Configuration:"
+echo "    SOURCE:         $SOURCE"
+echo "    WEIGHTS:        $WEIGHTS_DIR"
+echo "    EMBEDDINGS:     $DETECTED_EMB"
+echo "    k:              $K_NEIGHBORS"
+
 python "$PYTHON_SCRIPT" \
     --metadata_path "$META_PATH" \
     --weights_dir "$WEIGHTS_DIR" \
     --emb_dir "$DETECTED_EMB" \
-    --save_dir "$SAVE_DIR" \
+    $SAVE_ARG \
     --source "$SOURCE" \
     --target "$TARGET" \
     --all_targets \
@@ -83,5 +109,5 @@ python "$PYTHON_SCRIPT" \
     --overwrite
 
 echo "-----------------------------------------------"
-echo "Latent Mapper Job Finished"
+echo "Latent Retrieval Job Finished"
 echo "-----------------------------------------------"
