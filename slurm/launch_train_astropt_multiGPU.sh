@@ -9,13 +9,14 @@ echo "-------------------------------------------------"
 # PATH AND DIR CONFIGURATION
 REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
 SCRIPT_DIR=$(dirname "$0")
-DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
+DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_filter_corrupt"
 #DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_large_P50"
 META_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.1.fits"
 
 # LAUNCHING SCRIPTS
 TRAIN_SCRIPT="$SCRIPT_DIR/train_astropt_multiGPU.sh"
 PLOT_MET_SCRIPT="$SCRIPT_DIR/plot_training_metrics.sh"
+ATTN_MAPS_SCRIPT="$SCRIPT_DIR/attention_maps.sh"
 PLOT_IMG_SCRIPT="$SCRIPT_DIR/plot_images_spectra.sh"
 CROSS_REC_SCRIPT="$SCRIPT_DIR/cross_reconstruction.sh"
 EXT_EMBD_SCRIPT="$SCRIPT_DIR/extract_embeddings.sh"
@@ -104,6 +105,19 @@ launch_analysis() {
             echo "    [ERROR] Workflow controller submission failed. Stopping analysis chain."
             return 1
         fi
+
+    # Plotting Attention Maps
+    local J_ATT=$(sbatch --parsable \
+                --dependency=afterok:$J_WOR \
+                --job-name="Plot_Attn_Maps$JOB_SUFFIX" \
+                "$ATTN_MAPS_SCRIPT" \
+                -r "$REPO_ROOT" \
+                -w "$WEIGHTS_DIR" \
+                -s "$PLOTS_DIR" \
+                -a "$DATA_DIR"
+            )
+    echo "    [Att Maps] Job sent.      ID: $J_ATT (Depends on Train: any)"
+    
 
     # Plotting Images and Spectra
     local J_IMG=$(sbatch --parsable \
