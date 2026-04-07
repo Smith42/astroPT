@@ -19,7 +19,8 @@ set -euo pipefail
 #--- DEFAULT VALUES ---#
 REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
 PYTHON_SCRIPT="scripts/plot_images_spectra.py"
-DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
+DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_filter_corrupt"
+SAVE_DIR=""
 
 # If invoked as: sbatch script.sh -- -w <weights> ...
 if [[ "${1:-}" == "--" ]]; then
@@ -44,14 +45,12 @@ if [[ -z "${WEIGHTS_DIR:-}" ]]; then
   exit 1
 fi
 
-if [[ -z "${SAVE_DIR:-}" ]]; then
-  echo "[ERROR] SAVE_DIR is required (-s <save_dir>)" >&2
-  exit 1
-fi
 
 # Absolute output path
 WEIGHTS_DIR=$(readlink -f "$WEIGHTS_DIR")
-SAVE_DIR=$(readlink -f "$SAVE_DIR")
+if [[ -n "${SAVE_DIR:-}" ]]; then
+  SAVE_DIR=$(readlink -f "$SAVE_DIR")
+fi
 DATA_DIR=$(readlink -f "$DATA_DIR")
 
 #--- ENVIRONMENT SETUP ---#
@@ -75,13 +74,19 @@ export PATH="$HOME/.TinyTeX/bin/x86_64-linux:$PATH"
 echo "Plotting Images and Spectra:"
 echo "    WEIGHTS DIR:  $WEIGHTS_DIR"
 echo "    DATA DIR:     $DATA_DIR" 
-echo "    SAVE DIR:     $SAVE_DIR"
+echo "    SAVE DIR:     ${SAVE_DIR:-}"
 
 # Run Python Script
+# Using --save_dir flag only if provided by user
+SAVE_FLAG=""
+if [[ -n "${SAVE_DIR:-}" ]]; then
+  SAVE_FLAG="--save_dir $SAVE_DIR"
+fi
+
 python "$PYTHON_SCRIPT" \
     --weights_dir "$WEIGHTS_DIR" \
     --data_dir "$DATA_DIR" \
-    --save_dir "$SAVE_DIR" \
+    $SAVE_FLAG \
     --num_plot 25 \
     --target_ids \
         39627061836389042 \

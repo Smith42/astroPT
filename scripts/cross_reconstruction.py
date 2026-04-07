@@ -463,26 +463,24 @@ def generate_autoregressive(
     If cond_mod is provided, generation is cross-modal; otherwise it is self-modal.
     """
     
-    # [CRITICAL FIX FOR TOKEN MIXING]: 
-    # If the model was trained with 'use_token_mixing=True', we MUST disable it 
-    # during zero-shot generation. Token mixing interleaves the full condition 
-    # with the 1-token target, causing the target to be completely isolated from 
-    # the condition due to the causal mask.
-    # By forcing sequential processing (token_mixing = False), we assemble the sequence as:
-    # [Condition_0 ... Condition_N, Target_0 ... Target_K]
-    # This allows Target_K to cleanly attend to the ENTIRE condition modality.
-    original_token_mixing = getattr(model.config, 'use_token_mixing', False)
-    if original_token_mixing:
-        model.config.use_token_mixing = False
+    # We DO NOT turn off token mixing. If the model was trained with it, the latent
+    # topology expects the interleaved sequence. We will instead trick the model
+    # into giving us the next token by appending a "dummy" target token during 
+    # cross-modal generation so that its hidden state aligns exactly with predicting the next token.
 
     model.eval()
     with torch.no_grad():
         if cond_mod is not None:
-            # True Zero-Shot Cross-Generation:
-            # We predict the very first target token (Target_0) from the last condition token (Cond_N).
-            # We don't cheat by using the ground-truth first token.
-            X_init = {cond_mod: X_full[cond_mod], f"{cond_mod}_positions": X_full[f"{cond_mod}_positions"]}
-            outputs, _ = model(X_init, target_modality=target_mod)
+            # To predict the very first target token (Target_0) cleanly, 
+            # we provide the full cond_mod sequence and a 1-length dummy target_mod.
+            Target_dummy = torch.zeros_like(X_full[target_mod][:, 0:1, :])
+            X_init = {
+                cond_mod: X_full[cond_mod], 
+                f"{cond_mod}_positions": X_full[f"{cond_mod}_positions"],
+                target_mod: Target_dummy,
+                f"{target_mod}_positions": X_full[f"{target_mod}_positions"][:, 0:1]
+            }
+            outputs, _ = model(X_init)
             Target_0 = outputs[target_mod][:, -1:, :]
             generated_tokens = [Target_0]
         else:
@@ -491,20 +489,26 @@ def generate_autoregressive(
             # we MUST seed the sequence with the real first token (typically the top-left sky patch).
             generated_tokens = [X_full[target_mod][:, 0:1, :]]
 
-        for _ in tqdm(range(max_len - 1), desc=f"Generating {target_mod.upper()}", leave=False):
+        for step in tqdm(range(max_len - 1), desc=f"Generating {target_mod.upper()}", leave=False):
             X_current = {}
 
-            # ORDERING IS CRITICAL HERE:
-            # We insert cond_mod first into the dictionary. Since Python 3.7+ preserves 
-            # insertion order, model._forward_native will place cond_mod at the beginning 
-            # of the sequence. This forms our Causal Bridge!
             if cond_mod is not None:
                 X_current[cond_mod] = X_full[cond_mod]
                 X_current[f"{cond_mod}_positions"] = X_full[f"{cond_mod}_positions"]
 
             # Target history built autoregressively
             curr_tokens = torch.cat(generated_tokens, dim=1)
-            real_len = curr_tokens.shape[1]
+            
+            if cond_mod is not None:
+                # Add a dummy token so `outputs[target_mod]` captures the prediction for the NEXT step.
+                Target_dummy = torch.zeros_like(curr_tokens[:, 0:1, :])
+                curr_tokens_with_dummy = torch.cat([curr_tokens, Target_dummy], dim=1)
+            else:
+                # In self-generation (batch_modes=1), predicting the next token works naturally
+                # from the last actual sequence token without needing a dummy.
+                curr_tokens_with_dummy = curr_tokens
+                
+            real_len = curr_tokens_with_dummy.shape[1]
 
             full_pos_vec = X_full[f"{target_mod}_positions"]
             input_pos = full_pos_vec[:, :real_len]
@@ -513,7 +517,7 @@ def generate_autoregressive(
                 extra = torch.arange(input_pos.shape[1], real_len, device=device).unsqueeze(0)
                 input_pos = torch.cat([input_pos, extra], dim=1)
 
-            X_current[target_mod] = curr_tokens
+            X_current[target_mod] = curr_tokens_with_dummy
             X_current[f"{target_mod}_positions"] = input_pos
 
             # Forward pass
@@ -523,10 +527,6 @@ def generate_autoregressive(
             next_token = outputs[target_mod][:, -1:, :]
             generated_tokens.append(next_token)
             
-    # Restore the model's original configuration
-    if original_token_mixing:
-        model.config.use_token_mixing = True
-
     full_sequence = torch.cat(generated_tokens, dim=1)
     return full_sequence.float().cpu().numpy()[0]
 

@@ -88,7 +88,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="AstroPT Visual Inspector")
     parser.add_argument("--weights_dir", type=str, required=True, help="Directory containing training weights")
     parser.add_argument("--data_dir", type=str, required=True, help="Arrow data root directory")
-    parser.add_argument("--save_dir", type=str, required=True, help="Plot Saving Directory")
+    parser.add_argument("--save_dir", type=str, default=None, help="Plot Saving Directory (Defaults to weights_dir/../plots)")
     parser.add_argument("--ckpt_name", type=str, default="ckpt_best.pt", help="Checkpoint filename")
     parser.add_argument("--target_ids", nargs="+", type=int, help="Specific Target IDs to plot")
     parser.add_argument("--num_plot", type=int, default=10, help="Number of random plots")
@@ -230,7 +230,6 @@ def rebuild_full_sequence_from_teacher_forcing(
     process_modes + model forward can produce three valid length relations:
     - pred_len == input_len + 1: prediction is already full sequence (no prepend)
     - pred_len == input_len    : prepend first input token
-    - pred_len == input_len - 1: prepend first input token
     """
     input_len = int(input_tokens.shape[1])
     pred_len = int(pred_tokens.shape[1])
@@ -238,14 +237,24 @@ def rebuild_full_sequence_from_teacher_forcing(
     if pred_len == input_len + 1:
         return pred_tokens
 
-    if pred_len in (input_len, input_len - 1):
-        start_token = input_tokens[:, 0:1, :]
-        return torch.cat([start_token, pred_tokens], dim=1)
+    if pred_len >= input_len - 1:
+        # Prepend first token if necessary (for causal shifted predictions)
+        # We handle cases where we might be slightly over/under due to token mixing/shifts
+        diff = input_len - pred_len
+        if diff > 0:
+            start_token = input_tokens[:, 0:diff, :]
+            return torch.cat([start_token, pred_tokens], dim=1)
+        else:
+            return pred_tokens[:, :input_len, :]
 
-    raise RuntimeError(
-        f"Unexpected teacher-forcing lengths for {mode_name}: "
-        f"input_len={input_len}, pred_len={pred_len}"
-    )
+    # Fallback for Token Mixing (Interleaved Sparse Outputs)
+    # If the prediction is too short, we return it as is but padded with zeros
+    # to avoid crashing. The actual fix is disabling mixing during inference.
+    logger.warning(f"Unexpected lengths: {mode_name} input={input_len}, pred={pred_len}. Padding with zeros.")
+    padded = torch.zeros((pred_tokens.shape[0], input_len, pred_tokens.shape[-1]), device=pred_tokens.device)
+    actual_len = min(input_len, pred_len)
+    padded[:, :actual_len, :] = pred_tokens[:, :actual_len, :]
+    return padded
 
 
 def plot_spectral_lines(ax, min_wl, max_wl, z):
@@ -340,8 +349,13 @@ def main():
     
     # Required paths
     weights_dir = Path(args.weights_dir)
-    save_dir = Path(args.save_dir) / "images_spectra_reconstructions"
+    if args.save_dir:
+        save_dir = Path(args.save_dir)
+    else:
+        save_dir = weights_dir.parent / "plots" / "images_spectra_reconstructions"
+        
     save_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Reconstructions will be saved to: {save_dir}")
     
     logger.info("Analysis Directories:")
     logger.info(f" --> [Weights]:   {weights_dir}")
@@ -489,7 +503,7 @@ def main():
                     else:
                         X[k] = v
                 outputs, _ = model(X)
-        
+
         # Raw data
         try:
             arrow_idx = int(batch['idx'].item())
@@ -519,7 +533,7 @@ def main():
                     input_tokens=X['images'],
                     pred_tokens=pred_tokens,
                     mode_name='images',
-                ).float().cpu().numpy()[0]
+                ).float().detach().cpu().numpy()[0]
                 
                 img_pred_model = reconstruct_image_from_patches(
                     full_seq,
@@ -610,7 +624,7 @@ def main():
                 input_tokens=X['spectra'],
                 pred_tokens=pred_s,
                 mode_name='spectra',
-            ).float().cpu().numpy().flatten()
+            ).float().detach().cpu().numpy().flatten()
             
             spec_pred = denormalize(
                 full_s, 

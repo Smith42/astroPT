@@ -120,6 +120,26 @@ def reorder_modal_inputs(
     return ordered
 
 
+def get_interleaved_masks(l1, l2, block_size):
+    """Reconstructs modality masks for interleaved sequences."""
+    idx = []
+    i1, i2 = 0, 0
+    while i1 < l1 or i2 < l2:
+        if i1 < l1:
+            c1 = min(block_size, l1 - i1)
+            idx.extend(range(i1, i1 + c1))
+            i1 += c1
+        if i2 < l2:
+            c2 = min(block_size, l2 - i2)
+            idx.extend(range(l1 + i2, l1 + i2 + c2))
+            i2 += c2
+    
+    interleaved_idx = np.array(idx)
+    is_mod1 = interleaved_idx < l1
+    is_mod2 = interleaved_idx >= l1
+    return interleaved_idx, is_mod1, is_mod2
+
+
 def plot_cross_attention_single(
     attn_matrix: np.ndarray,
     n_img_tokens: int,
@@ -170,6 +190,60 @@ def plot_cross_attention_single(
     axes[1].set_title(r"\textbf{Queries: Images $\rightarrow$ Look at: Spectra}")
     axes[1].set_xlabel(r"Spectra Tokens (Keys)")
     axes[1].set_ylabel(r"Image Patch Tokens (Queries)")
+
+    save_path = save_dir / filename
+    fig.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    logger.info(f" --> Saved: {save_path}")
+
+
+def plot_self_attention_single(
+    attn_matrix: np.ndarray,
+    n_img_tokens: int,
+    n_spec_tokens: int,
+    n_layers: int,
+    target_id: int,
+    z_val: float,
+    train_name: str,
+    save_dir: Path,
+    filename: str,
+):
+    """Plots per-object self-modal attention maps (Images->Images, Spectra->Spectra)."""
+    from matplotlib.colors import LogNorm
+
+    fig, axes = plt.subplots(1, 2, figsize=(20, 7))
+    fig.suptitle(
+        rf"\textbf{{AstroPT Self-Attention Map | ID: {target_id} | z={z_val:.3f}}}"
+        + f"\n[{train_name}] -- Layer {n_layers} (Heads Averaged)",
+        fontsize=20, y=1.01
+    )
+
+    self_i2i = attn_matrix[:n_img_tokens, :n_img_tokens]
+    self_s2s = attn_matrix[n_img_tokens:, n_img_tokens:]
+
+    vmax_i2i = max(self_i2i.max(), 1e-4)
+    vmax_s2s = max(self_s2s.max(), 1e-4)
+    vmin = 1e-7
+
+    # Subplot 1: Images looking at Images
+    im0 = axes[0].imshow(
+        np.clip(self_i2i, vmin, None), cmap='inferno', aspect='auto', origin='lower',
+        norm=LogNorm(vmin=vmin, vmax=vmax_i2i)
+    )
+    plt.colorbar(im0, ax=axes[0], label='Attention Weight (log scale)')
+    axes[0].set_title(r"\textbf{Queries: Images $\rightarrow$ Look at: Images}")
+    axes[0].set_xlabel(r"Image Patch Tokens (Keys)")
+    axes[0].set_ylabel(r"Image Patch Tokens (Queries)")
+
+    # Subplot 2: Spectra looking at Spectra
+    im1 = axes[1].imshow(
+        np.clip(self_s2s, vmin, None), cmap='inferno', aspect='auto', origin='lower',
+        norm=LogNorm(vmin=vmin, vmax=vmax_s2s)
+    )
+    plt.colorbar(im1, ax=axes[1], label='Attention Weight (log scale)')
+    axes[1].set_title(r"\textbf{Queries: Spectra $\rightarrow$ Look at: Spectra}")
+    axes[1].set_xlabel(r"Spectra Tokens (Keys)")
+    axes[1].set_ylabel(r"Spectra Tokens (Queries)")
 
     save_path = save_dir / filename
     fig.savefig(save_path, dpi=300, bbox_inches='tight')
@@ -245,6 +319,40 @@ def plot_cross_attention_average(
     ax3.set_ylabel(r"Image Patch Tokens (Queries)")
     fig3.savefig(save_dir / f"avg_attention_images_to_spectra{run_suffix}.png", dpi=300, bbox_inches='tight')
     plt.close(fig3)
+
+    # --- Images -> Images average ---
+    self_i2i = avg_attn[:n_img_tokens, :n_img_tokens]
+    self_i2i_c = np.clip(self_i2i, 1e-8, None)
+    vmax_i2i = self_i2i_c.max()
+    vmin_i2i = self_i2i_c[self_i2i_c > 0].min() if len(self_i2i_c[self_i2i_c > 0]) > 0 else 1e-8
+    fig_i2i, ax_i2i = plt.subplots(figsize=(14, 6))
+    im_i2i = ax_i2i.imshow(
+        self_i2i_c, cmap='inferno', aspect='auto', origin='lower',
+        norm=LogNorm(vmin=vmin_i2i, vmax=vmax_i2i)
+    )
+    plt.colorbar(im_i2i, ax=ax_i2i, label='Attention Weight (log scale)')
+    ax_i2i.set_title(rf"\textbf{{Avg. Queries: Images $\rightarrow$ Look at: Images -- Layer {n_layers}}} {sample_label}")
+    ax_i2i.set_xlabel(r"Image Patch Tokens (Keys)")
+    ax_i2i.set_ylabel(r"Image Patch Tokens (Queries)")
+    fig_i2i.savefig(save_dir / f"avg_attention_images_to_images{run_suffix}.png", dpi=300, bbox_inches='tight')
+    plt.close(fig_i2i)
+
+    # --- Spectra -> Spectra average ---
+    self_s2s = avg_attn[n_img_tokens:, n_img_tokens:]
+    self_s2s_c = np.clip(self_s2s, 1e-8, None)
+    vmax_s2s = self_s2s_c.max()
+    vmin_s2s = self_s2s_c[self_s2s_c > 0].min() if len(self_s2s_c[self_s2s_c > 0]) > 0 else 1e-8
+    fig_s2s, ax_s2s = plt.subplots(figsize=(14, 6))
+    im_s2s = ax_s2s.imshow(
+        self_s2s_c, cmap='inferno', aspect='auto', origin='lower',
+        norm=LogNorm(vmin=vmin_s2s, vmax=vmax_s2s)
+    )
+    plt.colorbar(im_s2s, ax=ax_s2s, label='Attention Weight (log scale)')
+    ax_s2s.set_title(rf"\textbf{{Avg. Queries: Spectra $\rightarrow$ Look at: Spectra -- Layer {n_layers}}} {sample_label}")
+    ax_s2s.set_xlabel(r"Spectra Tokens (Keys)")
+    ax_s2s.set_ylabel(r"Spectra Tokens (Queries)")
+    fig_s2s.savefig(save_dir / f"avg_attention_spectra_to_spectra{run_suffix}.png", dpi=300, bbox_inches='tight')
+    plt.close(fig_s2s)
 
     # --- Per-layer bidirectional barplot ---
     fig4, ax4 = plt.subplots(figsize=(12, 6))
@@ -425,11 +533,29 @@ def main():
                 model(B["X"], targets=None)
             last_attn = model.transformer.h[-1].attn.extracted_attention[0].mean(dim=0).float().numpy()
             
-            # Update per-layer averages (Standard Causal)
-            for i, block in enumerate(model.transformer.h):
-                layer_attn = block.attn.extracted_attention[0].mean(dim=0).float().numpy()
-                avg_per_layer_s2i[i] += layer_attn[n_img_tokens:, :n_img_tokens].mean()
-                avg_per_layer_i2s[i] += layer_attn[:n_img_tokens, n_img_tokens:].mean()
+            if use_token_mixing:
+                block_size = raw_config_dict.get('token_mixing_block_size', 5)
+                _, is_img, is_spec = get_interleaved_masks(n_img_tokens, n_spec_tokens, block_size)
+                
+                # Deinterleave the matrix so the plotting functions can slice it naively
+                deinterleaved_attn = np.zeros_like(last_attn)
+                deinterleaved_attn[:n_img_tokens, :n_img_tokens] = last_attn[is_img][:, is_img]
+                deinterleaved_attn[n_img_tokens:, :n_img_tokens] = last_attn[is_spec][:, is_img]
+                deinterleaved_attn[:n_img_tokens, n_img_tokens:] = last_attn[is_img][:, is_spec]
+                deinterleaved_attn[n_img_tokens:, n_img_tokens:] = last_attn[is_spec][:, is_spec]
+                last_attn = deinterleaved_attn
+
+                # Update per-layer averages using masks
+                for i, block in enumerate(model.transformer.h):
+                    layer_attn = block.attn.extracted_attention[0].mean(dim=0).float().numpy()
+                    avg_per_layer_s2i[i] += layer_attn[is_spec][:, is_img].mean()
+                    avg_per_layer_i2s[i] += layer_attn[is_img][:, is_spec].mean()
+            else:
+                # Update per-layer averages (Standard Causal)
+                for i, block in enumerate(model.transformer.h):
+                    layer_attn = block.attn.extracted_attention[0].mean(dim=0).float().numpy()
+                    avg_per_layer_s2i[i] += layer_attn[n_img_tokens:, :n_img_tokens].mean()
+                    avg_per_layer_i2s[i] += layer_attn[:n_img_tokens, n_img_tokens:].mean()
 
         # 4. Accumulate population average for the heatmap
         if avg_attn_last is None:
@@ -438,7 +564,8 @@ def main():
 
         # 5. Save per-object plots
         random_suffix = "" if target_id in specific_tids else "_R"
-        filename = f"attn_ID_{target_id}{run_suffix}{random_suffix}.png"
+        filename = f"attn_ID_{target_id}{run_suffix}_cross{random_suffix}.png"
+        filename_self = f"attn_ID_{target_id}{run_suffix}_self{random_suffix}.png"
         logger.info(f"[{batch_idx+1}/{len(indices_to_plot)}] ID={target_id} z={z_val:.3f}{' [random]' if random_suffix else ''}")
 
         plot_cross_attention_single(
@@ -451,6 +578,18 @@ def main():
             train_name=train_name,
             save_dir=save_dir,
             filename=filename,
+        )
+
+        plot_self_attention_single(
+            attn_matrix=last_attn,
+            n_img_tokens=n_img_tokens,
+            n_spec_tokens=n_spec_tokens,
+            n_layers=n_layers,
+            target_id=target_id,
+            z_val=z_val,
+            train_name=train_name,
+            save_dir=save_dir,
+            filename=filename_self,
         )
 
     # Normalize accumulators
