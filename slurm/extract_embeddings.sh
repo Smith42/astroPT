@@ -19,13 +19,8 @@ set -euo pipefail
 #--- DEFAULT VALUES ---#
 REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
 PYTHON_SCRIPT="scripts/extract_embeddings.py"
-DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
-POOL_MET_IMG="mean"
-POOL_MET_SPEC="rank"
+DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_filter_corrupt"
 PCA_DIM=0
-ORDER_MODE="spectra_first"
-JOINT_MODE="mean"
-JOINT_ALPHA="0.5"
 EXP_TAG=""
 
 print_usage() {
@@ -93,27 +88,12 @@ echo "Embedding Extraction Configuration:"
 echo "    DATA DIR:       $DATA_DIR" 
 echo "    WEIGHTS DIR:    $WEIGHTS_DIR"
 echo "    SAVE DIR:       $SAVE_DIR"
-echo "    POOL MET IMG:   $POOL_MET_IMG"
-echo "    POOL MET SPEC:  $POOL_MET_SPEC"
-echo "    PCA DIM:        $PCA_DIM"
-echo "    ORDER MODE:     $ORDER_MODE (fixed)"
-echo "    JOINT MODE:     $JOINT_MODE (fixed)"
-echo "    JOINT ALPHA:    $JOINT_ALPHA (fixed)"
-echo "    LAYER SOURCE:   final (fixed)"
-echo "    EXP TAG:        $EXP_TAG (fixed)"
 
 # Run stable post-analysis extraction once per training run.
 python "$PYTHON_SCRIPT" \
     --weights_dir "$WEIGHTS_DIR" \
     --data_dir "$DATA_DIR" \
-    --save_dir "$SAVE_DIR" \
-    --pool_method_img "$POOL_MET_IMG" \
-    --pool_method_spec "$POOL_MET_SPEC" \
-    --pca_dim "$PCA_DIM" \
-    --order_mode "$ORDER_MODE" \
-    --joint_mode "$JOINT_MODE" \
-    --joint_alpha "$JOINT_ALPHA" \
-    --exp_tag "$EXP_TAG"
+    --save_dir "$SAVE_DIR"
 
 echo "-----------------------------------------------"
 echo "Embedding Extraction Finished"
