@@ -2,7 +2,7 @@
 
 # Evironment Configuration
 export REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
-export DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
+export DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_filter_corrupt"
 export UV_CACHE_DIR="/home/valonso/iac18_mhuertas_shared/valonso/cache/uv_cache"
 export HF_HOME="/home/valonso/iac18_mhuertas_shared/valonso/cache/huggingface"
 export OMP_NUM_THREADS=4 
