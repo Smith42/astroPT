@@ -74,9 +74,13 @@ if [ -f "$CONFIG_FILE" ]; then
 fi
 
 #--- EMBEDDING DETECTION LOGIC ---#
-DETECTED_EMB=$(ls -td "${EMB_DIR}"/*/ 2>/dev/null | head -n 1)
-DETECTED_EMB="${DETECTED_EMB%/}"
-DETECTED_EMB=$(readlink -f "$DETECTED_EMB")
+if ls "$EMB_DIR"/*.npy 1> /dev/null 2>&1; then
+    DETECTED_EMB=$(readlink -f "$EMB_DIR")
+else
+    DETECTED_EMB=$(ls -td "${EMB_DIR}"/*/ 2>/dev/null | head -n 1)
+    DETECTED_EMB="${DETECTED_EMB%/}"
+    DETECTED_EMB=$(readlink -f "$DETECTED_EMB")
+fi
 
 if [ -z "$DETECTED_EMB" ]; then
     echo "[ERROR]: No sub-directory found in $EMB_DIR"

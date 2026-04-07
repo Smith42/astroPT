@@ -119,6 +119,7 @@ else
       "${LOGS_BASE}/astropt_100M_250K_arrow_20260311_asinh_rot_mae_spectra"
       "${LOGS_BASE}/astropt_100M_250K_arrow_20260401_asinh_rot_mae_imgpatchsize8/embeddings/best_img-mean_spec-rank_layer-final_ord-specfirst_joint-mean_ord_spectra_first"
       "${LOGS_BASE}/astropt_100M_250K_arrow_20260405_asinh_rot_mae_img8_randrop0p15_imglrx1p10"
+      "${LOGS_BASE}/astropt_100M_250K_arrow_20260406_tokmix5_mask0p5_forceimg"
   )
 
   # Auto-add the CURRENT run being evaluated by the automated SLURM pipeline

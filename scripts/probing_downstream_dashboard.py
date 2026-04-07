@@ -96,7 +96,14 @@ def load_and_merge_data(filepaths: List[str | Path], test_names: Optional[List[s
 
     return pd.concat(df_list, ignore_index=True)
 
-def generate_dashboard(df: pd.DataFrame, task_type: str, targets: List[str], save_dir: str, save_name: str) -> None:
+def generate_dashboard(
+    df: pd.DataFrame,
+    task_type: str,
+    targets: List[str],
+    save_dir: str,
+    save_name: str,
+    global_test_order: Optional[List[str]] = None,
+) -> None:
     """
     Generates and saves a matplotlib dashboard for a specific task type.
     Dynamically drops empty metric columns based on the task type.
@@ -137,12 +144,16 @@ def generate_dashboard(df: pd.DataFrame, task_type: str, targets: List[str], sav
         return
 
     # Set up the matplotlib figure
-    fig_w = max(12, 4 * n_cols)
-    fig_h = max(4, 3.2 * n_rows)
+    fig_w = max(12, 4.2 * n_cols)
+    fig_h = max(7, 5.0 * n_rows)
     fig, axes = plt.subplots(nrows=n_rows, ncols=n_cols, figsize=(fig_w, fig_h), squeeze=False)
 
-    tests = task_df['Test_Name'].dropna().astype(str).unique().tolist()
-    style_map = build_style_map(tests)
+    tests_present = task_df['Test_Name'].dropna().astype(str).unique().tolist()
+    if global_test_order:
+        tests = [t for t in global_test_order if t in tests_present]
+    else:
+        tests = tests_present
+    style_map = build_style_map(global_test_order or tests)
     config_order = get_ordered_configs(task_df['Config'])
     if not config_order:
         print(f"[WARNING] No configuration labels found for task {task_type}. Skipping dashboard.")
@@ -187,7 +198,10 @@ def generate_dashboard(df: pd.DataFrame, task_type: str, targets: List[str], sav
             ax.set_title(f'{target} - {metric}')
             ax.set_xticks(range(len(config_order)))
             ax.set_xticklabels(config_order, rotation=45, ha='right')
+            ax.tick_params(axis='x', labelsize=10, pad=6)
             ax.grid(True, linestyle='-', alpha=0.4)
+            if hasattr(ax, 'set_box_aspect'):
+                ax.set_box_aspect(0.9)
             
             if j == 0:
                 ax.set_ylabel('Score / Value', fontsize=12)
@@ -205,14 +219,15 @@ def generate_dashboard(df: pd.DataFrame, task_type: str, targets: List[str], sav
     legend_y = 1.0 - (legend_offset_inches / fig_height)
     top_limit = 1.0 - (header_space_inches / fig_height)
     
-    plt.tight_layout(rect=[0, 0, 1, top_limit])
+    plt.tight_layout(rect=[0, 0, 1, top_limit], h_pad=2.4, w_pad=1.0)
 
     fig.suptitle(f'Downstream Task Performance Comparison: {task_type.capitalize()}', 
                  fontsize=20, y=title_y, va='top')
     
     handles, labels = axes[0, 0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc='upper center', ncol=min(len(tests), 4), 
-               fontsize=12, bbox_to_anchor=(0.5, legend_y), frameon=True)
+    if handles:
+        fig.legend(handles, labels, loc='upper center', ncol=min(len(tests), 4), 
+                   fontsize=12, bbox_to_anchor=(0.5, legend_y), frameon=True)
     
     # Save the figure
 
@@ -391,9 +406,19 @@ def main():
         if missing_targets:
             print(f"[WARNING] The following requested targets were not found in the data: {missing_targets}")
 
+    # Fixed color/style mapping across tasks based on the global run list.
+    global_test_order: List[str] = []
+    for n in names_list or []:
+        s = str(n)
+        if s and s not in global_test_order:
+            global_test_order.append(s)
+    for n in df['Test_Name'].dropna().astype(str).unique().tolist():
+        if n not in global_test_order:
+            global_test_order.append(n)
+
     # Generate Dashboards independently
-    generate_dashboard(df, 'regression', regression_targets, save_dir, args.save_name)
-    generate_dashboard(df, 'classification', classification_targets, save_dir, args.save_name)
+    generate_dashboard(df, 'regression', regression_targets, save_dir, args.save_name, global_test_order)
+    generate_dashboard(df, 'classification', classification_targets, save_dir, args.save_name, global_test_order)
 
 if __name__ == "__main__":
     main()
