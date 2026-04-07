@@ -106,20 +106,22 @@ class TrainingConfig:
     token_mixing_block_size: int = 5        # Interleaving block size
     shuffle_modality_train: bool = True     # Shuffle modality order during training
     shuffle_modality_val: bool = False      # Shuffle modality order during validation
+    modality_dropout_prob: float = 0.10     # Probability to zero one modality in a micro-step
+    modality_dropout_mode: str = "random"   # none, images, spectra, random
 
     # Images
     images_train: bool = True           # Images bool flag for enabling training
     images_size: int = 224              # Images side size in pixels
     images_patch_size: int = 8          # Side size in pixels of each patch in an image
     images_channels: int = 4            # Channels per image (VIS + NISP Y,J,H)
-    images_loss_weight: float = 1.2     # Images importance for training
+    images_loss_weight: float = 1.1     # Images importance for training
     images_embed_pos: bool = True       # Images embedding positions learning
     images_pos_input_size: int = 1      # Images position input size
     images_norm_type: str = "asinh"     # Normalization method: constant, z_score or asinh
     images_norm_scaler: float = 1.0     # Scaler factor if normalization requieres it (default 1.0)
     images_norm_const: float = 1.0      # Normalization global constant for images: P99=7.603847
     images_mask: bool = True            # Enable tactical masking for image patches
-    images_mask_prob: float = 0.5       # Probability to mask each image patch
+    images_mask_prob: float = 0.25      # Probability to mask each image patch
     
     # Spectra
     spectra_train: bool = True              # Spectra bool flag for enabling training
@@ -133,10 +135,9 @@ class TrainingConfig:
     spectra_norm_scaler: float = 1.0        # Scaler factor if normalization requieres it (default 1.0)
     spectra_norm_const: float = 1.0         # Normalization global constant for spectra: P99=7.956048
     spectra_mask: bool = True               # Enable tactical masking for spectra patches
-    spectra_mask_prob: float = 0.5          # Probability to mask each spectrum patch
+    spectra_mask_prob: float = 0.25         # Probability to mask each spectrum patch
     
     #--- Optimization of the Learning Process ---#
-    learning_rate: float = 6e-4     # Learning rate per weight update
     max_iters: int = 50_000         # Total training iters (NOT epochs)
     weight_decay: float = 1e-1      # Regularization to prevent overfitting
     beta1: float = 0.9              # AdamW parameter
@@ -148,10 +149,14 @@ class TrainingConfig:
     gradient_accumulation_steps: int = 40 
     
     #--- Learning Rate Scheduler ---#
+    learning_rate: float = 3e-4     # Learning rate per weight update
+    lr_min: float = 3e-5            # Minimum LR (usually 10% of max)
+    lr_mult_images: float = 1.0    # LR multiplier for image encoder/decoder modality
+    lr_mult_spectra: float = 1.0    # LR multiplier for spectra encoder/decoder modality
+    lr_mult_backbone: float = 1.0   # LR multiplier for transformer/shared modality
     lr_decay: bool = True           # Activates the variable learning rate decay
-    lr_warmup_iters: int = 2_000    # Steps to ramp up LR from 0 to max
+    lr_warmup_iters: int = 4_000    # Steps to ramp up LR from 0 to max
     lr_decay_iters: int = 30_000    # Steps to decay LR down to min
-    lr_min: float = 6e-5            # Minimum LR (usually 10% of max)
 
     #--- Logging & Checkpointing ---#
     eval_interval: int = 1_000              # How often to validate
@@ -159,7 +164,7 @@ class TrainingConfig:
     log_interval: int = 200                 # How often to print to console/WandB
     checkpoint_interval: int = 1_000        # How often to save .pt files
     checkpoint_save_type: str = "both"      # Checkpoint saving mode: best, last, both or all
-    early_stopping_patience: int = 5        # Stop if no improvement after N evals
+    early_stopping_patience: int = 10       # Stop if no improvement after N evals
 
     #--- System & Backend ---#
     device: str = "cuda"                    # CPU/GPU device interface: cpu, cuda or mps
@@ -182,11 +187,6 @@ class TrainingConfig:
     diagnostics_track_losses: bool = True   # Track per-modality losses
     diagnostics_track_grads: bool = True    # Track per-branch gradient norms
     diagnostics_file_name: str = "training_diagnostics.csv"
-    modality_dropout_prob: float = 0.20     # Probability to zero one modality in a micro-step
-    modality_dropout_mode: str = "random"   # none, images, spectra, random
-    lr_mult_images: float = 1.30            # LR multiplier for image encoder/decoder modality
-    lr_mult_spectra: float = 1.0            # LR multiplier for spectra encoder/decoder modality
-    lr_mult_backbone: float = 1.0           # LR multiplier for transformer/shared modality
     
     # Dynamic output directory with date
     def __post_init__(self):
