@@ -19,7 +19,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import Set, List
+from typing import Set, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -45,14 +45,16 @@ def parse_args() -> argparse.Namespace:
                         help="Root directory of the existing Arrow dataset")
     parser.add_argument("--save_dir", type=str, required=True, 
                         help="Directory to save the new filtered dataset")
-    parser.add_argument("--metadata_path", type=str, required=True, 
-                        help="Path to the .fits catalog containing galaxy properties")
+    parser.add_argument("--metadata_path", type=str, default=None, 
+                        help="Path to the .fits catalog containing galaxy properties (optional)")
     parser.add_argument("--size_col", type=str, default="sersic_sersic_vis_radius", 
                         help="Name of the column containing galaxy size")
     parser.add_argument("--percentile", type=float, default=75.0, 
                         help="Percentile threshold (e.g., 75 keeps the top 25% largest)")
     parser.add_argument("--num_workers", type=int, default=8, 
                         help="Number of CPU cores to use for Arrow filtering")
+    parser.add_argument("--filter_corrupt", action="store_true",
+                        help="Clean rows that crash PyArrow when accessed due to size/shape corruption")
     
     return parser.parse_args()
 
@@ -105,7 +107,7 @@ def extract_large_galaxy_ids(metadata_path: Path, size_col: str, percentile: flo
     return valid_ids
 
 
-def process_split(split: str, data_dir: Path, save_dir: Path, valid_ids: Set[int], num_workers: int) -> None:
+def process_split(split: str, data_dir: Path, save_dir: Path, valid_ids: Optional[Set[int]], num_workers: int, filter_corrupt: bool) -> None:
     """
     Loads, filters, and saves a specific data split utilizing HuggingFace's 
     multi-threaded filtering.
@@ -135,20 +137,44 @@ def process_split(split: str, data_dir: Path, save_dir: Path, valid_ids: Set[int
         logger.error(f"Failed to load datasets for {split}: {e}")
         return
 
+    # Optional pre-filter to detect corrupted array shapes matching TARGETIDS
+    if filter_corrupt:
+        logger.info(f"Scanning for data corruption in {split}... This might take a bit.")
+        ds = ds.with_format("numpy")
+        corrupt_indices = set()
+        
+        for i in range(len(ds)):
+            try:
+                # Triggers the access error if shape/bytes mismatch exists
+                _ = ds[i]
+            except Exception as e:
+                corrupt_indices.add(i)
+                
+        if corrupt_indices:
+            logger.warning(f"Found {len(corrupt_indices)} corrupted records in {split}. Removing them.")
+            ds = ds.select([i for i in range(len(ds)) if i not in corrupt_indices])
+        else:
+            logger.info(f"No corruption found in {split}.")
+            
+        ds = ds.with_format(None) # Revert to pyarrow default for safe processing
+
     # 3. Apply high-performance filtration
-    logger.info(f"Applying target ID filter using {num_workers} workers...")
-    
-    # The lambda function checks O(1) against the set
-    filtered_ds = ds.filter(
-        lambda targetids: [int(tid) in valid_ids for tid in targetids],
-        input_columns=["targetid"],
-        batched=True,
-        batch_size=1000,
-        num_proc=num_workers,
-        desc=f"Filtering {split}"
-    )
-    
-    logger.info(f"Filtered '{split}' size: {len(filtered_ds)} samples.")
+    if valid_ids is not None:
+        logger.info(f"Applying target ID filter using {num_workers} workers...")
+        
+        # The lambda function checks O(1) against the set
+        filtered_ds = ds.filter(
+            lambda targetids: [int(tid) in valid_ids for tid in targetids],
+            input_columns=["targetid"],
+            batched=True,
+            batch_size=1000,
+            num_proc=num_workers,
+            desc=f"Filtering {split}"
+        )
+        logger.info(f"Filtered '{split}' size: {len(filtered_ds)} samples.")
+    else:
+        logger.info(f"Skipping target ID size filter (no metadata provided).")
+        filtered_ds = ds
 
     # 4. Save to disk with explicit sharding
     # We save into a single folder (e.g., train_0) to maintain compatibility with 
@@ -169,7 +195,6 @@ def main():
     
     data_dir = Path(args.data_dir)
     save_dir = Path(args.save_dir)
-    metadata_path = Path(args.metadata_path)
     
     # Validation
     if not data_dir.exists():
@@ -179,15 +204,19 @@ def main():
     save_dir.mkdir(parents=True, exist_ok=True)
     
     # Phase 1: Metadata extraction
-    valid_target_ids = extract_large_galaxy_ids(
-        metadata_path=metadata_path, 
-        size_col=args.size_col, 
-        percentile=args.percentile
-    )
-    
-    if not valid_target_ids:
-        logger.error("No valid IDs extracted. Check your threshold and column name.")
-        sys.exit(1)
+    valid_target_ids = None
+    if args.metadata_path is not None:
+        valid_target_ids = extract_large_galaxy_ids(
+            metadata_path=Path(args.metadata_path), 
+            size_col=args.size_col, 
+            percentile=args.percentile
+        )
+        
+        if not valid_target_ids:
+            logger.error("No valid IDs extracted. Check your threshold and column name.")
+            sys.exit(1)
+    else:
+        logger.info("No metadata path provided. Skipping size filtration and proceeding to Arrow processing.")
 
     # Phase 2: Arrow filtration
     for split in ["train", "test"]:
@@ -196,7 +225,8 @@ def main():
             data_dir=data_dir,
             save_dir=save_dir,
             valid_ids=valid_target_ids,
-            num_workers=args.num_workers
+            num_workers=args.num_workers,
+            filter_corrupt=args.filter_corrupt
         )
         
     logger.info("\nDataset filtration pipeline completed successfully.")
