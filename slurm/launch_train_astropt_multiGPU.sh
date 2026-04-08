@@ -113,7 +113,7 @@ launch_analysis() {
                 "$ATTN_MAPS_SCRIPT" \
                 -r "$REPO_ROOT" \
                 -w "$WEIGHTS_DIR" \
-                -s "$PLOTS_DIR" \
+                -s "$PLOTS_DIR/attention_maps" \
                 -a "$DATA_DIR"
             )
     echo "    [Att Maps] Job sent.      ID: $J_ATT (Depends on Train: any)"
@@ -126,7 +126,7 @@ launch_analysis() {
                 "$PLOT_IMG_SCRIPT" \
                 -r "$REPO_ROOT" \
                 -w "$WEIGHTS_DIR" \
-                -s "$PLOTS_DIR" \
+                -s "$PLOTS_DIR/images_spectra_reconstruction" \
                 -a "$DATA_DIR"
             )
     echo "    [ImgSpec] Job sent.       ID: $J_IMG (Depends on Train: any)"
@@ -138,7 +138,7 @@ launch_analysis() {
                 "$CROSS_REC_SCRIPT" \
                 -r "$REPO_ROOT" \
                 -w "$WEIGHTS_DIR" \
-                -s "$PLOTS_DIR" \
+                -s "$PLOTS_DIR/cross_reconstruction" \
                 -a "$DATA_DIR"
             )
     echo "    [CrossRec] Job sent.      ID: $J_CROSS (Depends on Train: any)"

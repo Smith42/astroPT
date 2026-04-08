@@ -40,6 +40,8 @@ echo "--------------------------------------------------"
 cd "$REPO_ROOT" || { echo "[ERROR]: Cannot find REPO_ROOT: $REPO_ROOT"; exit 1; }
 source .venv/bin/activate
 export PATH="$HOME/.TinyTeX/bin/x86_64-linux:$PATH"
+export MPLCONFIGDIR="/home/valonso/iac18_mhuertas_shared/valonso/cache/matplotlib"
+export XDG_CACHE_HOME="/home/valonso/iac18_mhuertas_shared/valonso/cache"
 
 # SAVE_DIR is now optional; python script will auto-save near the chosen CSV
 SAVE_ARG=""

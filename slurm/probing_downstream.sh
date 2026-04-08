@@ -70,6 +70,8 @@ source .venv/bin/activate
 
 # 3. Activating LaTeX (Required for confusion matrix plots)
 export PATH="$HOME/.TinyTeX/bin/x86_64-linux:$PATH"
+export MPLCONFIGDIR="/home/valonso/iac18_mhuertas_shared/valonso/cache/matplotlib"
+export XDG_CACHE_HOME="/home/valonso/iac18_mhuertas_shared/valonso/cache"
 
 #--- EMBEDDING DETECTION LOGIC ---#
 if [ -f "$EMB_DIR/images.npy" ] || [ -f "$EMB_DIR/spectra.npy" ] || [ -f "$EMB_DIR/embeddings_all.npz" ]; then

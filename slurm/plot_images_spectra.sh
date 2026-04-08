@@ -69,6 +69,8 @@ source .venv/bin/activate
 
 # 3. Activating LaTeX
 export PATH="$HOME/.TinyTeX/bin/x86_64-linux:$PATH"
+export MPLCONFIGDIR="/home/valonso/iac18_mhuertas_shared/valonso/cache/matplotlib"
+export XDG_CACHE_HOME="/home/valonso/iac18_mhuertas_shared/valonso/cache"
 
 #--- EXECUTION ---#
 echo "Plotting Images and Spectra:"
