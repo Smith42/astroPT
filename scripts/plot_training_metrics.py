@@ -43,7 +43,7 @@ plt.rc('font', family='serif', weight='bold')
 plt.rcParams.update({
     'axes.grid': True,
     'grid.alpha': 0.3,
-    'lines.linewidth': 2,
+    'lines.linewidth': 1,
     'font.size': 14,          
     'axes.labelsize': 19,     
     'axes.titlesize': 21,     
@@ -64,8 +64,8 @@ def parse_args() -> argparse.Namespace:
     
     # Parsing Arguments
     parser.add_argument("--weights_dir", type=str, required=True, help="Directory containing training weigths")
-    parser.add_argument("--logs_dir", type=str, required=True, help="Directory containing metrics.csv")
-    parser.add_argument("--save_dir", type=str, required=True, help="Plot Saving Directory")
+    parser.add_argument("--logs_dir", type=str, required=False, help="Directory containing metrics.csv (defaults to weights_dir.parent/logs)")
+    parser.add_argument("--save_dir", type=str, required=False, help="Plot Saving Directory (defaults to weights_dir.parent/plots)")
     parser.add_argument("--csv_name", type=str, default="training_metrics.csv", help="Name of the CSV file")
     parser.add_argument("--save_name", type=str, default="training_metrics.png", help="Output image name")
     parser.add_argument("--smooth_window", type=int, default=10, help="Smoothing window for training loss")
@@ -86,8 +86,11 @@ def main():
     
     # Required paths
     weights_dir = Path(args.weights_dir)
-    logs_dir = Path(args.logs_dir)
-    save_dir = Path(args.save_dir)
+    logs_dir = Path(args.logs_dir) if args.logs_dir else weights_dir.parent / "logs"
+    save_dir = Path(args.save_dir) if args.save_dir else weights_dir.parent / "plots"
+    
+    # Ensure save_dir exists
+    save_dir.mkdir(parents=True, exist_ok=True)
     
     # Load CSV
     csv_path =  logs_dir / args.csv_name
@@ -161,9 +164,16 @@ def main():
     t_range = t_max - t_min
     if t_range == 0: t_range = t_max * 0.1
     
-    ax1.plot(train_df['iter'], train_df['train_loss'], color='black', alpha=0.35, label='Train (Raw)')
+    ax1.plot(train_df['iter'], train_df['train_loss'], color='black', lw=1.5, alpha=0.35, label='Train (Raw)')
     ax1.plot(train_df['iter'], smooth_data(train_df['train_loss'], args.smooth_window), 
-             color='dodgerblue', label=f'Train (Smooth {args.smooth_window})')
+             color='dodgerblue', lw=1, label=f'Train (Smooth {args.smooth_window})')
+             
+    if 'loss_images' in train_df.columns:
+        ax1.plot(train_df['iter'], smooth_data(train_df['loss_images'], args.smooth_window), 
+                 color='green', linestyle=':', alpha=0.7, label='Train Images (Smooth)')
+    if 'loss_spectra' in train_df.columns:
+        ax1.plot(train_df['iter'], smooth_data(train_df['loss_spectra'], args.smooth_window), 
+                 color='orange', linestyle=':', alpha=0.7, label='Train Spectra (Smooth)')
     
     ax1.set_ylabel(r'\textbf{Train Loss}', color='dodgerblue')
     ax1.tick_params(axis='y', labelcolor='dodgerblue')
@@ -180,19 +190,34 @@ def main():
     
     # Compute Limits
     if not val_df.empty:
-        v_min = val_df['val_loss'].min()
-        v_max = val_df['val_loss'].max()
+        # Determine min and max considering all val curves
+        val_cols_to_check = ['val_loss']
+        if 'val_loss_spec_from_img' in val_df.columns: val_cols_to_check.append('val_loss_spec_from_img')
+        if 'val_loss_img_from_spec' in val_df.columns: val_cols_to_check.append('val_loss_img_from_spec')
+        
+        v_min = val_df[val_cols_to_check].min().min()
+        v_max = val_df[val_cols_to_check].max().max()
         v_range = v_max - v_min
         if v_range == 0: v_range = v_max * 0.1
+        if pd.isna(v_range): v_range = 0.1
         
-        # Fix ticks for the grid
-        yticks_val = np.linspace(v_min, v_max, target_ticks)
-        ax1r.set_yticks(yticks_val)
-        pad_val = v_range * margin_fraction
-        ax1r.set_ylim(v_min - pad_val, v_max + pad_val)
+        if not pd.isna(v_min) and not pd.isna(v_max):
+            # Fix ticks for the grid
+            yticks_val = np.linspace(v_min, v_max, target_ticks)
+            ax1r.set_yticks(yticks_val)
+            pad_val = v_range * margin_fraction
+            ax1r.set_ylim(v_min - pad_val, v_max + pad_val)
 
-    ax1r.plot(val_df['iter'], val_df['val_loss'], color='red', marker='o', linestyle='--', 
-             linewidth=1, markersize=4, label='Validation')
+    ax1r.plot(val_df['iter'], val_df['val_loss'], color='red', marker='o', linestyle='-.', 
+             lw=1, markersize=4, label='Validation')
+             
+    if 'val_loss_spec_from_img' in val_df.columns and not val_df['val_loss_spec_from_img'].isna().all():
+        ax1r.plot(val_df['iter'], val_df['val_loss_spec_from_img'], color='darkorchid', marker='x', linestyle='--', 
+                 lw=0.7, markersize=4, label='Zero-Shot: Spectra (from Img)')
+    if 'val_loss_img_from_spec' in val_df.columns and not val_df['val_loss_img_from_spec'].isna().all():
+        ax1r.plot(val_df['iter'], val_df['val_loss_img_from_spec'], color='darkturquoise', marker='+', linestyle='--', 
+                 lw=0.7, markersize=4, label='Zero-Shot: Images (from Spec)')
+                 
     ax1r.set_ylabel(r'\textbf{Validation Loss}', color='red')
     ax1r.tick_params(axis='y', labelcolor='red')
     
@@ -201,7 +226,7 @@ def main():
     # Legend
     lines, labels = ax1.get_legend_handles_labels()
     lines2, labels2 = ax1r.get_legend_handles_labels()
-    ax1.legend(lines + lines2, labels + labels2, loc='upper center', bbox_to_anchor=(0.5, -0.15), ncol=3, frameon=True)
+    ax1.legend(lines + lines2, labels + labels2, loc='upper center', bbox_to_anchor=(0.5, -0.15), ncol=2, frameon=True)
     
     # Title
     ax1.set_title(r'\textbf{Convergence}', pad=15)
@@ -216,7 +241,15 @@ def main():
     color_clip = 'deeppink'
     
     # Grad Norm
-    ax2.plot(train_df['iter'], train_df['grad_norm'], color=color_grad, lw=1.5, label='Grad Norm')
+    ax2.plot(train_df['iter'], train_df['grad_norm'], color=color_grad, lw=1.5, label='Grad Norm (Total)')
+    
+    if 'grad_images' in train_df.columns:
+        ax2.plot(train_df['iter'], train_df['grad_images'], color='green', alpha=0.6, lw=1.0, linestyle='--', label='Grad Images')
+    if 'grad_spectra' in train_df.columns:
+        ax2.plot(train_df['iter'], train_df['grad_spectra'], color='orange', alpha=0.6, lw=1.0, linestyle='--', label='Grad Spectra')
+    if 'grad_backbone' in train_df.columns:
+        ax2.plot(train_df['iter'], train_df['grad_backbone'], color='gray', alpha=0.6, lw=1.0, linestyle='--', label='Grad Backbone')
+
     ax2.set_ylabel(r'\textbf{Gradient Norm}', color=color_grad)
     ax2.tick_params(axis='y', labelcolor=color_grad)
     
@@ -237,7 +270,7 @@ def main():
         lines += lines2
         labels += labels2
     
-    ax2.legend(lines, labels, loc='upper center', bbox_to_anchor=(0.5, -0.15), ncol=2, frameon=True)
+    ax2.legend(lines, labels, loc='upper center', bbox_to_anchor=(0.5, -0.15), ncol=3, frameon=True)
     
     # If no clipping
     if clipped_iter.empty:
@@ -252,7 +285,17 @@ def main():
 
     # PLOT 3: LEARNING RATE
     ax3 = axs[1, 0]
-    ax3.plot(train_df['iter'], train_df['lr'], color='black', lw=2)
+    
+    ax3.plot(train_df['iter'], train_df['lr'], color='black', lw=1.5, label='Base LR')
+    if 'lr_images' in train_df.columns:
+        ax3.plot(train_df['iter'], train_df['lr_images'], color='green', lw=1.0, linestyle='-.', label='LR Images')
+    if 'lr_spectra' in train_df.columns:
+        ax3.plot(train_df['iter'], train_df['lr_spectra'], color='orange', lw=1.0, linestyle='-.', label='LR Spectra')
+    if 'lr_backbone' in train_df.columns:
+        ax3.plot(train_df['iter'], train_df['lr_backbone'], color='gray', lw=1.0, linestyle='-.', label='LR Backbone')
+        
+    ax3.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15), ncol=2, frameon=True)
+
     ax3.set_ylabel(r'\textbf{Learning Rate}')
     ax3.set_xlabel(r'\textbf{Iterations}')
     ax3.set_title(r'\textbf{LR Schedule}', pad=15)
@@ -295,7 +338,7 @@ def main():
         
         if range_mfu == 0: range_mfu = max_mfu * 0.1
         
-        ax4.plot(mfu_data['iter'], mfu_data['mfu'], color=color_mfu, lw=2, label='MFU (\\%)')
+        ax4.plot(mfu_data['iter'], mfu_data['mfu'], color=color_mfu, lw=1.5, label='MFU (\\%)')
         ax4.set_ylabel(r'\textbf{MFU (\%)}', color=color_mfu)
         ax4.tick_params(axis='y', labelcolor=color_mfu)
         
@@ -314,7 +357,7 @@ def main():
         
         if range_mem == 0: range_mem = max_mem * 0.1
         
-        ax4r.plot(train_df['iter'], train_df['mem_gb'], color=color_mem, linestyle='--', lw=2, label='VRAM (GB)')
+        ax4r.plot(train_df['iter'], train_df['mem_gb'], color=color_mem, linestyle='--', lw=1.5, label='VRAM (GB)')
         ax4r.set_ylabel(r'\textbf{VRAM (GB)}', color=color_mem)
         ax4r.tick_params(axis='y', labelcolor=color_mem)
         
