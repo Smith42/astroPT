@@ -90,7 +90,7 @@ class TrainingConfig:
     n_head: int = 12                # Number of attention heads
     n_embd: int = 768               # Embedding dimension (width of the network)
     n_chan: int = 4                 # Input channels: 1 VIS + 3 NISP (Y, J, H)
-    block_size: int = 2048          # Context length (max tokens per sample)
+    block_size: int = 1024          # Context length (max tokens per sample)
     dropout: float = 0.0            # Regularization (0.0 for pretraining is standard)
     bias: bool = False              # Learnable bias in Linear layers (False is modern/faster)
     attn_type: str = "causal"       # Attention mechanism type
@@ -102,17 +102,17 @@ class TrainingConfig:
     use_aug: bool = True            # Active data augmentation by using image rotation
     
     #--- Multimodality Mixing Parameters ---#
-    use_token_mixing: bool = True               # Enable cross-modal interleaving
+    use_token_mixing: bool = False               # Enable cross-modal interleaving
     token_mixing_block_size: int = 5            # Interleaving block size
     token_mixing_stochastic: bool = True        # Enable stochastic block sizes
     token_mixing_min_block_size: int = 1        # Minimum block size for stochastic mixing
     token_mixing_max_block_size: int = 10       # Maximum block size for stochastic mixing
     token_mixing_seed: int = 42                 # Seed for reproducible stochastic mixing
-    shuffle_modality_train: bool = True         # Shuffle modality order during training
+    shuffle_modality_train: bool = False         # Shuffle modality order during training
     shuffle_modality_val: bool = False          # Shuffle modality order during validation
-    modality_dropout_prob: float = 0.10         # Probability to zero one modality in a micro-step
+    modality_dropout_prob: float = 0.0         # Probability to zero one modality in a micro-step
     modality_dropout_mode: str = "random"       # none, images, spectra, random
-    cross_reconstruction_loss_use: bool = True  # Enable cross reconstruction explicitly via targets
+    cross_reconstruction_loss_use: bool = False  # Enable cross reconstruction explicitly via targets
     cross_reconstruction_weight: float = 1.0    # Weight multiplier for cross-reconstructed modal loss
 
     # Images
@@ -120,17 +120,17 @@ class TrainingConfig:
     images_size: int = 224              # Images side size in pixels
     images_patch_size: int = 8          # Side size in pixels of each patch in an image
     images_channels: int = 4            # Channels per image (VIS + NISP Y,J,H)
-    images_loss_weight: float = 1.1     # Images importance for training
+    images_loss_weight: float = 1.0     # Images importance for training
     images_embed_pos: bool = True       # Images embedding positions learning
     images_pos_input_size: int = 1      # Images position input size
     images_norm_type: str = "asinh"     # Normalization method: constant, z_score or asinh
     images_norm_scaler: float = 1.0     # Scaler factor if normalization requieres it (default 1.0)
     images_norm_const: float = 1.0      # Normalization global constant for images: P99=7.603847
-    images_mask: bool = True            # Enable tactical masking for image patches
+    images_mask: bool = False            # Enable tactical masking for image patches
     images_mask_prob: float = 0.25      # Probability to mask each image patch
     
     # Spectra
-    spectra_train: bool = True              # Spectra bool flag for enabling training
+    spectra_train: bool = False              # Spectra bool flag for enabling training
     spectra_inverse: bool = False           # Reading spectra from red to blue 
     spectra_size: int = 7781                # Spectra total size
     spectra_patch_size: int = 10            # Patch size for each spectrum

@@ -117,10 +117,9 @@ else
   # Define the past baseline runs you want to compare
   # The python script will automatically find their downstream_results.csv and their names!
   RUNS_TO_COMPARE=(
-      "${LOGS_BASE}/astropt_100M_250K_arrow_20260310_asinh_rot_mae_images"
       "${LOGS_BASE}/astropt_100M_250K_arrow_20260311_asinh_rot_mae_spectra"
       "${LOGS_BASE}/astropt_100M_250K_arrow_20260401_asinh_rot_mae_imgpatchsize8/embeddings/best_img-mean_spec-rank_layer-final_ord-specfirst_joint-mean_ord_spectra_first"
-      "${LOGS_BASE}/astropt_100M_250K_arrow_20260405_asinh_rot_mae_img8_randrop0p15_imglrx1p10"
+      "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260407_tokmix5_mask0p25/embeddings/best_img-mean_spec-rank_layer-final_ord-iso_joint-mean_P2/downstream_tasks/downstream_results.csv"
   )
 
   # Auto-add the CURRENT run being evaluated by the automated SLURM pipeline
@@ -149,15 +148,3 @@ fi
 echo "-----------------------------------------------"
 echo "Probing Tasks Dashboard Finished"
 echo "-----------------------------------------------"
-
-
-# "$SAVE_DIR/downstream_results.csv" \
-# ${SAVE_NAME:+--save_name "$SAVE_NAME"} \
-
-#      "MAE Mean-Rank IMG Patch Size 8 - Inverse Spec (0.22)" \
-#      "MAE Mean-Rank IMG Patch Size 4 (0.27)" \
-#      "Large Objecs" \
-
-#       "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260330_asinh_rot_mae_imgpatchsize8_specinverse/embeddings/best_meanrank/downstream_tasks/downstream_results.csv" \
-#       "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260315_asinh_rot_mae_imgpatchsize4/embeddings/best_meanrank/downstream_tasks/downstream_results.csv" \
-#       "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260331_asinh_rot_mae_imgpatchsize8_largep50/embeddings/best_meanrank/downstream_tasks/downstream_results.csv" \
