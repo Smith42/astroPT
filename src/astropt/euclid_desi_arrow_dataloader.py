@@ -522,7 +522,8 @@ class EuclidDESIDatasetArrow(Dataset):
         modality_registry: Any, 
         device: torch.device, 
         shuf: bool = False,
-        use_token_mixing: bool = False
+        use_token_mixing: bool = False,
+        token_mixing_seed: Optional[int] = None
     ) -> Dict[str, Dict[str, torch.Tensor]]:
         """
         Prepares the batch for training by moving tensors to GPU and creating Input (X) 
@@ -575,6 +576,9 @@ class EuclidDESIDatasetArrow(Dataset):
                     # Subsequent modalities -> Autoregressive input (Shifted)
                     X[mode] = data[:, :-1] 
                     X[f"{mode}_positions"] = pos[:, :-1]
+
+        if use_token_mixing and token_mixing_seed is not None:
+            X["token_mixing_seed"] = token_mixing_seed
 
         return {"X": X, "Y": Y}
     

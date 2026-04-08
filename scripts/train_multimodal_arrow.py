@@ -102,12 +102,18 @@ class TrainingConfig:
     use_aug: bool = True            # Active data augmentation by using image rotation
     
     #--- Multimodality Mixing Parameters ---#
-    use_token_mixing: bool = True          # Enable cross-modal interleaving
-    token_mixing_block_size: int = 5        # Interleaving block size
-    shuffle_modality_train: bool = True     # Shuffle modality order during training
-    shuffle_modality_val: bool = False      # Shuffle modality order during validation
-    modality_dropout_prob: float = 0.10     # Probability to zero one modality in a micro-step
-    modality_dropout_mode: str = "random"   # none, images, spectra, random
+    use_token_mixing: bool = True               # Enable cross-modal interleaving
+    token_mixing_block_size: int = 5            # Interleaving block size
+    token_mixing_stochastic: bool = True        # Enable stochastic block sizes
+    token_mixing_min_block_size: int = 1        # Minimum block size for stochastic mixing
+    token_mixing_max_block_size: int = 10       # Maximum block size for stochastic mixing
+    token_mixing_seed: int = 42                 # Seed for reproducible stochastic mixing
+    shuffle_modality_train: bool = True         # Shuffle modality order during training
+    shuffle_modality_val: bool = False          # Shuffle modality order during validation
+    modality_dropout_prob: float = 0.10         # Probability to zero one modality in a micro-step
+    modality_dropout_mode: str = "random"       # none, images, spectra, random
+    cross_reconstruction_loss_use: bool = True  # Enable cross reconstruction explicitly via targets
+    cross_reconstruction_weight: float = 1.0    # Weight multiplier for cross-reconstructed modal loss
 
     # Images
     images_train: bool = True           # Images bool flag for enabling training
@@ -138,7 +144,7 @@ class TrainingConfig:
     spectra_mask_prob: float = 0.25         # Probability to mask each spectrum patch
     
     #--- Optimization of the Learning Process ---#
-    max_iters: int = 50_000         # Total training iters (NOT epochs)
+    max_iters: int = 75_000         # Total training iters (NOT epochs)
     weight_decay: float = 1e-1      # Regularization to prevent overfitting
     beta1: float = 0.9              # AdamW parameter
     beta2: float = 0.95             # AdamW parameter
@@ -156,7 +162,7 @@ class TrainingConfig:
     lr_mult_backbone: float = 1.0   # LR multiplier for transformer/shared modality
     lr_decay: bool = True           # Activates the variable learning rate decay
     lr_warmup_iters: int = 4_000    # Steps to ramp up LR from 0 to max
-    lr_decay_iters: int = 30_000    # Steps to decay LR down to min
+    lr_decay_iters: int = 65_000    # Steps to decay LR down to min
 
     #--- Logging & Checkpointing ---#
     eval_interval: int = 1_000              # How often to validate
@@ -380,7 +386,12 @@ def maybe_apply_modality_dropout(
         return "none"
 
     batch["X"][chosen] = torch.zeros_like(batch["X"][chosen])
-    batch["Y"][chosen] = torch.zeros_like(batch["Y"][chosen])
+    
+    # If Cross-Reconstruction Loss is active, we explicitly WANT to keep the target targets 
+    # intact to force the model to predict the missing modality entirely from the other one.
+    if getattr(config, 'cross_reconstruction_loss_use', False) == False:
+        batch["Y"][chosen] = torch.zeros_like(batch["Y"][chosen])
+        
     return chosen
 
 
@@ -796,6 +807,12 @@ def create_model(
         backbone=config.backbone,
         use_token_mixing=config.use_token_mixing,
         token_mixing_block_size=config.token_mixing_block_size,
+        token_mixing_stochastic=config.token_mixing_stochastic,
+        token_mixing_min_block_size=config.token_mixing_min_block_size,
+        token_mixing_max_block_size=config.token_mixing_max_block_size,
+        token_mixing_seed=config.token_mixing_seed,
+        cross_reconstruction_loss_use=config.cross_reconstruction_loss_use,
+        cross_reconstruction_weight=config.cross_reconstruction_weight,
     )
     
     # Instantiate the Model
@@ -1232,7 +1249,10 @@ def main():
                     # Headers for the CSV
                     headers = [
                         "iter", "epoch", "progress", "timestamp", "train_loss", "val_loss",
-                        "grad_norm", "clipped", "lr", "mfu", "mem_gb", "dt_ms", "rt_hms", "eta_hms"
+                        "val_loss_spec_from_img", "val_loss_img_from_spec", "loss_images", "loss_spectra",
+                        "grad_norm", "grad_images", "grad_spectra", "grad_backbone",
+                        "clipped", "dropped_modality", "lr", "lr_images", "lr_spectra", "lr_backbone",
+                        "mfu", "mem_gb", "dt_ms", "rt_hms", "eta_hms"
                     ]
                     f.write(",".join(headers) + "\n")
 
@@ -1299,7 +1319,7 @@ def main():
             train_loader.sampler.set_epoch(epoch_num)
 
         #--- THE TRAINING LOOP ---#
-        while iter_num < config.max_iters:
+        while iter_num <= config.max_iters:
             
             # SET LEARNING RATE for this iteration
             lr = get_learning_rate(iter_num, config)
@@ -1342,13 +1362,17 @@ def main():
                     train_iter = iter(train_loader)
                     raw_batch = next(train_iter)
                 
+                # Calculate dynamic stochastic seed 
+                batch_seed = config.token_mixing_seed + iter_num * config.gradient_accumulation_steps + micro_step + ddp_rank
+
                 # Process Batch
                 B = EuclidDESIDatasetArrow.process_modes(
                     batch_data=raw_batch, 
                     modality_registry=registry, 
                     device=torch.device(device),
                     shuf=config.shuffle_modality_train,
-                    use_token_mixing=config.use_token_mixing
+                    use_token_mixing=config.use_token_mixing,
+                    token_mixing_seed=batch_seed
                 )
 
                 dropped_modality = maybe_apply_modality_dropout(B, config)
@@ -1373,7 +1397,7 @@ def main():
                     with ctx: 
                         
                         # Forward pass
-                        outputs, loss = model(B["X"], targets=B["Y"])
+                        outputs, loss = model(B["X"], targets=B["Y"], dropped_modality=dropped_modality)
                         
                         # --- INITIAL LOSS BALANCE CHECK (Step 0) ---
                         if iter_num == 0 and micro_step == 0 and ddp_rank == 0:
@@ -1615,9 +1639,11 @@ def main():
                             timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             
                             # Writing into the CSV
-                            f.write(f"{iter_num},{epoch_num},{train_prog},{timestamp_str},{loss_accum_for_log:.6f},,"
-                                    f"{grad_norm:.4f},{is_clipped:.0f},{lr:.4e},{mfu_display*100:.2f},{mem_usage:.2f},"
-                                    f"{avg_dt*1000:.2f},{running_str},{eta_str}\n"
+                            f.write(f"{iter_num},{epoch_num},{train_prog:.4f},{timestamp_str},{loss_accum_for_log:.6f},,,"
+                                    f",{loss_images_diag:.6f},{loss_spectra_diag:.6f},{grad_norm:.4f},{branch_grad_norms['images']:.4f},"
+                                    f"{branch_grad_norms['spectra']:.4f},{branch_grad_norms['backbone']:.4f},{is_clipped:.0f},{dropout_summary},"
+                                    f"{lr:.4e},{lr * config.lr_mult_images:.4e},{lr * config.lr_mult_spectra:.4e},{lr * config.lr_mult_backbone:.4e},"
+                                    f"{mfu_display*100:.2f},{mem_usage:.2f},{avg_dt*1000:.2f},{running_str},{eta_str}\n"
                             )
                             
                     except Exception as e:
@@ -1665,12 +1691,16 @@ def main():
                                 val_iter = iter(val_loader)
                                 vbatch = next(val_iter)
                                 
+                            # Deterministic seed for validation 
+                            val_batch_seed = config.token_mixing_seed + iter_num
+
                             B_val = EuclidDESIDatasetArrow.process_modes(
                                 batch_data=vbatch, 
                                 modality_registry=registry, 
                                 device=torch.device(device),
                                 shuf=config.shuffle_modality_val,
-                                use_token_mixing=config.use_token_mixing
+                                use_token_mixing=config.use_token_mixing,
+                                token_mixing_seed=val_batch_seed
                             )
                             
                             with ctx:
@@ -1723,8 +1753,15 @@ def main():
                         with open(csv_path, "a") as f:
                             timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             
-                            # iter, prog, time, t_loss(empty), val_loss, grad(empty)...
-                            f.write(f"{iter_num},{epoch_num},{train_prog:.4f},{timestamp_str},,{val_loss:.6f},,,,,,,,\n")
+                            # iter, epoch, prog, time, t_loss(empty), val_loss, val_loss_spec_from_img, val_loss_img_from_spec, and the rest empty...
+                            # Remember headers:
+                            # "iter", "epoch", "progress", "timestamp", "train_loss", "val_loss",
+                            # "val_loss_spec_from_img", "val_loss_img_from_spec", "loss_images", "loss_spectra",
+                            # "grad_norm", "grad_images", "grad_spectra", "grad_backbone",
+                            # "clipped", "dropped_modality", "lr", "lr_images", "lr_spectra", "lr_backbone",
+                            # "mfu", "mem_gb", "dt_ms", "rt_hms", "eta_hms"
+                            f.write(f"{iter_num},{epoch_num},{train_prog:.4f},{timestamp_str},,{val_loss:.6f},{avg_iso_img2spec:.6f},"
+                                    f"{avg_iso_spec2img:.6f},,,,,,,,,,,,,,,,,\n")
                     except Exception as e:
                         logger.error(f"Val CSV Write Error: {e}")
                     

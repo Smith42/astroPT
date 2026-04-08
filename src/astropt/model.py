@@ -352,6 +352,12 @@ class GPTConfig:
     llm_model_name: str = None
     use_token_mixing: bool = False
     token_mixing_block_size: int = 5
+    token_mixing_min_block_size: int = 1
+    token_mixing_max_block_size: int = 5
+    token_mixing_stochastic: bool = False
+    token_mixing_seed: int = 42
+    cross_reconstruction_loss_use: bool = False
+    cross_reconstruction_weight: float = 1.0
 
 
 class GPT(nn.Module):
@@ -554,10 +560,11 @@ class GPT(nn.Module):
         prefix_len=None,
         target_modality=None,
         attention_mask=None,
+        dropped_modality=None,
     ):
         if self.backbone == "native":
             return self._forward_native(
-                inputs, targets, prefix_len, target_modality, attention_mask
+                inputs, targets, prefix_len, target_modality, attention_mask, dropped_modality
             )
         elif self.backbone == "llm":
             return self._forward_llm(
@@ -573,6 +580,7 @@ class GPT(nn.Module):
         prefix_len=None,
         target_modality=None,
         attention_mask=None,
+        dropped_modality=None,
     ):
         # Determine strict static list of batch modes matching dictionary insertion order
         batch_modes = [k for k in inputs if k in self.mod_names]
@@ -616,19 +624,48 @@ class GPT(nn.Module):
 
             idx = []
             i1, i2 = 0, 0
-            block_size = self.config.token_mixing_block_size
+
+            # Retrieve the stochastic settings
+            stochastic = getattr(self.config, 'token_mixing_stochastic', False)
+            min_block = getattr(self.config, 'token_mixing_min_block_size', 1)
+            min_block = max(1, min_block)
+            max_block = getattr(self.config, 'token_mixing_max_block_size', getattr(self.config, 'token_mixing_block_size', 5))
+            max_block = max(min_block, max_block)
             
-            # Interleave tokens iteratively
-            while i1 < l1 or i2 < l2:
-                if i1 < l1:
-                    c1 = min(block_size, l1 - i1)
-                    idx.extend(range(i1, i1 + c1))
-                    i1 += c1
-                if i2 < l2:
-                    c2 = min(block_size, l2 - i2)
-                    idx.extend(range(l1 + i2, l1 + i2 + c2))
-                    i2 += c2
-                    
+            if stochastic:
+                # Use a combined seed from inputs if provided, else just the config seed
+                batch_seed = inputs.get("token_mixing_seed", getattr(self.config, 'token_mixing_seed', 42))
+                
+                # We need a reproducible random generator for the current step
+                g = torch.Generator()
+                g.manual_seed(int(batch_seed))
+                
+                # Interleave tokens stochastically
+                while i1 < l1 or i2 < l2:
+                    if i1 < l1:
+                        c1 = torch.randint(min_block, max_block + 1, (1,), generator=g).item()
+                        c1 = min(c1, l1 - i1)
+                        idx.extend(range(i1, i1 + c1))
+                        i1 += c1
+                    if i2 < l2:
+                        c2 = torch.randint(min_block, max_block + 1, (1,), generator=g).item()
+                        c2 = min(c2, l2 - i2)
+                        idx.extend(range(l1 + i2, l1 + i2 + c2))
+                        i2 += c2
+            else:
+                block_size = self.config.token_mixing_block_size
+                
+                # Interleave tokens iteratively
+                while i1 < l1 or i2 < l2:
+                    if i1 < l1:
+                        c1 = min(block_size, l1 - i1)
+                        idx.extend(range(i1, i1 + c1))
+                        i1 += c1
+                    if i2 < l2:
+                        c2 = min(block_size, l2 - i2)
+                        idx.extend(range(l1 + i2, l1 + i2 + c2))
+                        i2 += c2
+                        
             interleaved_idx = torch.tensor(idx, device=tok_emb.device, dtype=torch.long)
             inverse_idx = torch.argsort(interleaved_idx)
             
@@ -712,6 +749,11 @@ class GPT(nn.Module):
             for mod_name in batch_modes:
                 target = targets[mod_name]
                 mod_loss_weight = self.mod_loss_weights[mod_name]
+                
+                # Apply Cross-Reconstruction multiplier if this modality was dropped in the input
+                if getattr(self.config, 'cross_reconstruction_loss_use', False) and dropped_modality == mod_name:
+                    mod_loss_weight = mod_loss_weight * getattr(self.config, 'cross_reconstruction_weight', 1.0)
+                    
                 pred = outputs[mod_name]
                 
                 if self.config.attn_type == "prefix":
