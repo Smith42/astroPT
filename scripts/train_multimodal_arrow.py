@@ -116,7 +116,7 @@ class TrainingConfig:
     cross_reconstruction_weight: float = 1.0    # Weight multiplier for cross-reconstructed modal loss
 
     # Images
-    images_train: bool = True           # Images bool flag for enabling training
+    images_train: bool = False           # Images bool flag for enabling training
     images_size: int = 224              # Images side size in pixels
     images_patch_size: int = 8          # Side size in pixels of each patch in an image
     images_channels: int = 4            # Channels per image (VIS + NISP Y,J,H)
@@ -130,7 +130,7 @@ class TrainingConfig:
     images_mask_prob: float = 0.25      # Probability to mask each image patch
     
     # Spectra
-    spectra_train: bool = False              # Spectra bool flag for enabling training
+    spectra_train: bool = True              # Spectra bool flag for enabling training
     spectra_inverse: bool = False           # Reading spectra from red to blue 
     spectra_size: int = 7781                # Spectra total size
     spectra_patch_size: int = 10            # Patch size for each spectrum
@@ -140,7 +140,7 @@ class TrainingConfig:
     spectra_norm_type: str = "asinh"        # Normalization method: constant, z_score or asinh
     spectra_norm_scaler: float = 1.0        # Scaler factor if normalization requieres it (default 1.0)
     spectra_norm_const: float = 1.0         # Normalization global constant for spectra: P99=7.956048
-    spectra_mask: bool = True               # Enable tactical masking for spectra patches
+    spectra_mask: bool = False               # Enable tactical masking for spectra patches
     spectra_mask_prob: float = 0.25         # Probability to mask each spectrum patch
     
     #--- Optimization of the Learning Process ---#
