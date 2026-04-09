@@ -117,7 +117,8 @@ else
   # Define the past baseline runs you want to compare
   # The python script will automatically find their downstream_results.csv and their names!
   RUNS_TO_COMPARE=(
-    "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260407_tokmix5_mask0p25/embeddings/best_img-mean_spec-rank_layer-final_ord-iso_joint-mean_P2/downstream_tasks/downstream_results.csv"
+    "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260408_baseline_images/embeddings/best_img-mean_spec-rank_layer-final/downstream_tasks/downstream_results.csv"
+    "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260409_baseline_spectra/embeddings/best_img-mean_spec-rank_layer-final/downstream_tasks/downstream_results.csv"
     "${LOGS_BASE}/astropt_100M_250K_arrow_20260401_asinh_rot_mae_imgpatchsize8/embeddings/best_img-mean_spec-rank_layer-final_ord-specfirst_joint-mean_ord_spectra_first"
     "${LOGS_BASE}/astropt_100M_250K_arrow_20260407_tokmix5_mask0p25"
   )

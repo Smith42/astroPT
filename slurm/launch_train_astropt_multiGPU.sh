@@ -76,6 +76,12 @@ launch_analysis() {
     local PARENT_JOB_ID=$1
     local JOB_SUFFIX=$2  
     local STEP_NAME=$3      
+    local EMB_STAGE_TAG="${JOB_SUFFIX#_}"
+
+    # Stage-aware output folders to avoid T1/T2/T3 overlap.
+    local ATTN_SAVE_DIR="$PLOTS_DIR/attention_maps$JOB_SUFFIX"
+    local IMG_SPEC_SAVE_DIR="$PLOTS_DIR/images_spectra_reconstruction$JOB_SUFFIX"
+    local CROSS_REC_SAVE_DIR="$PLOTS_DIR/cross_reconstruction$JOB_SUFFIX"
 
     echo " --> Launching Analysis Battery for: $STEP_NAME (Parent: $PARENT_JOB_ID)"
 
@@ -113,7 +119,7 @@ launch_analysis() {
                 "$ATTN_MAPS_SCRIPT" \
                 -r "$REPO_ROOT" \
                 -w "$WEIGHTS_DIR" \
-                -s "$PLOTS_DIR/attention_maps" \
+                -s "$ATTN_SAVE_DIR" \
                 -a "$DATA_DIR"
             )
     echo "    [Att Maps] Job sent.      ID: $J_ATT (Depends on Train: any)"
@@ -126,7 +132,7 @@ launch_analysis() {
                 "$PLOT_IMG_SCRIPT" \
                 -r "$REPO_ROOT" \
                 -w "$WEIGHTS_DIR" \
-                -s "$PLOTS_DIR/images_spectra_reconstruction" \
+                -s "$IMG_SPEC_SAVE_DIR" \
                 -a "$DATA_DIR"
             )
     echo "    [ImgSpec] Job sent.       ID: $J_IMG (Depends on Train: any)"
@@ -138,7 +144,7 @@ launch_analysis() {
                 "$CROSS_REC_SCRIPT" \
                 -r "$REPO_ROOT" \
                 -w "$WEIGHTS_DIR" \
-                -s "$PLOTS_DIR/cross_reconstruction" \
+                -s "$CROSS_REC_SAVE_DIR" \
                 -a "$DATA_DIR"
             )
     echo "    [CrossRec] Job sent.      ID: $J_CROSS (Depends on Train: any)"
@@ -151,6 +157,7 @@ launch_analysis() {
                 -r "$REPO_ROOT" \
                 -w "$WEIGHTS_DIR" \
                 -s "$EMB_DIR" \
+                -x "$EMB_STAGE_TAG" \
                 -a "$DATA_DIR"
             )
     echo "    [Embeds]  Job sent.       ID: $J_EMB (Depends on Train: any)"

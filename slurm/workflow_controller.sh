@@ -43,6 +43,7 @@ if [ ! -f "$TRAIN_DIR/.improved" ]; then
     echo "[ACTION]: Cancelling dependent jobs for suffix: $SUFFIX"
 
     JOBS_TO_KILL=(
+        "Plot_Attn_Maps${SUFFIX}"
         "Plot_Im_Sp${SUFFIX}"
         "Cross_Rec${SUFFIX}"
         "Extract_Embed${SUFFIX}"

@@ -34,13 +34,14 @@ print_usage() {
   echo "  -i <name>    Pool method for images (mean|max|mixed|lp|rank)"
   echo "  -m <name>    Pool method for spectra (mean|max|mixed|lp|rank)"
   echo "  -p <int>     PCA dimensions (0 disables PCA)"
+  echo "  -x <tag>     Extra experiment tag appended to embedding folder name"
   echo "  -h           Help"
   echo
   echo "Experimental sweeps: use slurm/extract_embeddings_experimental.sh"
 }
 
 #--- ARGUMENT PARSING (FLAGS) ---#
-while getopts ":r:w:s:a:p:i:m:h" opt; do
+while getopts ":r:w:s:a:p:i:m:x:h" opt; do
   case $opt in
     r) REPO_ROOT="$OPTARG" ;;
     w) WEIGHTS_DIR="$OPTARG" ;;
@@ -49,6 +50,7 @@ while getopts ":r:w:s:a:p:i:m:h" opt; do
     p) PCA_DIM="$OPTARG" ;;
     i) POOL_MET_IMG="$OPTARG" ;;
     m) POOL_MET_SPEC="$OPTARG" ;;
+    x) EXP_TAG="$OPTARG" ;;
     h) print_usage; exit 0 ;;
     \?) echo "[ERROR] Invalid option -$OPTARG" >&2; exit 1 ;;
   esac
@@ -88,12 +90,21 @@ echo "Embedding Extraction Configuration:"
 echo "    DATA DIR:       $DATA_DIR" 
 echo "    WEIGHTS DIR:    $WEIGHTS_DIR"
 echo "    SAVE DIR:       $SAVE_DIR"
+if [[ -n "$EXP_TAG" ]]; then
+  echo "    EXP TAG:        $EXP_TAG"
+fi
 
 # Run stable post-analysis extraction once per training run.
-python "$PYTHON_SCRIPT" \
+CMD=(python "$PYTHON_SCRIPT" \
     --weights_dir "$WEIGHTS_DIR" \
     --data_dir "$DATA_DIR" \
-    --save_dir "$SAVE_DIR"
+    --save_dir "$SAVE_DIR")
+
+if [[ -n "$EXP_TAG" ]]; then
+  CMD+=(--exp_tag "$EXP_TAG")
+fi
+
+"${CMD[@]}"
 
 echo "-----------------------------------------------"
 echo "Embedding Extraction Finished"
