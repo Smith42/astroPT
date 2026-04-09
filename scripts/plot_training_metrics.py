@@ -174,6 +174,18 @@ def main():
     if 'loss_spectra' in train_df.columns:
         ax1.plot(train_df['iter'], smooth_data(train_df['loss_spectra'], args.smooth_window), 
                  color='orange', linestyle=':', alpha=0.7, label='Train Spectra (Smooth)')
+
+    if 'cross_loss_images' in train_df.columns:
+        valid_cross_img = train_df.dropna(subset=['cross_loss_images'])
+        if not valid_cross_img.empty:
+            ax1.plot(valid_cross_img['iter'], smooth_data(valid_cross_img['cross_loss_images'], args.smooth_window), 
+                     color='darkgreen', linestyle='--', alpha=0.8, label='Cross Images (Smooth)')
+                     
+    if 'cross_loss_spectra' in train_df.columns:
+        valid_cross_spec = train_df.dropna(subset=['cross_loss_spectra'])
+        if not valid_cross_spec.empty:
+            ax1.plot(valid_cross_spec['iter'], smooth_data(valid_cross_spec['cross_loss_spectra'], args.smooth_window), 
+                     color='saddlebrown', linestyle='--', alpha=0.8, label='Cross Spectra (Smooth)')
     
     ax1.set_ylabel(r'\textbf{Train Loss}', color='dodgerblue')
     ax1.tick_params(axis='y', labelcolor='dodgerblue')

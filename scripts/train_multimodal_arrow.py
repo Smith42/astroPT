@@ -1250,6 +1250,7 @@ def main():
                     headers = [
                         "iter", "epoch", "progress", "timestamp", "train_loss", "val_loss",
                         "val_loss_spec_from_img", "val_loss_img_from_spec", "loss_images", "loss_spectra",
+                        "cross_loss_images", "cross_loss_spectra",
                         "grad_norm", "grad_images", "grad_spectra", "grad_backbone",
                         "clipped", "dropped_modality", "lr", "lr_images", "lr_spectra", "lr_backbone",
                         "mfu", "mem_gb", "dt_ms", "rt_hms", "eta_hms"
@@ -1334,6 +1335,8 @@ def main():
             # Optional modality diagnostics accumulators
             modality_loss_sums = {"images": 0.0, "spectra": 0.0}
             modality_loss_counts = {"images": 0, "spectra": 0}
+            cross_loss_sums = {"images": 0.0, "spectra": 0.0}
+            cross_loss_counts = {"images": 0, "spectra": 0}
             modality_drop_counts = {"images": 0, "spectra": 0, "none": 0}
             branch_grad_norms = {
                 "images": float("nan"),
@@ -1445,6 +1448,9 @@ def main():
                                 if mod_name in modality_loss_sums:
                                     modality_loss_sums[mod_name] += mod_loss
                                     modality_loss_counts[mod_name] += 1
+                                if mod_name == dropped_modality:
+                                    cross_loss_sums[mod_name] += mod_loss
+                                    cross_loss_counts[mod_name] += 1
                         
                         # Scale loss
                         loss = loss / config.gradient_accumulation_steps
@@ -1590,12 +1596,23 @@ def main():
                         if modality_loss_counts["spectra"] > 0
                         else float("nan")
                     )
+                    cross_images_diag = (
+                        cross_loss_sums["images"] / cross_loss_counts["images"]
+                        if cross_loss_counts["images"] > 0
+                        else float("nan")
+                    )
+                    cross_spectra_diag = (
+                        cross_loss_sums["spectra"] / cross_loss_counts["spectra"]
+                        if cross_loss_counts["spectra"] > 0
+                        else float("nan")
+                    )
                     dropout_summary = summarize_modality_dropout(modality_drop_counts)
 
                     if diagnostics_due:
                         logger.info(
                             f"Diag | Drop={dropout_summary} | "
                             f"Loss(img/spec)=({loss_images_diag:.4f}/{loss_spectra_diag:.4f}) | "
+                            f"Cross(img/spec)=({cross_images_diag:.4f}/{cross_spectra_diag:.4f}) | "
                             f"Grad(img/spec/back)=({branch_grad_norms['images']:.2f}/"
                             f"{branch_grad_norms['spectra']:.2f}/{branch_grad_norms['backbone']:.2f})"
                         )
@@ -1623,6 +1640,8 @@ def main():
                                 {
                                     "diag/loss_images": loss_images_diag,
                                     "diag/loss_spectra": loss_spectra_diag,
+                                    "diag/cross_loss_images": cross_images_diag,
+                                    "diag/cross_loss_spectra": cross_spectra_diag,
                                     "diag/grad_images": branch_grad_norms["images"],
                                     "diag/grad_spectra": branch_grad_norms["spectra"],
                                     "diag/grad_backbone": branch_grad_norms["backbone"],
@@ -1640,7 +1659,8 @@ def main():
                             
                             # Writing into the CSV
                             f.write(f"{iter_num},{epoch_num},{train_prog:.4f},{timestamp_str},{loss_accum_for_log:.6f},,,"
-                                    f",{loss_images_diag:.6f},{loss_spectra_diag:.6f},{grad_norm:.4f},{branch_grad_norms['images']:.4f},"
+                                    f",{loss_images_diag:.6f},{loss_spectra_diag:.6f},{cross_images_diag:.6f},{cross_spectra_diag:.6f},"
+                                    f"{grad_norm:.4f},{branch_grad_norms['images']:.4f},"
                                     f"{branch_grad_norms['spectra']:.4f},{branch_grad_norms['backbone']:.4f},{is_clipped:.0f},{dropout_summary},"
                                     f"{lr:.4e},{lr * config.lr_mult_images:.4e},{lr * config.lr_mult_spectra:.4e},{lr * config.lr_mult_backbone:.4e},"
                                     f"{mfu_display*100:.2f},{mem_usage:.2f},{avg_dt*1000:.2f},{running_str},{eta_str}\n"
@@ -1757,11 +1777,12 @@ def main():
                             # Remember headers:
                             # "iter", "epoch", "progress", "timestamp", "train_loss", "val_loss",
                             # "val_loss_spec_from_img", "val_loss_img_from_spec", "loss_images", "loss_spectra",
+                            # "cross_loss_images", "cross_loss_spectra",
                             # "grad_norm", "grad_images", "grad_spectra", "grad_backbone",
                             # "clipped", "dropped_modality", "lr", "lr_images", "lr_spectra", "lr_backbone",
                             # "mfu", "mem_gb", "dt_ms", "rt_hms", "eta_hms"
                             f.write(f"{iter_num},{epoch_num},{train_prog:.4f},{timestamp_str},,{val_loss:.6f},{avg_iso_img2spec:.6f},"
-                                    f"{avg_iso_spec2img:.6f},,,,,,,,,,,,,,,,,\n")
+                                    f"{avg_iso_spec2img:.6f},,,,,,,,,,,,,,,,,,,\n")
                     except Exception as e:
                         logger.error(f"Val CSV Write Error: {e}")
                     
