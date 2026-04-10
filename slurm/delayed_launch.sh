@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Check if the correct number of arguments is provided
-TARGET_DATE="2026-04-10 00:01:00"
-COMMAND_TO_RUN="./astroPT/slurm/launch_train_astropt_multiGPU.sh -n 'TokMixRan + CrossRecLoss' -d 'First training with a token mixing with random block size. First training with a cross-rconstruction loss added to the usual train loss. This configuration expects to improve the cross reconstruction and the probing tasks forcing the modal to learn the cross modality physics'"
+TARGET_DATE="2026-04-11 00:01:00"
+COMMAND_TO_RUN="./astroPT/slurm/launch_train_astropt_multiGPU.sh -n 'TokMixRan + CrossRecLoss + HyperSpec' -d 'Training with a token mixing with random block size. Training with a cross-rconstruction loss added to the usual train loss. This configuration expects to improve the cross reconstruction and the probing tasks forcing the modal to learn the cross modality physics. Some hyperparameters have been updated to force the model learning the spectra'"
 
 # Convert dates to seconds since epoch
 TARGET_TIME=$(date -d "$TARGET_DATE" +%s)
