@@ -25,7 +25,8 @@ def parse_args() -> argparse.Namespace:
     
     parser.add_argument('--input_dirs', nargs='+', required=True, help="Paths to the latent_mapper directories to compare.")
     parser.add_argument('--names', nargs='+', help="Names of the training runs for the legend (must match number of directories).")
-    parser.add_argument('--targets', nargs='+', required=True, help="List of targets to plot (e.g., Z SPECTYPE HALPHA_FLUX).")
+    parser.add_argument('--targets', nargs='+', default=None, help="List of targets to plot (e.g., Z SPECTYPE HALPHA_FLUX).")
+    parser.add_argument('--all_targets', action='store_true', help="Plot all available targets found in the provided mapper CSV files.")
     
     return parser.parse_args()
 
@@ -270,9 +271,20 @@ def main():
     save_dir.mkdir(parents=True, exist_ok=True)
 
     # Perform plotting for results found
-    requested_targets = set(args.targets)
-    regression_targets = df[(df['Task'] == 'regression') & (df['Target'].isin(requested_targets))]['Target'].unique().tolist()
-    classification_targets = df[(df['Task'] == 'classification') & (df['Target'].isin(requested_targets))]['Target'].unique().tolist()
+    if args.all_targets:
+        regression_targets = df[df['Task'] == 'regression']['Target'].dropna().astype(str).unique().tolist()
+        classification_targets = df[df['Task'] == 'classification']['Target'].dropna().astype(str).unique().tolist()
+        print(
+            f"[INFO] --all_targets enabled. Found {len(regression_targets)} regression "
+            f"and {len(classification_targets)} classification targets."
+        )
+    else:
+        if not args.targets:
+            print("[FATAL ERROR] You must provide --targets or enable --all_targets")
+            return
+        requested_targets = set(args.targets)
+        regression_targets = df[(df['Task'] == 'regression') & (df['Target'].isin(requested_targets))]['Target'].unique().tolist()
+        classification_targets = df[(df['Task'] == 'classification') & (df['Target'].isin(requested_targets))]['Target'].unique().tolist()
 
     # Fixed color/style mapping across tasks based on the global run list.
     global_test_order: List[str] = []
