@@ -105,15 +105,15 @@ class TrainingConfig:
     use_token_mixing: bool = True               # Enable cross-modal interleaving
     token_mixing_block_size: int = 4            # Interleaving block size
     token_mixing_stochastic: bool = True        # Enable stochastic block sizes
-    token_mixing_min_block_size: int = 4        # Minimum block size for stochastic mixing
-    token_mixing_max_block_size: int = 16       # Maximum block size for stochastic mixing
+    token_mixing_min_block_size: int = 16       # Minimum block size for stochastic mixing
+    token_mixing_max_block_size: int = 64       # Maximum block size for stochastic mixing
     token_mixing_seed: int = 61                 # Seed for reproducible stochastic mixing
     shuffle_modality_train: bool = False        # Shuffle modality order during training
     shuffle_modality_val: bool = False          # Shuffle modality order during validation
-    modality_dropout_prob: float = 0.20         # Probability to zero one modality in a micro-step
+    modality_dropout_prob: float = 0.05         # Probability to zero one modality in a micro-step
     modality_dropout_mode: str = "random"       # none, images, spectra, random
     cross_reconstruction_loss_use: bool = True  # Enable cross reconstruction explicitly via targets
-    cross_reconstruction_weight: float = 2.0    # Weight multiplier for cross-reconstructed modal loss
+    cross_reconstruction_weight: float = 1.2    # Weight multiplier for cross-reconstructed modal loss
 
     # Images
     images_train: bool = True           # Images bool flag for enabling training
@@ -134,14 +134,14 @@ class TrainingConfig:
     spectra_inverse: bool = False           # Reading spectra from red to blue 
     spectra_size: int = 7781                # Spectra total size
     spectra_patch_size: int = 10            # Patch size for each spectrum
-    spectra_loss_weight: float = 2.0        # Spectra importance for training 
+    spectra_loss_weight: float = 1.0        # Spectra importance for training 
     spectra_embed_pos: bool = True          # Spectra embedding positions learning
     spectra_pos_input_size: int = 1         # Spectra position input size
     spectra_norm_type: str = "asinh"        # Normalization method: constant, z_score or asinh
     spectra_norm_scaler: float = 1.0        # Scaler factor if normalization requieres it (default 1.0)
     spectra_norm_const: float = 1.0         # Normalization global constant for spectra: P99=7.956048
     spectra_mask: bool = True               # Enable tactical masking for spectra patches
-    spectra_mask_prob: float = 0.50         # Probability to mask each spectrum patch
+    spectra_mask_prob: float = 0.20         # Probability to mask each spectrum patch
     
     #--- Optimization of the Learning Process ---#
     max_iters: int = 75_000         # Total training iters (NOT epochs)
