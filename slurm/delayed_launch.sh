@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Check if the correct number of arguments is provided
-TARGET_DATE="2026-04-12 18:40:00"
-COMMAND_TO_RUN="./astroPT/slurm/launch_train_astropt_multiGPU.sh -n 'TokMixRan + CrossRecLoss + LongBlocks + DsInter' -d 'Training with a token mixing with random block size. Training with a cross-rconstruction loss added to the usual train loss. This configuration expects to improve the cross reconstruction and the probing tasks forcing the modal to learn the cross modality physics. Some hyperparameters have been updated to balance both modalities. Interpolate Zoomin and Zoomout dataset has been used. This dataset contains galaxies with the same size inside the 224x224 images.'"
+TARGET_DATE="2026-04-13 09:10:00"
+COMMAND_TO_RUN="./astroPT/slurm/launch_train_astropt_multiGPU.sh -n 'TokMix16 + CrossRecLoss + LongBlocks + DsInter' -d 'Training with a token mixing with fixed 16 block size. Training with a cross-rconstruction loss added to the usual train loss. This configuration expects to improve the cross reconstruction and the probing tasks forcing the modal to learn the cross modality physics. Some hyperparameters have been updated to balance both modalities. Interpolate Zoomin and Zoomout dataset has been used. This dataset contains galaxies with the same size inside the 224x224 images.'"
 
 # Convert dates to seconds since epoch
 TARGET_TIME=$(date -d "$TARGET_DATE" +%s)

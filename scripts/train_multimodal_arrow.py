@@ -103,8 +103,8 @@ class TrainingConfig:
     
     #--- Multimodality Mixing Parameters ---#
     use_token_mixing: bool = True               # Enable cross-modal interleaving
-    token_mixing_block_size: int = 4            # Interleaving block size
-    token_mixing_stochastic: bool = True        # Enable stochastic block sizes
+    token_mixing_block_size: int = 16           # Interleaving block size
+    token_mixing_stochastic: bool = False       # Enable stochastic block sizes
     token_mixing_min_block_size: int = 16       # Minimum block size for stochastic mixing
     token_mixing_max_block_size: int = 64       # Maximum block size for stochastic mixing
     token_mixing_seed: int = 61                 # Seed for reproducible stochastic mixing
