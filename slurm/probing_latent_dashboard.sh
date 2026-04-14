@@ -134,10 +134,12 @@ else
 
   # Define the past baseline runs you want to compare
   RUNS_TO_COMPARE=(
-    "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260408_baseline_images"
-    "/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_100M_250K_arrow_20260409_baseline_spectra"
-    "${LOGS_BASE}/astropt_100M_250K_arrow_20260401_asinh_rot_mae_imgpatchsize8"
+    "${LOGS_BASE}/astropt_100M_250K_arrow_20260408_baseline_images/"
+    "${LOGS_BASE}/astropt_100M_250K_arrow_20260409_baseline_spectra"
     "${LOGS_BASE}/astropt_100M_250K_arrow_20260407_tokmix5_mask0p25"
+    "${LOGS_BASE}/astropt_100M_250K_arrow_20260411_tokmixran_crossrecloss_longblocks"
+    "${LOGS_BASE}/astropt_100M_250K_arrow_20260412_tokmixran_crossrecloss_longblocks_dsinter"
+    "${LOGS_BASE}/astropt_100M_250K_arrow_20260413_tokmix16_crossrecloss_longblocks_dsinter"
   )
 
   # Auto-add the CURRENT run being evaluated by the automated SLURM pipeline

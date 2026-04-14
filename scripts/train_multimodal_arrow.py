@@ -86,9 +86,9 @@ class TrainingConfig:
     init_from: str = "scratch"      # Training from scratch or resume training
     
     #--- Model Architecture for the 100M Parameter Setup ---#
-    n_layer: int = 12               # Depth of the Transformer
-    n_head: int = 12                # Number of attention heads
-    n_embd: int = 768               # Embedding dimension (width of the network)
+    n_layer: int = 8                # Depth of the Transformer
+    n_head: int = 8                 # Number of attention heads
+    n_embd: int = 512               # Embedding dimension (width of the network)
     n_chan: int = 4                 # Input channels: 1 VIS + 3 NISP (Y, J, H)
     block_size: int = 1024          # Context length (max tokens per sample)
     dropout: float = 0.0            # Regularization (0.0 for pretraining is standard)
