@@ -108,7 +108,7 @@ class TrainingConfig:
     token_mixing_min_block_size: int = 16       # Minimum block size for stochastic mixing
     token_mixing_max_block_size: int = 64       # Maximum block size for stochastic mixing
     token_mixing_seed: int = 61                 # Seed for reproducible stochastic mixing
-    shuffle_modality_train: bool = False        # Shuffle modality order during training
+    shuffle_modality_train: bool = True         # Shuffle modality order during training
     shuffle_modality_val: bool = False          # Shuffle modality order during validation
     modality_dropout_prob: float = 0.05         # Probability to zero one modality in a micro-step
     modality_dropout_mode: str = "random"       # none, images, spectra, random

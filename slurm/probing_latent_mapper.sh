@@ -11,8 +11,8 @@
 #SBATCH --time=01:00:00         
 
 #--- LOGS FILES ---#
-#SBATCH --output=logs/latent_mapper_%j.out
-#SBATCH --error=logs/latent_mapper_%j.err
+#SBATCH --output=logs/astropt_latent_mapper_%j.out
+#SBATCH --error=logs/astropt_latent_mapper_%j.err
 
 #--- DEFAULT VALUES ---#
 REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"

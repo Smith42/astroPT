@@ -140,6 +140,7 @@ else
     "${LOGS_BASE}/astropt_100M_250K_arrow_20260411_tokmixran_crossrecloss_longblocks"
     "${LOGS_BASE}/astropt_100M_250K_arrow_20260412_tokmixran_crossrecloss_longblocks_dsinter"
     "${LOGS_BASE}/astropt_100M_250K_arrow_20260413_tokmix16_crossrecloss_longblocks_dsinter"
+    "${LOGS_BASE}/astropt_100M_250K_arrow_20260414_tokmix16_crossrecloss_dsinter_smallmod"
   )
 
   # Auto-add the CURRENT run being evaluated by the automated SLURM pipeline
