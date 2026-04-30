@@ -95,17 +95,11 @@ class TrainingConfig:
     bias: bool = False              # Learnable bias in Linear layers (False is modern/faster)
     attn_type: str = "causal"       # Attention mechanism type
     backbone: str = "native"        # Model bakcbone: native or llm
-    tokeniser: str = "aim"          # Model tokeniser method
     use_qlora: bool = False         # Use Quantized Low-Rank Adaptation
     loss_type: str = "mae"          # Options: l1 / mae, mse, huber
     loss_huber_delta: float = 1.0   # Delta value for controlling Huber Loss Behaviour (default 1.0)
     use_aug: bool = True            # Active data augmentation by using image rotation
-    
-    #--- Tokenization Method ---#
-    tokenizer_method: str = "continuous"  # "continuous" (regression) or "discrete" (AION cross-entropy)
-    unet_weights_path: str = "logs/unet_adapter_weights/adapters_final.pt"  # Path to U-Net adapter weights
-    aion_image_size: int = 112            # Target size for AION ImageCodec (controls token sequence length)
-    aion_image_transform: str = "crop"    # "crop" or "resize" transform before U-Net
+    use_pretokenized: bool = False  # Use pre-computed tokens from Arrow files (bypasses AION on-the-fly)
     
     #--- Multimodality Mixing Parameters ---#
     use_token_mixing: bool = True               # Enable cross-modal interleaving
@@ -135,6 +129,13 @@ class TrainingConfig:
     images_mask: bool = True            # Enable tactical masking for image patches
     images_mask_prob: float = 0.20      # Probability to mask each image patch
     
+    ## Images Tokenization Method
+    images_tokenizer_method: str = "discrete"  # "discrete" (AION) or "aim" or "affine" (both continuous)
+    images_tokeniser_discrete_vocab_size: int = 64000 # AION discrete tokeniser vocabulary size
+    images_unet_weights_path: str = "logs/unet_adapter_weights/adapters_final.pt"  # Path to U-Net adapter weights
+    images_aion_image_size: int = 112            # Target size for AION ImageCodec (controls token sequence length)
+    images_aion_image_transform: str = "resize"  # "crop" or "resize" transform before U-Net
+    
     # Spectra
     spectra_train: bool = True              # Spectra bool flag for enabling training
     spectra_inverse: bool = False           # Reading spectra from red to blue 
@@ -148,6 +149,8 @@ class TrainingConfig:
     spectra_norm_const: float = 1.0         # Normalization global constant for spectra: P99=7.956048
     spectra_mask: bool = True               # Enable tactical masking for spectra patches
     spectra_mask_prob: float = 0.20         # Probability to mask each spectrum patch
+    spectra_tokenizer_method: str = "discrete"  # "discrete" (AION) or "aim" or "affine" (both continuous)
+    spectra_tokeniser_discrete_vocab_size: int = 1024 # LFQ codebook_size
     
     #--- Optimization of the Learning Process ---#
     max_iters: int = 75_000         # Total training iters (NOT epochs)
@@ -653,11 +656,10 @@ def create_dataloaders(
     # Configure ModalityRegistry
     modalities = []
     tf_kwargs = {}
-    is_discrete = config.tokenizer_method == "discrete"
     
     # Define configuration for each modality
     if config.images_train:
-        if is_discrete:
+        if config.images_tokenizer_method == "discrete":
             # Discrete (AION) tokenization: tokens are integer IDs
             image_modality_config = ModalityConfig(
                 name="aion_images",
@@ -666,7 +668,8 @@ def create_dataloaders(
                 pos_input_size=config.images_pos_input_size,
                 loss_weight=config.images_loss_weight,
                 embed_pos=True,                         # Learnt position embeddings
-                vocab_size=64000,                       # FSQ levels [8,8,8,5,5,5]
+                vocab_size=config.images_tokeniser_discrete_vocab_size, # FSQ levels [8,8,8,5,5,5]
+                encoder_type="discrete",
             )
         else:
             # Continuous regression: patches of pixel values
@@ -678,11 +681,12 @@ def create_dataloaders(
                 pos_input_size=config.images_pos_input_size,  
                 loss_weight=config.images_loss_weight,
                 embed_pos=config.images_embed_pos,
+                encoder_type=config.images_tokenizer_method, # "aim" or "affine"
             )
         modalities.append(image_modality_config)
         
         # Transforms only needed for continuous mode
-        if not is_discrete:
+        if config.images_tokenizer_method != "discrete":
             tf_kwargs.update({
                 'norm_type_img': config.images_norm_type,
                 'norm_scaler_img': config.images_norm_scaler,
@@ -690,7 +694,7 @@ def create_dataloaders(
             })
         
     if config.spectra_train:
-        if is_discrete:
+        if config.spectra_tokenizer_method == "discrete":
             # Discrete (AION) tokenization: tokens are integer IDs
             spectra_modality_config = ModalityConfig(
                 name="aion_spectra",
@@ -699,7 +703,8 @@ def create_dataloaders(
                 pos_input_size=config.spectra_pos_input_size,
                 loss_weight=config.spectra_loss_weight,
                 embed_pos=True,                         # Learnt position embeddings
-                vocab_size=1024,                        # LFQ codebook_size
+                vocab_size=config.spectra_tokeniser_discrete_vocab_size, # LFQ codebook_size
+                encoder_type="discrete",
             )
         else:
             # Continuous regression: patches of spectral flux
@@ -710,11 +715,12 @@ def create_dataloaders(
                 pos_input_size=config.spectra_pos_input_size, 
                 loss_weight=config.spectra_loss_weight,
                 embed_pos=config.spectra_embed_pos,
+                encoder_type=config.spectra_tokenizer_method, # "aim" or "affine"
             )
         modalities.append(spectra_modality_config)
         
         # Transforms only needed for continuous mode
-        if not is_discrete:
+        if config.spectra_tokenizer_method != "discrete":
             tf_kwargs.update({
                 'norm_type_spec': config.spectra_norm_type,
                 'norm_scaler_spec': config.spectra_norm_scaler,
@@ -758,9 +764,10 @@ def create_dataloaders(
         spectra_mask_prob=config.spectra_mask_prob,
         images_mask=config.images_mask,
         images_mask_prob=config.images_mask_prob,
-        unet_weights_path=config.unet_weights_path,
-        aion_image_size=config.aion_image_size,
-        aion_image_transform=config.aion_image_transform,
+        unet_weights_path=config.images_unet_weights_path,
+        aion_image_size=config.images_aion_image_size,
+        aion_image_transform=config.images_aion_image_transform,
+        use_pretokenized=config.use_pretokenized,
     )
     
     # Instantiate Validation/Test Dataset 
@@ -776,9 +783,10 @@ def create_dataloaders(
         spectra_mask_prob=config.spectra_mask_prob,
         images_mask=config.images_mask,
         images_mask_prob=config.images_mask_prob,
-        unet_weights_path=config.unet_weights_path,
-        aion_image_size=config.aion_image_size,
-        aion_image_transform=config.aion_image_transform,
+        unet_weights_path=config.images_unet_weights_path,
+        aion_image_size=config.images_aion_image_size,
+        aion_image_transform=config.images_aion_image_transform,
+        use_pretokenized=config.use_pretokenized,
     )
 
     # Configure DDP Samplers
@@ -849,7 +857,6 @@ def create_model(
         bias=config.bias,
         dropout=config.dropout,
         attn_type=config.attn_type,
-        tokeniser=config.tokeniser,
         use_qlora=config.use_qlora,
         loss_type=config.loss_type,
         backbone=config.backbone,

@@ -35,6 +35,7 @@ class EuclidDESIDatasetArrow(Dataset):
         unet_weights_path: str = "logs/unet_adapter_weights/adapters_final.pt",
         aion_image_size: int = 112,
         aion_image_transform: str = "crop",
+        use_pretokenized: bool = False,
     ):
         """
         Dataset to loading Euclid Images and DESI spectra
@@ -67,6 +68,10 @@ class EuclidDESIDatasetArrow(Dataset):
         
         # Single modality safe mechanism
         cols_to_keep = ['targetid','redshift']
+        
+        # Check for pre-tokenized columns
+        if use_pretokenized:
+            cols_to_keep.extend(['image_tokens', 'spectra_tokens'])
         
         # Load image columns for both continuous ("images") and discrete ("aion_images") modes
         _needs_images = False
@@ -118,6 +123,7 @@ class EuclidDESIDatasetArrow(Dataset):
         self.unet_weights_path = unet_weights_path
         self.aion_image_size = aion_image_size
         self.aion_image_transform = aion_image_transform
+        self.use_pretokenized = use_pretokenized
         
     def _get_aion_tokeniser(self):
         if getattr(self, 'aion_tokeniser', None) is None:
@@ -747,13 +753,19 @@ class EuclidDESIDatasetArrow(Dataset):
                 
                 # Discrete Tokenization Request
                 if "aion_images" in mod_names:
-                    tokeniser = self._get_aion_tokeniser()
-                    from fmb.models.aion.modalities import EuclidImage
-                    euclid_img = EuclidImage(flux=raw_galaxy.float(), bands=["EUCLID-VIS", "EUCLID-Y", "EUCLID-J", "EUCLID-H"])
-                    tokens = tokeniser.encode(euclid_img)
-                    tokens_tensor = list(tokens.values())[0] # Returns sequence of IDs
-                    sample["aion_images"] = tokens_tensor
-                    sample["aion_images_positions"] = torch.arange(0, len(tokens_tensor), dtype=torch.long)
+                    # Try to use pre-tokenized data if available
+                    if self.use_pretokenized and item.get('image_tokens') is not None:
+                        tokens_tensor = torch.from_numpy(np.array(item['image_tokens'])).long()
+                        sample["aion_images"] = tokens_tensor
+                        sample["aion_images_positions"] = torch.arange(0, len(tokens_tensor), dtype=torch.long)
+                    else:
+                        tokeniser = self._get_aion_tokeniser()
+                        from fmb.models.aion.modalities import EuclidImage
+                        euclid_img = EuclidImage(flux=raw_galaxy.float(), bands=["EUCLID-VIS", "EUCLID-Y", "EUCLID-J", "EUCLID-H"])
+                        tokens = tokeniser.encode(euclid_img)
+                        tokens_tensor = list(tokens.values())[0] # Returns sequence of IDs
+                        sample["aion_images"] = tokens_tensor
+                        sample["aion_images_positions"] = torch.arange(0, len(tokens_tensor), dtype=torch.long)
 
                 # Continuous Regression Request
                 if "images" in mod_names:
@@ -800,20 +812,26 @@ class EuclidDESIDatasetArrow(Dataset):
 
                         # Discrete Tokenisation Request
                         if "aion_spectra" in mod_names:
-                            from aion.modalities import DESISpectrum
-                            tokeniser = self._get_aion_tokeniser()
-                            ivar = torch.ones_like(raw_flux)
-                            mask = torch.zeros_like(raw_flux, dtype=torch.bool)
-                            desi_spec = DESISpectrum(
-                                flux=raw_flux.unsqueeze(0).float(), 
-                                ivar=ivar.unsqueeze(0).float(), 
-                                mask=mask.unsqueeze(0), 
-                                wavelength=raw_wave.unsqueeze(0).float()
-                            )
-                            tokens = tokeniser.encode(desi_spec)
-                            tokens_tensor = list(tokens.values())[0].squeeze(0)
-                            sample["aion_spectra"] = tokens_tensor
-                            sample["aion_spectra_positions"] = torch.arange(0, len(tokens_tensor), dtype=torch.long)
+                            # Try to use pre-tokenized data if available
+                            if self.use_pretokenized and item.get('spectra_tokens') is not None:
+                                tokens_tensor = torch.from_numpy(np.array(item['spectra_tokens'])).long()
+                                sample["aion_spectra"] = tokens_tensor
+                                sample["aion_spectra_positions"] = torch.arange(0, len(tokens_tensor), dtype=torch.long)
+                            else:
+                                from aion.modalities import DESISpectrum
+                                tokeniser = self._get_aion_tokeniser()
+                                ivar = torch.ones_like(raw_flux)
+                                mask = torch.zeros_like(raw_flux, dtype=torch.bool)
+                                desi_spec = DESISpectrum(
+                                    flux=raw_flux.unsqueeze(0).float(), 
+                                    ivar=ivar.unsqueeze(0).float(), 
+                                    mask=mask.unsqueeze(0), 
+                                    wavelength=raw_wave.unsqueeze(0).float()
+                                )
+                                tokens = tokeniser.encode(desi_spec)
+                                tokens_tensor = list(tokens.values())[0].squeeze(0)
+                                sample["aion_spectra"] = tokens_tensor
+                                sample["aion_spectra_positions"] = torch.arange(0, len(tokens_tensor), dtype=torch.long)
 
                         # Continuous Regression Request
                         if "spectra" in mod_names:

@@ -48,6 +48,7 @@ class ModalityConfig:
     embed_pos: bool
     vocab_size: int = 0
     loss_weight: float = 1.0
+    encoder_type: str = "aim"  # "aim", "affine", or "discrete"
 
 
 class ModalityRegistry:
@@ -273,9 +274,9 @@ class TaskHead(nn.Module):
 class Encoder(nn.Module):
     """base module to move from data space to embedding space"""
 
-    def __init__(self, config, in_size):
+    def __init__(self, config, in_size, tokeniser="aim"):
         super().__init__()
-        self.tokeniser = config.tokeniser
+        self.tokeniser = tokeniser
         if self.tokeniser == "affine":
             self.c_fc = nn.Linear(in_size, config.n_embd, bias=config.bias)
         else:
@@ -296,9 +297,9 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     """base module to move from embedding space to data space"""
 
-    def __init__(self, config, out_size):
+    def __init__(self, config, out_size, tokeniser="aim"):
         super().__init__()
-        self.tokeniser = config.tokeniser
+        self.tokeniser = tokeniser
         if self.tokeniser == "affine":
             self.c_fc = nn.Linear(config.n_embd, out_size, bias=config.bias)
         else:
@@ -339,7 +340,6 @@ class GPTConfig:
     dropout: float = 0.0
     bias: bool = False  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     attn_type: str = "causal"  # causal or prefix
-    tokeniser: str = "aim" # one of "aim" or "affine"
     # LoRA params
     lora_r: int = 0  # rank, 0 disables LoRA
     lora_alpha: float = 2.0
@@ -436,23 +436,24 @@ class GPT(nn.Module):
         decoders = {}
         embedders = {}
         for name, mod_config in self.modality_registry.modalities.items():
-            if mod_config.vocab_size > 0:
+            if mod_config.encoder_type == "discrete":
                 # Discrete modality (AION): use nn.Embedding as encoder
                 encoders[name] = Embedder(config, vocab_size=mod_config.vocab_size)
             else:
-                encoders[name] = Encoder(config, mod_config.input_size)
+                encoders[name] = Encoder(config, mod_config.input_size, tokeniser=mod_config.encoder_type)
+            
             if mod_config.embed_pos:
                 embedders[name] = Embedder(config)
             else:
                 embedders[name] = Encoder(config, mod_config.pos_input_size)
             
-            if mod_config.vocab_size > 0:
+            if mod_config.encoder_type == "discrete":
                 # Discrete modality: use affine (single linear) decoder for weight tying.
                 # Force bias=False so the weight shape [vocab_size, n_embd] matches
                 # the Embedder's nn.Embedding weight exactly.
                 decoders[name] = nn.Linear(config.n_embd, mod_config.vocab_size, bias=False)
             else:
-                decoders[name] = Decoder(config, mod_config.input_size)
+                decoders[name] = Decoder(config, mod_config.input_size, tokeniser=mod_config.encoder_type)
 
         self.encoders = nn.ModuleDict(encoders)
         self.decoders = nn.ModuleDict(decoders)
@@ -463,7 +464,7 @@ class GPT(nn.Module):
         # encoder's nn.Embedding, saving ~2×vocab_size×n_embd parameters.
         # https://paperswithcode.com/method/weight-tying
         for name, mod_config in self.modality_registry.modalities.items():
-            if mod_config.vocab_size > 0:
+            if mod_config.encoder_type == "discrete":
                 self.decoders[name].weight = self.encoders[name].wpe.weight
 
     def _init_llm_backbone(self, config):

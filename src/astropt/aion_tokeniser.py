@@ -17,7 +17,6 @@ from aion.modalities import HSCImage as AionHSCImage
 from fmb.models.aion.modalities import EuclidImage
 from fmb.models.aion.model import EuclidToHSC, HSC_BANDS
 from aion.codecs.image import ImageCodec
-from aion.codecs.spectrum import SpectrumCodec
 
 # Ensure AION knows about EuclidImage for codec lookup
 import aion.modalities
