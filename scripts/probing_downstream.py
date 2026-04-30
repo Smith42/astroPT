@@ -39,6 +39,7 @@ from sklearn.metrics import (accuracy_score, f1_score, confusion_matrix,
                              r2_score, mean_squared_error, 
                              precision_score, recall_score)
 from sklearn.model_selection import train_test_split
+from sklearn.neighbors import KNeighborsRegressor, KNeighborsClassifier
 from sklearn.preprocessing import StandardScaler, LabelEncoder, normalize
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -105,8 +106,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--targets_add", nargs='+', default=None, help="Appends to default list.")
     
     # Probing Config
-    parser.add_argument("--probes", nargs='+', default=['lp', 'mlp'], choices=['lp', 'mlp'], 
-                        help="Type of probes to run: 'lp', 'mlp' or both.")
+    parser.add_argument("--probes", nargs='+', default=['lp', 'mlp', 'knn'], choices=['lp', 'mlp', 'knn'], 
+                        help="Type of probes to run: 'lp', 'mlp', 'knn' or all.")
+    parser.add_argument("--knn_neighbors", type=int, default=20, help="Number of neighbors for k-NN")
     parser.add_argument("--conf_matrix", action="store_true", help="Generates confusion matrix")
     
     # Subsets options
@@ -365,8 +367,10 @@ def get_task_data(
     else:
         processor = LabelEncoder()
         y_final = processor.fit_transform(y_filtered)
+    target_id_col = 'TARGETID' if 'TARGETID' in df.columns else 'targetid'
+    ids_filtered = df[target_id_col][mask].values
         
-    return X_filtered, y_final, task_type, processor
+    return X_filtered, y_final, task_type, processor, ids_filtered
 
 
 def compute_metrics(
@@ -462,7 +466,9 @@ def train_engine(
     mlp_patience: int = 8,
     mlp_min_delta: float = 1e-4,
     mlp_weight_decay: float = 1e-3,
-) -> Tuple[np.ndarray, np.ndarray, int]:
+    ids: Optional[np.ndarray] = None,
+    knn_neighbors: int = 20,
+) -> Tuple[np.ndarray, np.ndarray, int, Optional[np.ndarray]]:
     """
     Main Training Loop. Handles Scaling, Model Creation, and Training.
     NO logging inside here to keep the terminal clean.
@@ -488,13 +494,16 @@ def train_engine(
 
     # Split datasets
     stratify_labels = y if task_type == 'classification' and len(np.unique(y)) > 1 else None
-    X_train, X_test, y_train, y_test = train_test_split(
+    indices = np.arange(len(X))
+    X_train, X_test, y_train, y_test, idx_train, idx_test = train_test_split(
         X,
         y,
+        indices,
         test_size=0.2,
         random_state=42,
         stratify=stratify_labels,
     )
+    test_ids = ids[idx_test] if ids is not None else None
     
     # Scaling: L2 Normalization preserves hypersphere vector geometry (cosine similarity). 
     # StandardScaler scales variance and shifts mean, distorting geometry.
@@ -513,6 +522,22 @@ def train_engine(
         y_test_raw = y_test 
     else:
         y_test_raw = y_test
+
+    # KNN Execution Branch
+    if probe_type == 'knn':
+        if task_type == 'regression':
+            model = KNeighborsRegressor(n_neighbors=knn_neighbors)
+        else:
+            model = KNeighborsClassifier(n_neighbors=knn_neighbors)
+        
+        model.fit(X_train, y_train)
+        preds = model.predict(X_test)
+        
+        if task_type == 'regression':
+            preds = scaler_y.inverse_transform(preds.reshape(-1, 1)).flatten()
+            
+        return preds, y_test_raw, 1, test_ids
+
 
     # DataLoaders
     train_ds = TensorDataset(
@@ -631,7 +656,7 @@ def train_engine(
                 batch_preds = torch.argmax(logits, dim=1).cpu().numpy()
             all_preds.append(batch_preds)
             
-    return np.concatenate(all_preds), y_test_raw, best_epoch
+    return np.concatenate(all_preds), y_test_raw, best_epoch, test_ids
 
 
 def save_row_to_csv(row: Dict[str, Any], csv_path: str | Path):
@@ -882,7 +907,7 @@ def main():
                     metrics_per_seed = []
                     best_epochs = []
                     for seed in args.seeds:
-                        preds, true_vals, best_epoch = train_engine(
+                        preds, true_vals, best_epoch, test_ids = train_engine(
                             X,
                             y,
                             probe,
@@ -897,6 +922,8 @@ def main():
                             mlp_patience=args.mlp_patience,
                             mlp_min_delta=args.mlp_min_delta,
                             mlp_weight_decay=args.mlp_weight_decay,
+                            ids=ids_filtered,
+                            knn_neighbors=args.knn_neighbors,
                         )
                         seed_metrics = compute_metrics(true_vals, preds, task_type, target_col)
                         metrics_per_seed.append(seed_metrics)
@@ -915,6 +942,14 @@ def main():
                     
                     # SAVE TO CSV IMMEDIATELY
                     save_row_to_csv(row, csv_path)
+                    
+                    # Guardar predicciones (usando el último seed)
+                    pred_dir = save_dir / "predictions"
+                    pred_dir.mkdir(parents=True, exist_ok=True)
+                    safe_target = str(target_col).replace('/', '_').replace(' ', '_')
+                    pred_filename = pred_dir / f"preds_{safe_target}_{mode}_{probe}.npz"
+                    np.savez(pred_filename, preds=preds, true_vals=true_vals, targetid=test_ids)
+
 
                     seed_stats_row = {
                         "Target": target_col,

@@ -8,6 +8,9 @@ import json
 
 # Expected X-axis categories in strict order
 CONFIG_ORDER = [
+    'images KNN', 
+    'spectra KNN',
+    'joint KNN',
     'images LP', 
     'spectra LP',
     'joint LP',
