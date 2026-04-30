@@ -879,7 +879,7 @@ def main():
             
             # Get Data
             try:
-                X, y, task_type, processor = get_task_data(
+                X, y, task_type, processor, ids_filtered = get_task_data(
                     aligned_embeddings, aligned_df, mode, target_col
                 )
                 output_dim = 1 if task_type == 'regression' else len(processor.classes_)

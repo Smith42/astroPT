@@ -50,28 +50,33 @@ while getopts ":r:a:o:w:b:h" opt; do
 done
 
 # Changing directory to run astropt
-echo "------------------------------------------------------"
-echo "Pre-tokenizing Dataset ($SLURM_JOB_ID) - $(date)"
-echo "------------------------------------------------------"
-echo "REPO_ROOT:  $REPO_ROOT"
-echo "DATA_DIR:   $DATA_DIR"
-echo "OUTPUT_DIR: $OUTPUT_DIR"
-echo "BATCH_SIZE: $BATCH_SIZE"
-echo "------------------------------------------------------"
-
 cd "$REPO_ROOT" || { echo "[ERROR]: Cannot find REPO_ROOT: $REPO_ROOT"; exit 1; }
+
+source .venv/bin/activate
+
+export UV_CACHE_DIR="/home/valonso/iac18_mhuertas_shared/valonso/cache/uv_cache"
+export HF_HOME="/home/valonso/iac18_mhuertas_shared/valonso/cache/huggingface"
 
 # Creating logs directory if it doesn't exist
 mkdir -p logs
 
-# Launching Python script
-python3 scripts/pretokenise_dataset_arrow.py \
+#--- EXECUTION ---#
+echo "Pre-tokenization Configuration:"
+echo "    DATA DIR:       $DATA_DIR"
+echo "    OUTPUT DIR:     $OUTPUT_DIR"
+echo "    UNET WEIGHTS:   $UNET_WEIGHTS"
+echo "    BATCH SIZE:     $BATCH_SIZE"
+echo "    DEVICE:         $DEVICE"
+
+CMD=(python scripts/pretokenise_dataset_arrow.py \
     --data_dir "$DATA_DIR" \
     --output_dir "$OUTPUT_DIR" \
     --unet_weights "$UNET_WEIGHTS" \
     --batch_size "$BATCH_SIZE" \
-    --device "$DEVICE"
+    --device "$DEVICE")
 
-echo "------------------------------------------------------"
-echo "Pre-tokenization Finished - $(date)"
-echo "------------------------------------------------------"
+"${CMD[@]}"
+
+echo "-----------------------------------------------"
+echo "Pre-tokenization Finished"
+echo "-----------------------------------------------"

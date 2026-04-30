@@ -5,9 +5,9 @@
 #SBATCH --partition=gpu
 #SBATCH --nodes=1                
 #SBATCH --ntasks=1               
-#SBATCH --cpus-per-task=32       
+#SBATCH --cpus-per-task=16       
 #SBATCH --gpus-per-task=1        
-#SBATCH --mem=128G                
+#SBATCH --mem=64G                
 #SBATCH --time=01:00:00         
 
 #--- LOGS FILES ---#
@@ -143,6 +143,7 @@ python "$PYTHON_SCRIPT" \
     --epochs "$EPOCHS" \
     --batch_size "$BATCH_SIZE" \
     --lr "$LEARNING_RATE" \
+    --probes "knn" \
     "${EXTRA_ARGS[@]}"
 
 echo "-----------------------------------------------"

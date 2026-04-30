@@ -184,7 +184,7 @@ class MultiprocessCodecManager:
         tokens = {}
 
         for modality in modalities:
-            if not isinstance(modality, Modality):
+            if not hasattr(modality, "token_key"):
                 raise ModalityTypeError(
                     f"Modality {type(modality).__name__} does not have a token_key attribute"
                 )
@@ -241,7 +241,7 @@ class MultiprocessCodecManager:
         Returns:
             Decoded modality instance
         """
-        if not issubclass(modality_type, Modality):
+        if getattr(modality_type, "token_key", None) is None:
             raise ModalityTypeError(
                 f"Modality type {modality_type} does not have a token_key attribute"
             )

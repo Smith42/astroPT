@@ -710,7 +710,7 @@ class EuclidDESIDatasetArrow(Dataset):
                 # Loading NISP images
                 ref_shape = vis.shape
                 nisp_tensors = []
-                nisp_keys = ['image_nisp_h', 'image_nisp_j', 'image_nisp_y']
+                nisp_keys = ['image_nisp_y', 'image_nisp_j', 'image_nisp_h']
                 
                 for key in nisp_keys:
                     raw_data = item.get(key)
@@ -761,9 +761,9 @@ class EuclidDESIDatasetArrow(Dataset):
                     else:
                         tokeniser = self._get_aion_tokeniser()
                         from fmb.models.aion.modalities import EuclidImage
-                        euclid_img = EuclidImage(flux=raw_galaxy.float(), bands=["EUCLID-VIS", "EUCLID-Y", "EUCLID-J", "EUCLID-H"])
+                        euclid_img = EuclidImage(flux=raw_galaxy.unsqueeze(0).float(), bands=["EUCLID-VIS", "EUCLID-Y", "EUCLID-J", "EUCLID-H"])
                         tokens = tokeniser.encode(euclid_img)
-                        tokens_tensor = list(tokens.values())[0] # Returns sequence of IDs
+                        tokens_tensor = list(tokens.values())[0].squeeze(0) # Returns sequence of IDs
                         sample["aion_images"] = tokens_tensor
                         sample["aion_images_positions"] = torch.arange(0, len(tokens_tensor), dtype=torch.long)
 

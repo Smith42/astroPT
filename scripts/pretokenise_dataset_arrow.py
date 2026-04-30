@@ -46,38 +46,63 @@ def process_file(file_path, output_path, codec_manager, batch_size, device):
         batch = table.slice(i, batch_end - i)
         
         # 1. Tokenize Images
-        if 'image' in table.column_names:
-            images_data = batch['image'].to_numpy() # Expecting (B, C, H, W)
-            # AION expects a list of Modality objects for its internal batching if we use encode()
-            # But we can also use our codec_manager which handles the U-Net
+        if 'image_vis' in table.column_names:
+            vis_data = batch['image_vis'].to_pylist()
+            y_data = batch['image_nisp_y'].to_pylist() if 'image_nisp_y' in table.column_names else [None]*len(vis_data)
+            j_data = batch['image_nisp_j'].to_pylist() if 'image_nisp_j' in table.column_names else [None]*len(vis_data)
+            h_data = batch['image_nisp_h'].to_pylist() if 'image_nisp_h' in table.column_names else [None]*len(vis_data)
             
-            for j, img_np in enumerate(images_data):
-                # img_np should be (C, H, W)
+            for j, (vis, y, j_band, h) in enumerate(zip(vis_data, y_data, j_data, h_data)):
+                if vis is None:
+                    continue
+                # Some might be missing, pad with zeros matching vis
+                vis_t = torch.from_numpy(np.array(vis)).to(torch.float32)
+                y_t = torch.from_numpy(np.array(y)).to(torch.float32) if y is not None else torch.zeros_like(vis_t)
+                j_t = torch.from_numpy(np.array(j_band)).to(torch.float32) if j_band is not None else torch.zeros_like(vis_t)
+                h_t = torch.from_numpy(np.array(h)).to(torch.float32) if h is not None else torch.zeros_like(vis_t)
+                
+                img_tensor = torch.stack([vis_t, y_t, j_t, h_t], dim=0) # (4, H, W)
+                
                 # Convert to EuclidImage
-                img_mod = EuclidImage(data=torch.from_numpy(img_np).float())
+                img_mod = EuclidImage(flux=img_tensor.unsqueeze(0), bands=["EUCLID-VIS", "EUCLID-Y", "EUCLID-J", "EUCLID-H"])
                 tokens = codec_manager.encode(img_mod)
-                # tokens['aion_images'] is a tensor of IDs
-                image_tokens_list[i + j] = tokens['aion_images'].cpu().numpy().tolist()
+                # tokens['tok_image_hsc'] is a tensor of IDs from the transformed HSC image
+                image_tokens_list[i + j] = tokens['tok_image_hsc'].squeeze(0).cpu().numpy().tolist()
 
         # 2. Tokenize Spectra
         if 'spectrum_flux' in table.column_names:
-            flux_data = batch['spectrum_flux'].to_numpy()
-            wave_data = batch['spectrum_wave'].to_numpy()
+            flux_data = batch['spectrum_flux'].to_pylist()
+            wave_data = batch['spectrum_wave'].to_pylist()
             
             for j, (flux, wave) in enumerate(zip(flux_data, wave_data)):
-                spec_mod = DESISpectrum(data=torch.from_numpy(flux).float(), wavelength=torch.from_numpy(wave).float())
+                if flux is None or wave is None:
+                    continue
+                f = torch.from_numpy(np.array(flux)).unsqueeze(0).float()
+                # AION needs ivar and mask too, providing dummies if not in dataset
+                ivar = torch.ones_like(f)
+                mask = torch.zeros_like(f, dtype=torch.bool)
+                
+                spec_mod = DESISpectrum(
+                    flux=f, 
+                    wavelength=torch.from_numpy(np.array(wave)).unsqueeze(0).float(),
+                    ivar=ivar,
+                    mask=mask
+                )
                 tokens = codec_manager.encode(spec_mod)
-                spectra_tokens_list[i + j] = tokens['aion_spectra'].cpu().numpy().tolist()
+                spectra_tokens_list[i + j] = tokens['tok_spectrum_desi'].squeeze(0).cpu().numpy().tolist()
 
     # Create new columns
-    new_columns = []
     if any(image_tokens_list):
-        new_columns.append(pa.array(image_tokens_list, type=pa.list_(pa.int64())))
-        table = table.append_column("image_tokens", new_columns[-1])
+        if "image_tokens" in table.column_names:
+            table = table.drop_columns(["image_tokens"])
+        col_arr = pa.array(image_tokens_list, type=pa.list_(pa.int64()))
+        table = table.append_column("image_tokens", col_arr)
     
     if any(spectra_tokens_list):
-        new_columns.append(pa.array(spectra_tokens_list, type=pa.list_(pa.int64())))
-        table = table.append_column("spectra_tokens", new_columns[-1])
+        if "spectra_tokens" in table.column_names:
+            table = table.drop_columns(["spectra_tokens"])
+        col_arr = pa.array(spectra_tokens_list, type=pa.list_(pa.int64()))
+        table = table.append_column("spectra_tokens", col_arr)
 
     # Save to new file
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
