@@ -32,8 +32,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from datasets import load_dataset
-from aion.codecs.image import ImageCodec
 from aion.modalities import LegacySurveyImage
+from astropt.aion_tokeniser import load_frozen_image_codec
 
 try:
     import wandb
@@ -233,12 +233,7 @@ if __name__ == "__main__":
         .rename_column("legacysurvey_image", "image")
     )
 
-    image_codec = ImageCodec.from_pretrained(
-        "polymathic-ai/aion-base",
-        modality=LegacySurveyImage
-    )
-    image_codec = image_codec.eval()
-    image_codec = image_codec
+    image_codec = load_frozen_image_codec(device)
 
     collate_fn = partial(collate_and_tokenise, image_codec=image_codec)
 

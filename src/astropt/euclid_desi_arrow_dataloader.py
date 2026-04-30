@@ -32,6 +32,9 @@ class EuclidDESIDatasetArrow(Dataset):
         spectra_mask_prob: float = 0.5,
         images_mask: bool = False,
         images_mask_prob: float = 0.5,
+        unet_weights_path: str = "logs/unet_adapter_weights/adapters_final.pt",
+        aion_image_size: int = 112,
+        aion_image_transform: str = "crop",
     ):
         """
         Dataset to loading Euclid Images and DESI spectra
@@ -65,17 +68,29 @@ class EuclidDESIDatasetArrow(Dataset):
         # Single modality safe mechanism
         cols_to_keep = ['targetid','redshift']
         
-        try:
-            if modality_registry.get_config("images") is not None:
-                cols_to_keep.extend(['image_vis', 'image_nisp_h', 'image_nisp_j', 'image_nisp_y'])
-        except Exception:
-            pass
-            
-        try:
-            if modality_registry.get_config("spectra") is not None:
-                cols_to_keep.extend(['spectrum_flux', 'spectrum_wave'])
-        except Exception:
-            pass
+        # Load image columns for both continuous ("images") and discrete ("aion_images") modes
+        _needs_images = False
+        for _img_key in ["images", "aion_images"]:
+            try:
+                if modality_registry.get_config(_img_key) is not None:
+                    _needs_images = True
+                    break
+            except Exception:
+                pass
+        if _needs_images:
+            cols_to_keep.extend(['image_vis', 'image_nisp_h', 'image_nisp_j', 'image_nisp_y'])
+
+        # Load spectra columns for both continuous ("spectra") and discrete ("aion_spectra") modes
+        _needs_spectra = False
+        for _spec_key in ["spectra", "aion_spectra"]:
+            try:
+                if modality_registry.get_config(_spec_key) is not None:
+                    _needs_spectra = True
+                    break
+            except Exception:
+                pass
+        if _needs_spectra:
+            cols_to_keep.extend(['spectrum_flux', 'spectrum_wave'])
         
         
         # Ensure we only ask for columns that actually exist in the Arrow schema
@@ -100,7 +115,21 @@ class EuclidDESIDatasetArrow(Dataset):
         self.spectra_mask_prob = spectra_mask_prob
         self.images_mask = images_mask
         self.images_mask_prob = images_mask_prob
+        self.unet_weights_path = unet_weights_path
+        self.aion_image_size = aion_image_size
+        self.aion_image_transform = aion_image_transform
         
+    def _get_aion_tokeniser(self):
+        if getattr(self, 'aion_tokeniser', None) is None:
+            from astropt.aion_tokeniser import MultiprocessCodecManager
+            self.aion_tokeniser = MultiprocessCodecManager(
+                device="cpu", 
+                unet_weights_path=self.unet_weights_path,
+                aion_image_size=self.aion_image_size,
+                aion_image_transform=self.aion_image_transform,
+            )
+        return self.aion_tokeniser
+
     def __len__(self) -> int:
         """Returns the total number of samples in the dataset."""
         return len(self.ds)
@@ -713,11 +742,24 @@ class EuclidDESIDatasetArrow(Dataset):
 
                 # Stack and Process
                 raw_galaxy = torch.stack([vis] + nisp_tensors, dim=0)
-                patch_galaxy = self.process_image(raw_galaxy)
+
+                mod_names = self.modality_registry.names()
                 
-                # adding values to sample dictionary
-                sample["images"] = patch_galaxy
-                sample["images_positions"] = torch.arange(0, len(patch_galaxy), dtype=torch.long)
+                # Discrete Tokenization Request
+                if "aion_images" in mod_names:
+                    tokeniser = self._get_aion_tokeniser()
+                    from fmb.models.aion.modalities import EuclidImage
+                    euclid_img = EuclidImage(flux=raw_galaxy.float(), bands=["EUCLID-VIS", "EUCLID-Y", "EUCLID-J", "EUCLID-H"])
+                    tokens = tokeniser.encode(euclid_img)
+                    tokens_tensor = list(tokens.values())[0] # Returns sequence of IDs
+                    sample["aion_images"] = tokens_tensor
+                    sample["aion_images_positions"] = torch.arange(0, len(tokens_tensor), dtype=torch.long)
+
+                # Continuous Regression Request
+                if "images" in mod_names:
+                    patch_galaxy = self.process_image(raw_galaxy)
+                    sample["images"] = patch_galaxy
+                    sample["images_positions"] = torch.arange(0, len(patch_galaxy), dtype=torch.long)
 
             else:
                 logging.warning(f"Target {targetid}: VIS image is None in Arrow dataset. Skipping.")
@@ -754,22 +796,46 @@ class EuclidDESIDatasetArrow(Dataset):
                         logging.warning(f"Target {targetid}: NaNs in spectrum flux. Skipping spectrum.")
                         
                     else:
-                        # Normalize wavelength
-                        raw_wave = (raw_wave - 3000.0) / (10000.0 - 3000.0)
-                        
-                        # Apply padding and patching
-                        patch_spectra, patch_wl = self.process_spectra(raw_flux, raw_wave)
-                        
-                        # Adding values to sample dictionary
-                        sample["spectra"] = patch_spectra
-                        sample["spectra_positions"] = patch_wl
+                        mod_names = self.modality_registry.names()
+
+                        # Discrete Tokenisation Request
+                        if "aion_spectra" in mod_names:
+                            from aion.modalities import DESISpectrum
+                            tokeniser = self._get_aion_tokeniser()
+                            ivar = torch.ones_like(raw_flux)
+                            mask = torch.zeros_like(raw_flux, dtype=torch.bool)
+                            desi_spec = DESISpectrum(
+                                flux=raw_flux.unsqueeze(0).float(), 
+                                ivar=ivar.unsqueeze(0).float(), 
+                                mask=mask.unsqueeze(0), 
+                                wavelength=raw_wave.unsqueeze(0).float()
+                            )
+                            tokens = tokeniser.encode(desi_spec)
+                            tokens_tensor = list(tokens.values())[0].squeeze(0)
+                            sample["aion_spectra"] = tokens_tensor
+                            sample["aion_spectra_positions"] = torch.arange(0, len(tokens_tensor), dtype=torch.long)
+
+                        # Continuous Regression Request
+                        if "spectra" in mod_names:
+                            # Clone wavelength before normalisation to avoid mutating the
+                            # original tensor (which must stay in Angstroms for AION above)
+                            cont_wave = raw_wave.clone()
+                            cont_wave = (cont_wave - 3000.0) / (10000.0 - 3000.0)
+                            
+                            # Apply padding and patching
+                            patch_spectra, patch_wl = self.process_spectra(raw_flux, cont_wave)
+                            
+                            # Adding values to sample dictionary
+                            sample["spectra"] = patch_spectra
+                            sample["spectra_positions"] = patch_wl
                 
 
             #--- 4. FINAL VALIDATION ---#
-            # Ensure we are not returning a sample with only metadata
-            if "images" not in sample and "spectra" not in sample:
-                logging.debug(f"Target {targetid}: Sample ended up empty.")
-            
+            # Check both discrete (aion_*) and continuous keys
+            _has_image = "images" in sample or "aion_images" in sample
+            _has_spectra = "spectra" in sample or "aion_spectra" in sample
+            if not _has_image and not _has_spectra:
+                logging.debug(f"Target {targetid}: Sample ended up empty (no images or spectra).")
                 new_idx = np.random.randint(0, len(self))
                 return self.__getitem__(new_idx)
             

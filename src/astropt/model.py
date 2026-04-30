@@ -437,8 +437,7 @@ class GPT(nn.Module):
         embedders = {}
         for name, mod_config in self.modality_registry.modalities.items():
             if mod_config.vocab_size > 0:
-                # for e.g. if you have a list of integers to process a la AION
-                # if we define a vocab size 
+                # Discrete modality (AION): use nn.Embedding as encoder
                 encoders[name] = Embedder(config, vocab_size=mod_config.vocab_size)
             else:
                 encoders[name] = Encoder(config, mod_config.input_size)
@@ -446,18 +445,26 @@ class GPT(nn.Module):
                 embedders[name] = Embedder(config)
             else:
                 embedders[name] = Encoder(config, mod_config.pos_input_size)
-            decoders[name] = Decoder(config, mod_config.input_size)
+            
+            if mod_config.vocab_size > 0:
+                # Discrete modality: use affine (single linear) decoder for weight tying.
+                # Force bias=False so the weight shape [vocab_size, n_embd] matches
+                # the Embedder's nn.Embedding weight exactly.
+                decoders[name] = nn.Linear(config.n_embd, mod_config.vocab_size, bias=False)
+            else:
+                decoders[name] = Decoder(config, mod_config.input_size)
 
         self.encoders = nn.ModuleDict(encoders)
         self.decoders = nn.ModuleDict(decoders)
         self.embedders = nn.ModuleDict(embedders)
 
-        # with weight tying when using torch.compile() some warnings get generated:
-        # "UserWarning: functional_call was passed multiple values for tied weights.
-        # This behavior is deprecated and will be an error in future versions"
-        # not 100% sure what this is, so far seems to be harmless. TODO investigate
-        # TODO rethink weight tying
-        # self.encoders.weight = self.decoders.weight # https://paperswithcode.com/method/weight-tying
+        # Weight tying for discrete modalities (GPT-2/LLaMA style):
+        # The decoder's linear projection shares its weight tensor with the
+        # encoder's nn.Embedding, saving ~2×vocab_size×n_embd parameters.
+        # https://paperswithcode.com/method/weight-tying
+        for name, mod_config in self.modality_registry.modalities.items():
+            if mod_config.vocab_size > 0:
+                self.decoders[name].weight = self.encoders[name].wpe.weight
 
     def _init_llm_backbone(self, config):
         """Initialise with pretrained LLM backbone"""
@@ -780,10 +787,15 @@ class GPT(nn.Module):
                     mod_mask = attention_mask[:, current_idx : current_idx + target.size(1)]
 
                     if "aion" in mod_name:
-                        unmasked_loss = F.cross_entropy(
+                        # Cross-entropy per token, then apply attention mask
+                        per_token_loss = F.cross_entropy(
                             pred.reshape(-1, pred.size(-1)),
                             target.reshape(-1),
+                            reduction="none",
                         )
+                        # Reshape back to (B, seq_len) for masking
+                        per_token_loss = per_token_loss.view(pred.size(0), pred.size(1))
+                        masked_loss = (per_token_loss * mod_mask).sum() / mod_mask.sum()
                     else:
                         if self.loss_type in ["l1", "mae"]:
                             unmasked_loss = F.l1_loss(pred, target, reduction="none")
@@ -791,8 +803,8 @@ class GPT(nn.Module):
                             unmasked_loss = F.mse_loss(pred, target, reduction="none")
                         else:
                             unmasked_loss = F.huber_loss(pred, target, delta=self.loss_huber_delta, reduction="none")
-                    mask = mod_mask.unsqueeze(-1)
-                    masked_loss = (unmasked_loss * mask).sum() / mask.sum()
+                        mask = mod_mask.unsqueeze(-1)
+                        masked_loss = (unmasked_loss * mask).sum() / mask.sum()
                     loss += masked_loss * mod_loss_weight
                     current_idx += target.size(1)
                 else:

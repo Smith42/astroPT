@@ -101,6 +101,12 @@ class TrainingConfig:
     loss_huber_delta: float = 1.0   # Delta value for controlling Huber Loss Behaviour (default 1.0)
     use_aug: bool = True            # Active data augmentation by using image rotation
     
+    #--- Tokenization Method ---#
+    tokenizer_method: str = "continuous"  # "continuous" (regression) or "discrete" (AION cross-entropy)
+    unet_weights_path: str = "logs/unet_adapter_weights/adapters_final.pt"  # Path to U-Net adapter weights
+    aion_image_size: int = 112            # Target size for AION ImageCodec (controls token sequence length)
+    aion_image_transform: str = "crop"    # "crop" or "resize" transform before U-Net
+    
     #--- Multimodality Mixing Parameters ---#
     use_token_mixing: bool = True               # Enable cross-modal interleaving
     token_mixing_block_size: int = 16           # Interleaving block size
@@ -312,9 +318,11 @@ def _normalize_param_name(param_name: str) -> str:
 def _param_branch_name(param_name: str) -> str:
     """Maps a parameter name to an optimizer/diagnostics branch."""
     name = _normalize_param_name(param_name)
-    if any(token in name for token in ("encoders.images", "decoders.images", "embedders.images")):
+    if any(token in name for token in ("encoders.images", "decoders.images", "embedders.images",
+                                        "encoders.aion_images", "decoders.aion_images", "embedders.aion_images")):
         return "images"
-    if any(token in name for token in ("encoders.spectra", "decoders.spectra", "embedders.spectra")):
+    if any(token in name for token in ("encoders.spectra", "decoders.spectra", "embedders.spectra",
+                                        "encoders.aion_spectra", "decoders.aion_spectra", "embedders.aion_spectra")):
         return "spectra"
     return "backbone"
 
@@ -344,7 +352,13 @@ def _compute_modality_losses(
             pred = pred[:, :min_len]
             target = target[:, :min_len]
 
-        if config.loss_type in ["l1", "mae"]:
+        # Use cross-entropy for discrete (AION) modalities
+        if "aion" in mod_name:
+            mod_loss = torch.nn.functional.cross_entropy(
+                pred.reshape(-1, pred.size(-1)),
+                target.reshape(-1),
+            )
+        elif config.loss_type in ["l1", "mae"]:
             mod_loss = torch.nn.functional.l1_loss(pred, target)
         elif config.loss_type == "mse":
             mod_loss = torch.nn.functional.mse_loss(pred, target)
@@ -370,7 +384,9 @@ def maybe_apply_modality_dropout(
     if float(np.random.random()) >= drop_prob:
         return "none"
 
-    available = [m for m in ("images", "spectra") if m in batch["X"] and m in batch["Y"]]
+    available = [m for m in batch["X"] if m in batch["Y"] and not m.endswith("_positions")]
+    # Filter to actual modalities (exclude position keys)
+    available = [m for m in available if m in ("images", "spectra", "aion_images", "aion_spectra")]
     if len(available) < 1:
         return "none"
 
@@ -635,49 +651,75 @@ def create_dataloaders(
     """
     
     # Configure ModalityRegistry
-    # Calculate the flattened input image size for the Linear Encoder
-    img_input_batch_size = config.images_patch_size * config.images_patch_size * config.images_channels
-    
-    # List to store the training modalities
     modalities = []
-    
-    # Base dictionary for transformations
     tf_kwargs = {}
+    is_discrete = config.tokenizer_method == "discrete"
     
     # Define configuration for each modality
     if config.images_train:
-        image_modality_config = ModalityConfig(
-            name="images",
-            input_size=img_input_batch_size,
-            patch_size=config.images_patch_size,
-            pos_input_size=config.images_pos_input_size,  
-            loss_weight=config.images_loss_weight,
-            embed_pos=config.images_embed_pos,
-        )
+        if is_discrete:
+            # Discrete (AION) tokenization: tokens are integer IDs
+            image_modality_config = ModalityConfig(
+                name="aion_images",
+                input_size=1,                           # Not used (Embedder uses vocab_size)
+                patch_size=1,                           # Each token is a single ID
+                pos_input_size=config.images_pos_input_size,
+                loss_weight=config.images_loss_weight,
+                embed_pos=True,                         # Learnt position embeddings
+                vocab_size=64000,                       # FSQ levels [8,8,8,5,5,5]
+            )
+        else:
+            # Continuous regression: patches of pixel values
+            img_input_batch_size = config.images_patch_size * config.images_patch_size * config.images_channels
+            image_modality_config = ModalityConfig(
+                name="images",
+                input_size=img_input_batch_size,
+                patch_size=config.images_patch_size,
+                pos_input_size=config.images_pos_input_size,  
+                loss_weight=config.images_loss_weight,
+                embed_pos=config.images_embed_pos,
+            )
         modalities.append(image_modality_config)
         
-        tf_kwargs.update({
-            'norm_type_img': config.images_norm_type,
-            'norm_scaler_img': config.images_norm_scaler,
-            'norm_const_img': config.images_norm_const,
-        })
+        # Transforms only needed for continuous mode
+        if not is_discrete:
+            tf_kwargs.update({
+                'norm_type_img': config.images_norm_type,
+                'norm_scaler_img': config.images_norm_scaler,
+                'norm_const_img': config.images_norm_const,
+            })
         
     if config.spectra_train:
-        spectra_modality_config = ModalityConfig(
-            name="spectra",
-            input_size=config.spectra_patch_size,
-            patch_size=config.spectra_patch_size,
-            pos_input_size=config.spectra_pos_input_size, 
-            loss_weight=config.spectra_loss_weight,
-            embed_pos=config.spectra_embed_pos,
-        )
+        if is_discrete:
+            # Discrete (AION) tokenization: tokens are integer IDs
+            spectra_modality_config = ModalityConfig(
+                name="aion_spectra",
+                input_size=1,                           # Not used (Embedder uses vocab_size)
+                patch_size=1,                           # Each token is a single ID
+                pos_input_size=config.spectra_pos_input_size,
+                loss_weight=config.spectra_loss_weight,
+                embed_pos=True,                         # Learnt position embeddings
+                vocab_size=1024,                        # LFQ codebook_size
+            )
+        else:
+            # Continuous regression: patches of spectral flux
+            spectra_modality_config = ModalityConfig(
+                name="spectra",
+                input_size=config.spectra_patch_size,
+                patch_size=config.spectra_patch_size,
+                pos_input_size=config.spectra_pos_input_size, 
+                loss_weight=config.spectra_loss_weight,
+                embed_pos=config.spectra_embed_pos,
+            )
         modalities.append(spectra_modality_config)
         
-        tf_kwargs.update({
-            'norm_type_spec': config.spectra_norm_type,
-            'norm_scaler_spec': config.spectra_norm_scaler,
-            'norm_const_spec': config.spectra_norm_const,
-        })
+        # Transforms only needed for continuous mode
+        if not is_discrete:
+            tf_kwargs.update({
+                'norm_type_spec': config.spectra_norm_type,
+                'norm_scaler_spec': config.spectra_norm_scaler,
+                'norm_const_spec': config.spectra_norm_const,
+            })
     
     # Instantiate the Registry
     registry = ModalityRegistry(modalities)
@@ -716,6 +758,9 @@ def create_dataloaders(
         spectra_mask_prob=config.spectra_mask_prob,
         images_mask=config.images_mask,
         images_mask_prob=config.images_mask_prob,
+        unet_weights_path=config.unet_weights_path,
+        aion_image_size=config.aion_image_size,
+        aion_image_transform=config.aion_image_transform,
     )
     
     # Instantiate Validation/Test Dataset 
@@ -731,6 +776,9 @@ def create_dataloaders(
         spectra_mask_prob=config.spectra_mask_prob,
         images_mask=config.images_mask,
         images_mask_prob=config.images_mask_prob,
+        unet_weights_path=config.unet_weights_path,
+        aion_image_size=config.aion_image_size,
+        aion_image_transform=config.aion_image_transform,
     )
 
     # Configure DDP Samplers
