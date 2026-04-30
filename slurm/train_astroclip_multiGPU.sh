@@ -122,8 +122,11 @@ if [[ -n "$EXTRA_ARGS" ]]; then
   echo "  EXTRA ARGS:    $EXTRA_ARGS"
 fi
 
-# Lightning handles DDP internally with devices=4 from script config.
-CMD=(python "$PYTHON_SCRIPT" \
+# Use torchrun to spawn 4 DDP workers, matching train_astropt_multiGPU.sh.
+# Plain `python script.py` lets Lightning try to spawn subprocesses internally,
+# which deadlocks in SLURM because Lightning detects the SLURM environment and
+# expects 4 separate tasks (ntasks=4) rather than spawning them itself.
+CMD=(torchrun --standalone --nproc_per_node=4 "$PYTHON_SCRIPT" \
     --data_dir "$DATA_DIR" \
     --train_dir "$TRAIN_DIR" \
     --train_name "$TRAIN_NAME" \

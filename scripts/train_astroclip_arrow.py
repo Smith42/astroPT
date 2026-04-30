@@ -642,7 +642,7 @@ class AstroPTStyleCSVCallback(L.Callback):
         "val_neg_sim",
     ]
 
-    def __init__(self, logs_dir: Path, log_interval: int, run_logger: Optional[logging.Logger] = None):
+    def __init__(self, logs_dir: Path, log_interval: int, early_stopping_patience: int = 10, run_logger: Optional[logging.Logger] = None):
         super().__init__()
         self.logs_dir = logs_dir
         self.log_interval = max(1, int(log_interval))
@@ -651,6 +651,9 @@ class AstroPTStyleCSVCallback(L.Callback):
         self.train_start = 0.0
         self.last_log_time = 0.0
         self.last_logged_step = -1
+        self.best_val_loss = float("inf")
+        self.patience_counter = 0
+        self.early_stopping_patience = max(1, int(early_stopping_patience))
 
     @staticmethod
     def _as_float(value, default=float("nan")):
@@ -775,6 +778,23 @@ class AstroPTStyleCSVCallback(L.Callback):
                 self._hms(elapsed),
                 self._hms(eta),
             )
+            self.run_logger.info(
+                "Align | i2s=%.4f | s2i=%.4f | pos_sim=%.4f | neg_sim=%.4f | Grad(img/spec/back)=(%.2f/%.2f/%.2f)",
+                self._as_float(metrics.get("train_i2s_acc")),
+                self._as_float(metrics.get("train_s2i_acc")),
+                self._as_float(metrics.get("train_pos_sim")),
+                self._as_float(metrics.get("train_neg_sim")),
+                grad_img,
+                grad_spec,
+                grad_back,
+            )
+
+    def on_validation_epoch_start(self, trainer, pl_module):
+        if not trainer.is_global_zero:
+            return
+        step = int(trainer.global_step)
+        if step > 0 and self.run_logger is not None:
+            self.run_logger.info("Running validation at iter %d...", step)
 
     def on_validation_epoch_end(self, trainer, pl_module):
         if not trainer.is_global_zero:
@@ -785,6 +805,9 @@ class AstroPTStyleCSVCallback(L.Callback):
 
         val_i2s = self._as_float(metrics.get("val_i2s_acc"))
         val_s2i = self._as_float(metrics.get("val_s2i_acc"))
+        val_pos = self._as_float(metrics.get("val_pos_sim"))
+        val_neg = self._as_float(metrics.get("val_neg_sim"))
+        val_loss = self._as_float(metrics.get("val_loss_nologit"))
 
         # Analogue of directional cross-errors for comparability.
         val_spec_from_img = 1.0 - val_i2s if not math.isnan(val_i2s) else float("nan")
@@ -808,25 +831,37 @@ class AstroPTStyleCSVCallback(L.Callback):
             "","","","",
             "nan",
             "","","","","","","","","",
-            f"{self._as_float(metrics.get('val_loss_nologit')):.6f}",
+            f"{val_loss:.6f}",
             f"{val_i2s:.6f}",
             f"{val_s2i:.6f}",
-            f"{self._as_float(metrics.get('val_pos_sim')):.6f}",
-            f"{self._as_float(metrics.get('val_neg_sim')):.6f}",
+            f"{val_pos:.6f}",
+            f"{val_neg:.6f}",
         ]
 
         with open(self.csv_path, "a", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(row)
 
-        if self.run_logger is not None:
+        if self.run_logger is not None and step > 0:
             self.run_logger.info(
-                "Val @ iter %d | Loss %.4f | SpectraFromImg %.4f | ImgFromSpectra %.4f",
-                step,
-                self._as_float(metrics.get("val_loss")),
-                val_spec_from_img,
-                val_img_from_spec,
+                "Val Loss: %.4f | Align -> i2s_acc: %.4f | s2i_acc: %.4f | pos_sim: %.4f | neg_sim: %.4f",
+                val_loss, val_i2s, val_s2i, val_pos, val_neg,
             )
+            if not math.isnan(val_loss):
+                if val_loss < self.best_val_loss:
+                    delta = val_loss - self.best_val_loss
+                    self.best_val_loss = val_loss
+                    self.patience_counter = 0
+                    self.run_logger.info(
+                        "Validation Loss: %.4f (%.4f) | NEW BEST",
+                        val_loss, delta,
+                    )
+                else:
+                    self.patience_counter += 1
+                    self.run_logger.info(
+                        "Validation Loss: %.4f (Best: %.4f) | Patience: %d/%d",
+                        val_loss, self.best_val_loss, self.patience_counter, self.early_stopping_patience,
+                    )
 
 
 class MaxRunTimeCheckpointCallback(L.Callback):
@@ -933,6 +968,10 @@ def main():
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     run_logger = configure_training_logger(logs_dir)
     run_logger.info("Logging initialized. Saving logs to: %s", logs_dir / "training.log")
+    run_logger.info("Starting AstroCLIP training on CUDA (DDP: True)")
+    run_logger.info("Training config:")
+    for key, val in asdict(config).items():
+        run_logger.info("    %s: %s", key, val)
 
     # Save run config for reproducibility (AstroPT-style).
     save_config_json(config, train_dir / "weights" / "config.json")
@@ -991,6 +1030,7 @@ def main():
     astropt_csv = AstroPTStyleCSVCallback(
         logs_dir=logs_dir,
         log_interval=config.log_interval,
+        early_stopping_patience=config.early_stopping_patience,
         run_logger=run_logger,
     )
 
