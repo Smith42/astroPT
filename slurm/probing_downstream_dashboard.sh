@@ -119,10 +119,10 @@ else
   RUNS_TO_COMPARE=(
     "${LOGS_BASE}/astropt_100M_250K_arrow_20260408_baseline_images/"
     "${LOGS_BASE}/astropt_100M_250K_arrow_20260409_baseline_spectra"
-    "${LOGS_BASE}/astropt_100M_250K_arrow_20260407_tokmix5_mask0p25"
+    #"${LOGS_BASE}/astropt_100M_250K_arrow_20260407_tokmix5_mask0p25"
     "${LOGS_BASE}/astropt_100M_250K_arrow_20260411_tokmixran_crossrecloss_longblocks"
-    "${LOGS_BASE}/astropt_100M_250K_arrow_20260412_tokmixran_crossrecloss_longblocks_dsinter"
-    "${LOGS_BASE}/astropt_100M_250K_arrow_20260413_tokmix16_crossrecloss_longblocks_dsinter"
+    #"${LOGS_BASE}/astropt_100M_250K_arrow_20260412_tokmixran_crossrecloss_longblocks_dsinter"
+    #"${LOGS_BASE}/astropt_100M_250K_arrow_20260413_tokmix16_crossrecloss_longblocks_dsinter"
     "${LOGS_BASE}/astropt_100M_250K_arrow_20260414_tokmix16_crossrecloss_dsinter_smallmod"
     "${LOGS_BASE}/astropt_100M_250K_arrow_20260416_tokmix16_crossrecloss_dsinter_smallmod_shufftrue"
   )

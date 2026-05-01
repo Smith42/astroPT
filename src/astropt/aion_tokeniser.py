@@ -212,6 +212,14 @@ class MultiprocessCodecManager:
                 # (must use aion.modalities.HSCImage, not FMB's, for codec isinstance check)
                 modality = AionHSCImage(flux=hsc_flux, bands=HSC_BANDS)
 
+            # Ensure all tensor fields in the modality are on the correct device
+            import dataclasses
+            if dataclasses.is_dataclass(modality):
+                for field in dataclasses.fields(modality):
+                    val = getattr(modality, field.name)
+                    if isinstance(val, torch.Tensor):
+                        setattr(modality, field.name, val.to(self.device))
+
             # Get the appropriate codec
             codec = self._load_codec(type(modality))
 

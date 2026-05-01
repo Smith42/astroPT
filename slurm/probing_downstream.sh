@@ -110,7 +110,6 @@ fi
 IFS=',' read -r -a SEEDS_ARRAY <<< "$SEEDS"
 IFS=',' read -r -a EASY_TARGETS_ARRAY <<< "$EASY_TARGETS"
 
-EXTRA_ARGS+=("--probes" "lp" "mlp")
 EXTRA_ARGS+=("--seeds" "${SEEDS_ARRAY[@]}")
 EXTRA_ARGS+=("--mlp_val_split" "$MLP_VAL_SPLIT")
 EXTRA_ARGS+=("--mlp_patience" "$MLP_PATIENCE")
@@ -143,7 +142,6 @@ python "$PYTHON_SCRIPT" \
     --epochs "$EPOCHS" \
     --batch_size "$BATCH_SIZE" \
     --lr "$LEARNING_RATE" \
-    --probes "knn" \
     "${EXTRA_ARGS[@]}"
 
 echo "-----------------------------------------------"
