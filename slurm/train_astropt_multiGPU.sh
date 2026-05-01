@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=64       # CPUs for task (16 per GPU * 4 GPUs)
 #SBATCH --gpus-per-task=4        # GPUs for task - DDP
 #SBATCH --mem=256G               # Requested RAM
-#SBATCH --time=18:00:00          # Requested time
+#SBATCH --time=12:00:00          # Requested time
 
 #--- LOGS FILES ---#
 #SBATCH --output=logs/astropt_train_DDP_%j.out   # Output logs file
@@ -87,7 +87,7 @@ CMD=(torchrun --standalone --nproc_per_node=4 scripts/train_multimodal_arrow.py 
     --train_description "$TRAIN_DESC" \
     --init_from "$TRAIN_MODE" \
     --checkpoint_save_type "$CHECK_MODE" \
-    --max_run_hours "17:55:00")
+    --max_run_hours "11:55:00")
 
 if [[ -n "$EXTRA_ARGS" ]]; then
   # shellcheck disable=SC2206
