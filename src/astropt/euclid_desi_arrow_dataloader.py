@@ -3,7 +3,7 @@ This file contains the Euclid images and DESI spectra Dataloader
 for traingin AstroPT transformer model from an Arrow format database.
 """
 import einops
-from datasets import load_from_disk, concatenate_datasets
+from datasets import load_from_disk, concatenate_datasets, load_dataset
 import glob
 import logging
 import numpy as np
@@ -64,7 +64,21 @@ class EuclidDESIDatasetArrow(Dataset):
         logging.info(f"Loading {len(arrow_folders)} Arrow parts for split '{split}'...")
         
         # Creating the dataset with the corresponding split
-        self.ds = concatenate_datasets([load_from_disk(p) for p in arrow_folders])
+        datasets_list = []
+        for p in arrow_folders:
+            try:
+                datasets_list.append(load_from_disk(p))
+            except Exception:
+                # Fallback: if it's not a HF dataset, load all .arrow files in the dir
+                arrow_files = sorted(glob.glob(os.path.join(p, "*.arrow")))
+                if arrow_files:
+                    logging.info(f"Loading raw Arrow files from {p}...")
+                    datasets_list.append(load_dataset("arrow", data_files=arrow_files, split="train"))
+        
+        if not datasets_list:
+            raise FileNotFoundError(f"Could not load any data from {arrow_folders}")
+
+        self.ds = concatenate_datasets(datasets_list)
         
         # Single modality safe mechanism
         cols_to_keep = ['targetid','redshift']

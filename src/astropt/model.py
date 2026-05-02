@@ -625,7 +625,9 @@ class GPT(nn.Module):
         # Apply Cross-Modal Token Mixing
         # This forces the causal attention to constantly check alternating modalities
         interleaved_idx = None
-        if self.config.use_token_mixing and len(batch_modes) == 2 and "images" in batch_modes and "spectra" in batch_modes:
+        has_img = any("image" in m for m in batch_modes)
+        has_spec = any("spectr" in m for m in batch_modes)
+        if self.config.use_token_mixing and len(batch_modes) == 2 and has_img and has_spec:
             mod1, mod2 = batch_modes[0], batch_modes[1]
             l1 = inputs[mod1].size(1)
             l2 = inputs[mod2].size(1)

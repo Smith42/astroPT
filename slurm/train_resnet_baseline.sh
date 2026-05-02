@@ -11,7 +11,7 @@
 #SBATCH --time=10:00:00         
 #SBATCH --output=logs/resnet_base_%A_%a.out
 #SBATCH --error=logs/resnet_base_%A_%a.err
-#SBATCH --array=0-3  # Adjust based on number of targets to run concurrently
+#SBATCH --array=0-2slurm/train_resnet_baseline.sh  # Adjust based on number of targets to run concurrently
 
 set -euo pipefail
 
@@ -24,10 +24,10 @@ SAVE_DIR="$REPO_ROOT/logs/resnet18_images_supervised"
 
 # Targets List
 TARGETS=(
-    "Z" 
-    "LOGMSTAR"
-    "LOGSFR"
-    "GR" 
+    #"Z" 
+    #"LOGMSTAR"
+    #"LOGSFR"
+    #"GR" 
     #'flux_detection_total'
     #'HALPHA_EW'
     #'HALPHA_FLUX'
@@ -39,9 +39,9 @@ TARGETS=(
     #'sersic_sersic_vis_axis_ratio'
     #'has_spiral_arms_yes'
     #'smoothness'
-    #'gini'
-    #'SPECTYPE'
-    #'data_set_release'
+    'gini'
+    'SPECTYPE'
+    'data_set_release'
 )
 
 # Get current target from array task id (defauls to 0 if run locally)

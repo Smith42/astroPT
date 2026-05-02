@@ -99,7 +99,7 @@ class TrainingConfig:
     loss_type: str = "mae"          # Options: l1 / mae, mse, huber
     loss_huber_delta: float = 1.0   # Delta value for controlling Huber Loss Behaviour (default 1.0)
     use_aug: bool = True            # Active data augmentation by using image rotation
-    use_pretokenized: bool = False  # Use pre-computed tokens from Arrow files (bypasses AION on-the-fly)
+    use_pretokenized: bool = True   # Use pre-computed tokens from Arrow files (bypasses AION on-the-fly)
     
     #--- Multimodality Mixing Parameters ---#
     use_token_mixing: bool = True               # Enable cross-modal interleaving
@@ -416,15 +416,11 @@ def maybe_apply_modality_dropout(
 
 def summarize_modality_dropout(drop_counts: Dict[str, int]) -> str:
     """Compacts micro-step dropout events into one per-iteration label."""
-    images_cnt = drop_counts.get("images", 0)
-    spectra_cnt = drop_counts.get("spectra", 0)
-
-    if images_cnt > 0 and spectra_cnt > 0:
+    drops = [k for k, v in drop_counts.items() if v > 0 and k != "none"]
+    if len(drops) > 1:
         return "mixed"
-    if images_cnt > 0:
-        return "images"
-    if spectra_cnt > 0:
-        return "spectra"
+    if len(drops) == 1:
+        return drops[0]
     return "none"
 
 
@@ -1388,14 +1384,16 @@ def main():
             loss_accum_for_log = 0.0
 
             # Optional modality diagnostics accumulators
-            modality_loss_sums = {"images": 0.0, "spectra": 0.0}
-            modality_loss_counts = {"images": 0, "spectra": 0}
-            cross_loss_sums = {"images": 0.0, "spectra": 0.0}
-            cross_loss_counts = {"images": 0, "spectra": 0}
-            modality_drop_counts = {"images": 0, "spectra": 0, "none": 0}
+            modality_loss_sums = {"images": 0.0, "spectra": 0.0, "aion_images": 0.0, "aion_spectra": 0.0}
+            modality_loss_counts = {"images": 0, "spectra": 0, "aion_images": 0, "aion_spectra": 0}
+            cross_loss_sums = {"images": 0.0, "spectra": 0.0, "aion_images": 0.0, "aion_spectra": 0.0}
+            cross_loss_counts = {"images": 0, "spectra": 0, "aion_images": 0, "aion_spectra": 0}
+            modality_drop_counts = {"images": 0, "spectra": 0, "aion_images": 0, "aion_spectra": 0, "none": 0}
             branch_grad_norms = {
                 "images": float("nan"),
                 "spectra": float("nan"),
+                "aion_images": float("nan"),
+                "aion_spectra": float("nan"),
                 "backbone": float("nan"),
                 "total": float("nan"),
             }
@@ -1474,7 +1472,12 @@ def main():
                                         pred = pred[:, :min_len]
                                         target = target[:, :min_len]
                                     
-                                    if config.loss_type in ["l1", "mae"]:
+                                    if "aion" in mod_name:
+                                        mod_loss = torch.nn.functional.cross_entropy(
+                                            pred.reshape(-1, pred.size(-1)),
+                                            target.reshape(-1),
+                                        ).item()
+                                    elif config.loss_type in ["l1", "mae"]:
                                         mod_loss = torch.nn.functional.l1_loss(pred, target).item()
                                     elif config.loss_type == "mse":
                                         mod_loss = torch.nn.functional.mse_loss(pred, target).item()
@@ -1642,24 +1645,24 @@ def main():
                     )
 
                     loss_images_diag = (
-                        modality_loss_sums["images"] / modality_loss_counts["images"]
-                        if modality_loss_counts["images"] > 0
-                        else float("nan")
+                        modality_loss_sums.get("images", 0) / modality_loss_counts.get("images", 1)
+                        if modality_loss_counts.get("images", 0) > 0
+                        else (modality_loss_sums.get("aion_images", 0) / modality_loss_counts.get("aion_images", 1) if modality_loss_counts.get("aion_images", 0) > 0 else float("nan"))
                     )
                     loss_spectra_diag = (
-                        modality_loss_sums["spectra"] / modality_loss_counts["spectra"]
-                        if modality_loss_counts["spectra"] > 0
-                        else float("nan")
+                        modality_loss_sums.get("spectra", 0) / modality_loss_counts.get("spectra", 1)
+                        if modality_loss_counts.get("spectra", 0) > 0
+                        else (modality_loss_sums.get("aion_spectra", 0) / modality_loss_counts.get("aion_spectra", 1) if modality_loss_counts.get("aion_spectra", 0) > 0 else float("nan"))
                     )
                     cross_images_diag = (
-                        cross_loss_sums["images"] / cross_loss_counts["images"]
-                        if cross_loss_counts["images"] > 0
-                        else float("nan")
+                        cross_loss_sums.get("images", 0) / cross_loss_counts.get("images", 1)
+                        if cross_loss_counts.get("images", 0) > 0
+                        else (cross_loss_sums.get("aion_images", 0) / cross_loss_counts.get("aion_images", 1) if cross_loss_counts.get("aion_images", 0) > 0 else float("nan"))
                     )
                     cross_spectra_diag = (
-                        cross_loss_sums["spectra"] / cross_loss_counts["spectra"]
-                        if cross_loss_counts["spectra"] > 0
-                        else float("nan")
+                        cross_loss_sums.get("spectra", 0) / cross_loss_counts.get("spectra", 1)
+                        if cross_loss_counts.get("spectra", 0) > 0
+                        else (cross_loss_sums.get("aion_spectra", 0) / cross_loss_counts.get("aion_spectra", 1) if cross_loss_counts.get("aion_spectra", 0) > 0 else float("nan"))
                     )
                     dropout_summary = summarize_modality_dropout(modality_drop_counts)
 

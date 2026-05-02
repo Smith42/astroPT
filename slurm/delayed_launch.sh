@@ -9,7 +9,7 @@ MODEL="astropt"
 # Format accepted by GNU date: YYYY-MM-DD HH:MM:SS
 TARGET_DATE="2026-05-01 15:30:00"
 
-TRAIN_NAME="30M + TokMix16 + DsInter + DisTok"
+TRAIN_NAME="60M + TokMix16 + DsInter + DisTok"
 TRAIN_DESC="Training a small 30M parameters AstroPt model in a discrete dataset. This dataset was tokenized using AION tokenizers, FSQ for images and LFQ for spectra. Images used a U-Net translator from euclid to HSC images (original from AION). This mehtod expects to break the multimodality gap or at least, improve th perpormance of images in spectral probing tasks."
 
 # Optional extra flags forwarded to the selected launcher.
