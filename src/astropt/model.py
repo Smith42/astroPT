@@ -330,6 +330,64 @@ class Embedder(nn.Module):
         return self.wpe(pos)
 
 
+class AstroPTEmbeddingLayer(nn.Module):
+    """
+    Embedding layer for Multi-modal AstroPT models.
+    Mitigates latent space anisotropy and improves cluster separability 
+    in UMAPs/t-SNEs by:
+    1. Adding a learnable Modality Embedding (img_emb, spec_emb) 
+       via broadcasting to each modality's token block.
+    2. Prepending a learnable global [CLS] token to act as a pooling/context vector 
+       for downstream physical regression tasks.
+    """
+    def __init__(self, config, modality_registry, encoders, embedders):
+        super().__init__()
+        self.config = config
+        self.modality_registry = modality_registry
+        self.encoders = encoders
+        self.embedders = embedders
+        
+        # [CLS] token prepended to the sequence (Optional)
+        if getattr(config, 'use_cls_token', True):
+            self.cls_token = nn.Parameter(torch.randn(1, 1, config.n_embd) * 0.02)
+        else:
+            self.register_parameter('cls_token', None)
+        
+        # Additive Modality Embeddings (Optional)
+        if getattr(config, 'use_modality_embeddings', True):
+            self.modality_embs = nn.ParameterDict()
+            for name in modality_registry.modalities.keys():
+                self.modality_embs[name] = nn.Parameter(torch.randn(1, 1, config.n_embd) * 0.02)
+        else:
+            self.modality_embs = None
+            
+    def forward(self, inputs, batch_modes):
+        bsz = inputs[batch_modes[0]].size(0)
+        sequences = []
+        
+        for mod_name in batch_modes:
+            x_tok = self.encoders[mod_name](inputs[mod_name])
+            
+            # 2. Modality Embedding
+            if self.modality_embs is not None and mod_name in self.modality_embs:
+                x_tok = x_tok + self.modality_embs[mod_name]
+                
+            # 3. Positional Embedding
+            x_pos = self.embedders[mod_name](inputs[mod_name + "_positions"])
+            
+            sequences.append(x_tok + x_pos)
+            
+        # Concatenate modalities
+        tok_emb = torch.cat(sequences, dim=1)
+        
+        # 4. Prepend CLS token if active
+        if self.cls_token is not None:
+            cls_tokens = self.cls_token.expand(bsz, -1, -1)
+            tok_emb = torch.cat([cls_tokens, tok_emb], dim=1)
+            
+        return tok_emb
+
+
 @dataclass
 class GPTConfig:
     block_size: int = 1024
@@ -358,6 +416,9 @@ class GPTConfig:
     token_mixing_seed: int = 42
     cross_reconstruction_loss_use: bool = False
     cross_reconstruction_weight: float = 1.0
+    # Dual Modality Identity
+    use_cls_token: bool = True
+    use_modality_embeddings: bool = True
 
 
 class GPT(nn.Module):
@@ -458,6 +519,8 @@ class GPT(nn.Module):
         self.encoders = nn.ModuleDict(encoders)
         self.decoders = nn.ModuleDict(decoders)
         self.embedders = nn.ModuleDict(embedders)
+        
+        self.embedding_layer = AstroPTEmbeddingLayer(config, self.modality_registry, self.encoders, self.embedders)
 
         # Weight tying for discrete modalities (GPT-2/LLaMA style):
         # The decoder's linear projection shares its weight tensor with the
@@ -611,16 +674,8 @@ class GPT(nn.Module):
             block_mask = None
 
         # forward the GPT model itself
-        embeddings = []
-        pos_embeddings = []
-        # Get dynamic order from the batch, respecting Python 3.7+ dict insertion order
-        for mod_name in batch_modes:
-            input_tensor = inputs[mod_name]
-            embeddings.append(self.encoders[mod_name](input_tensor))
-            pos = inputs[mod_name + "_positions"]
-            pos_embeddings.append(self.embedders[mod_name](pos))
-        tok_emb = torch.cat(embeddings, dim=1)
-        pos_emb = torch.cat(pos_embeddings, dim=1)
+        # This encapsulates the CLS token and modality embeddings
+        x = self.embedding_layer(inputs, batch_modes)
 
         # Apply Cross-Modal Token Mixing
         # This forces the causal attention to constantly check alternating modalities
@@ -676,14 +731,15 @@ class GPT(nn.Module):
                         idx.extend(range(l1 + i2, l1 + i2 + c2))
                         i2 += c2
                         
-            interleaved_idx = torch.tensor(idx, device=tok_emb.device, dtype=torch.long)
+            # Shift the interleaved indices by +1 to leave the [CLS] token at index 0 unchanged
+            shifted_idx = [0] + [i + 1 for i in idx]
+            interleaved_idx = torch.tensor(shifted_idx, device=x.device, dtype=torch.long)
             inverse_idx = torch.argsort(interleaved_idx)
             
             # Reorder tensors before entering the transformer
-            tok_emb = tok_emb[:, interleaved_idx, :]
-            pos_emb = pos_emb[:, interleaved_idx, :]
+            x = x[:, interleaved_idx, :]
 
-        x = self.transformer.drop(tok_emb + pos_emb)
+        x = self.transformer.drop(x)
         for block in self.transformer.h:
             x = block(x, block_mask=block_mask)
         x = self.transformer.ln_f(x)
@@ -701,19 +757,23 @@ class GPT(nn.Module):
             
             # Identify indices matching each modality.
             mod1, mod2 = batch_modes[0], batch_modes[1]
-            # l1 is mod1 length, so idx < l1 corresponds to mod1 target.
-            is_mod1 = tgt_idx < l1
-            is_mod2 = tgt_idx >= l1
+            l1 = inputs[mod1].size(1)
+
+            # Define original indices for correct target mapping
+            if getattr(self.config, 'use_cls_token', False):
+                tgt_idx_orig = tgt_idx - 1
+            else:
+                tgt_idx_orig = tgt_idx
+
+            is_mod1 = tgt_idx_orig < l1
+            is_mod2 = tgt_idx_orig >= l1
             
             outputs[mod1] = self.decoders[mod1](hidden[:, is_mod1, :])
             outputs[mod2] = self.decoders[mod2](hidden[:, is_mod2, :])
             
             if targets is not None:
-                # Dynamic targets adaptation! We shift targets sequence to directly align
-                # with the smart routing outputs. This bridges length boundaries without
-                # modifying external Loss implementations. 
-                targets[mod1] = targets[mod1][:, tgt_idx[is_mod1]]
-                targets[mod2] = targets[mod2][:, tgt_idx[is_mod2] - l1]
+                targets[mod1] = targets[mod1][:, tgt_idx_orig[is_mod1]]
+                targets[mod2] = targets[mod2][:, tgt_idx_orig[is_mod2] - l1]
 
         else:
             # --- STANDARD LINEAR CAUSAL SEQUENCING (NO MIXING) ---
@@ -736,21 +796,32 @@ class GPT(nn.Module):
     
             # Reset current_idx for the main output processing loop
             current_idx = 0
-            for ii, mod_name in enumerate(batch_modes):
-                input_tensor = inputs[mod_name]
-                output_seq_len = input_tensor.size(1)
-                
-                if ii == 0:
-                    if len(batch_modes) > 1:
-                        output_seq_len -= 1
-                    hidden_state = x[:, current_idx : current_idx + output_seq_len]
-                else:
-                    output_seq_len += 1
-                    hidden_state = x[:, current_idx - 1 : current_idx - 1 + output_seq_len]
-    
-                outputs[mod_name] = self.decoders[mod_name](hidden_state)
-                # Always advance the index by the original input tensor length
-                current_idx += input_tensor.size(1)
+            
+            if getattr(self.config, 'use_cls_token', False):
+                # CLS token makes boundaries simple: it predicts the first token of mod1.
+                # Every hidden state i predicts target token i.
+                for mod_name in batch_modes:
+                    input_tensor = inputs[mod_name]
+                    seq_len = input_tensor.size(1)
+                    # Hidden states 0:N predict targets 0:N
+                    hidden_state = x[:, current_idx : current_idx + seq_len]
+                    outputs[mod_name] = self.decoders[mod_name](hidden_state)
+                    current_idx += seq_len
+            else:
+                for ii, mod_name in enumerate(batch_modes):
+                    input_tensor = inputs[mod_name]
+                    output_seq_len = input_tensor.size(1)
+                    
+                    if ii == 0:
+                        if len(batch_modes) > 1:
+                            output_seq_len -= 1
+                        hidden_state = x[:, current_idx : current_idx + output_seq_len]
+                    else:
+                        output_seq_len += 1
+                        hidden_state = x[:, current_idx - 1 : current_idx - 1 + output_seq_len]
+        
+                    outputs[mod_name] = self.decoders[mod_name](hidden_state)
+                    current_idx += input_tensor.size(1)
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss

@@ -114,6 +114,10 @@ class TrainingConfig:
     modality_dropout_mode: str = "random"       # none, images, spectra, random
     cross_reconstruction_loss_use: bool = True  # Enable cross reconstruction explicitly via targets
     cross_reconstruction_weight: float = 1.2    # Weight multiplier for cross-reconstructed modal loss
+    
+    # Dual Modality Identity
+    use_cls_token: bool = True                  # Use a [CLS] token that is prepended to the sequence
+    use_modality_embeddings: bool = True        # Use a different vector to distinguish modalities
 
     # Images
     images_train: bool = True           # Images bool flag for enabling training
@@ -864,6 +868,8 @@ def create_model(
         token_mixing_seed=config.token_mixing_seed,
         cross_reconstruction_loss_use=config.cross_reconstruction_loss_use,
         cross_reconstruction_weight=config.cross_reconstruction_weight,
+        use_cls_token=config.use_cls_token,
+        use_modality_embeddings=config.use_modality_embeddings,
     )
     
     # Instantiate the Model
