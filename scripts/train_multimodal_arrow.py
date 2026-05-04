@@ -1786,26 +1786,29 @@ def main():
                             val_losses.append(v_loss.item())
 
                             # --- ISOLATED RECONSTRUCTION VALIDATION ---
-                            if "images" in B_val["X"] and "spectra" in B_val["X"]:
+                            img_key = "aion_images" if "aion_images" in B_val["X"] else "images"
+                            spec_key = "aion_spectra" if "aion_spectra" in B_val["X"] else "spectra"
+
+                            if img_key in B_val["X"] and spec_key in B_val["X"]:
                                 # 1. Images -> Spectra (Mask out Spectra Input completely)
                                 X_img2spec = {k: v for k, v in B_val["X"].items()}
-                                X_img2spec["spectra"] = torch.zeros_like(X_img2spec["spectra"])
+                                X_img2spec[spec_key] = torch.zeros_like(X_img2spec[spec_key])
                                 
                                 with ctx:
                                     out_img2spec, _ = model(X_img2spec, targets=B_val["Y"])
                                     iso_loss_s = _compute_modality_losses(out_img2spec, B_val["Y"], config)
-                                    if "spectra" in iso_loss_s:
-                                        val_iso_img2spec.append(iso_loss_s["spectra"])
+                                    if spec_key in iso_loss_s:
+                                        val_iso_img2spec.append(iso_loss_s[spec_key])
 
                                 # 2. Spectra -> Images (Mask out Images Input completely)
                                 X_spec2img = {k: v for k, v in B_val["X"].items()}
-                                X_spec2img["images"] = torch.zeros_like(X_spec2img["images"])
+                                X_spec2img[img_key] = torch.zeros_like(X_spec2img[img_key])
 
                                 with ctx:
                                     out_spec2img, _ = model(X_spec2img, targets=B_val["Y"])
                                     iso_loss_i = _compute_modality_losses(out_spec2img, B_val["Y"], config)
-                                    if "images" in iso_loss_i:
-                                        val_iso_spec2img.append(iso_loss_i["images"])
+                                    if img_key in iso_loss_i:
+                                        val_iso_spec2img.append(iso_loss_i[img_key])
                     
                     val_loss = sum(val_losses) / len(val_losses)
                     

@@ -10,6 +10,7 @@ from tqdm import tqdm
 from pathlib import Path
 from dataclasses import asdict
 import datetime
+import shutil
 
 # Add src to path to import astropt modules
 import sys
@@ -152,6 +153,15 @@ def main():
         success = process_file(file_path, output_path, codec_manager, args.batch_size, device)
         if not success:
             logger.error(f"Failed to process {file_path}")
+
+    # Preserve Hugging Face metadata from the original dataset
+    logger.info("Copying original Hugging Face metadata...")
+    for json_file in input_root.rglob("*.json"):
+        rel_path = json_file.relative_to(input_root)
+        out_json_path = output_root / rel_path
+        os.makedirs(out_json_path.parent, exist_ok=True)
+        shutil.copy(json_file, out_json_path)
+        logger.info(f"Preserved metadata: {rel_path}")
 
 if __name__ == "__main__":
     main()
