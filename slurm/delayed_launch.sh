@@ -7,10 +7,10 @@ set -euo pipefail
 MODEL="astropt"
 
 # Format accepted by GNU date: YYYY-MM-DD HH:MM:SS
-TARGET_DATE="2026-05-04 18:45:00"
+TARGET_DATE="2026-05-05 00:00:30"
 
-TRAIN_NAME="60M + TokMix16 + CLS + DisTok"
-TRAIN_DESC="Training a small 60M parameters AstroPt model in a discrete dataset (30M from the model + 30M from discrete vocab). This dataset was tokenized using AION tokenizers, FSQ for images and LFQ for spectra. Images used a U-Net translator from euclid to HSC images (original from AION). This mehtod expects to break the multimodality gap or at least, improve th perpormance of images in spectral probing tasks. This training also implements CLS and modality embeddings to improve the model's understanding of the multimodality."
+TRAIN_NAME="60M + TokMix128 + CLS + DisTok"
+TRAIN_DESC="Training a small 60M parameters AstroPt model in a discrete dataset (30M from the model + 30M from discrete vocab). This dataset was tokenized using AION tokenizers, FSQ for images and LFQ for spectra. Images used a U-Net translator from euclid to HSC images (original from AION). This mehtod expects to break the multimodality gap or at least, improve th perpormance of images in spectral probing tasks. This training also implements CLS and modality embeddings to improve the model's understanding of the multimodality. Longer blocks of 128 tokens per modality in token mixing to avaoid constant changes in the sequence."
 
 # Optional extra flags forwarded to the selected launcher.
 TRAIN_EXTRA_ARGS=""

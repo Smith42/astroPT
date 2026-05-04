@@ -103,15 +103,15 @@ class TrainingConfig:
     
     #--- Multimodality Mixing Parameters ---#
     use_token_mixing: bool = True               # Enable cross-modal interleaving
-    token_mixing_block_size: int = 16           # Interleaving block size
+    token_mixing_block_size: int = 128          # Interleaving block size
     token_mixing_stochastic: bool = False       # Enable stochastic block sizes
-    token_mixing_min_block_size: int = 16       # Minimum block size for stochastic mixing
-    token_mixing_max_block_size: int = 64       # Maximum block size for stochastic mixing
+    token_mixing_min_block_size: int = 64       # Minimum block size for stochastic mixing
+    token_mixing_max_block_size: int = 128      # Maximum block size for stochastic mixing
     token_mixing_seed: int = 61                 # Seed for reproducible stochastic mixing
     shuffle_modality_train: bool = True         # Shuffle modality order during training
     shuffle_modality_val: bool = False          # Shuffle modality order during validation
-    modality_dropout_prob: float = 0.05         # Probability to zero one modality in a micro-step
-    modality_dropout_mode: str = "random"       # none, images, spectra, random
+    modality_dropout_prob: float = 0.1          # Probability to zero one modality in a micro-step
+    modality_dropout_mode: str = "spectra"      # none, images, spectra, random
     cross_reconstruction_loss_use: bool = True  # Enable cross reconstruction explicitly via targets
     cross_reconstruction_weight: float = 1.2    # Weight multiplier for cross-reconstructed modal loss
     
@@ -124,7 +124,7 @@ class TrainingConfig:
     images_size: int = 224              # Images side size in pixels
     images_patch_size: int = 8          # Side size in pixels of each patch in an image
     images_channels: int = 4            # Channels per image (VIS + NISP Y,J,H)
-    images_loss_weight: float = 1.0     # Images importance for training
+    images_loss_weight: float = 2.0     # Images importance for training
     images_embed_pos: bool = True       # Images embedding positions learning
     images_pos_input_size: int = 1      # Images position input size
     images_norm_type: str = "asinh"     # Normalization method: constant, z_score or asinh
@@ -145,7 +145,7 @@ class TrainingConfig:
     spectra_inverse: bool = False           # Reading spectra from red to blue 
     spectra_size: int = 7781                # Spectra total size
     spectra_patch_size: int = 10            # Patch size for each spectrum
-    spectra_loss_weight: float = 4.0        # Spectra importance for training 
+    spectra_loss_weight: float = 1.0        # Spectra importance for training 
     spectra_embed_pos: bool = True          # Spectra embedding positions learning
     spectra_pos_input_size: int = 1         # Spectra position input size
     spectra_norm_type: str = "asinh"        # Normalization method: constant, z_score or asinh
@@ -184,6 +184,7 @@ class TrainingConfig:
     checkpoint_interval: int = 1_000        # How often to save .pt files
     checkpoint_save_type: str = "both"      # Checkpoint saving mode: best, last, both or all
     early_stopping_patience: int = 15       # Stop if no improvement after N evals
+    early_stopping_min_iters: int = 35000   # Minimum iterations before starting to count patience
 
     #--- System & Backend ---#
     device: str = "cuda"                    # CPU/GPU device interface: cpu, cuda or mps
@@ -1876,8 +1877,10 @@ def main():
                                 f.write(f"Iter: {iter_num}, Loss: {val_loss}")
                         
                     else:
-                        # Increasing the counter
-                        early_stop_counter += 1
+                        # Increasing the counter ONLY if we have reached the minimum iters
+                        if iter_num >= getattr(config, 'early_stopping_min_iters', 0):
+                            early_stop_counter += 1
+                        
                         is_best = False
                         logger.info(
                             f"Validation Loss: {val_loss:.4f} (Best: {best_val_loss:.4f}) | "
