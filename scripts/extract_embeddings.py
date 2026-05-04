@@ -275,24 +275,54 @@ def main():
         sys.exit(1)
 
     # DYNAMIC MODALITY DETECTION
-    active_mods = []
-    for mod in ['images', 'spectra']:
-        try:
-            if registry.get_config(mod) is not None:
-                active_mods.append(mod)
-        except Exception:
-            pass 
-
-    if not active_mods:
+    # Check registry for actual modality names (could be "aion_images" or "images")
+    registry_names = registry.names()  # Sorted list from the loaded checkpoint
+    
+    # Build mapping: canonical name -> actual registry key
+    # This allows the rest of the script to work with "images"/"spectra" semantics
+    # while using the correct internal keys for the model.
+    img_key = None
+    spec_key = None
+    for rn in registry_names:
+        if "images" in rn:
+            img_key = rn
+        if "spectra" in rn:
+            spec_key = rn
+    
+    # Fallback: inspect config.json if registry was empty/broken
+    if img_key is None and spec_key is None:
         logger.warning("Could not read registry. Inspecting config.json directly for training flags...")
+        img_tok = raw_config_dict.get('images_tokenizer_method', 'aim')
+        spec_tok = raw_config_dict.get('spectra_tokenizer_method', 'aim')
         if raw_config_dict.get('images_train', False):
-            active_mods.append('images')
+            img_key = 'aion_images' if img_tok == 'discrete' else 'images'
         if raw_config_dict.get('spectra_train', False):
-            active_mods.append('spectra')
-
-
-    is_multimodal = len(active_mods) > 1
-    logger.info(f"Active modalities detected: {active_mods}")
+            spec_key = 'aion_spectra' if spec_tok == 'discrete' else 'spectra'
+    
+    # active_model_mods: actual keys used by the model (e.g. "aion_images")
+    # active_canonical_mods: user-facing names for file output (e.g. "images")
+    active_model_mods = []   # Keys matching the model's registry
+    active_canonical_mods = []  # Canonical names for output files and downstream tools
+    mod_to_canonical = {}    # Map: model key -> canonical name
+    canonical_to_mod = {}    # Map: canonical name -> model key
+    
+    if img_key is not None:
+        active_model_mods.append(img_key)
+        active_canonical_mods.append('images')
+        mod_to_canonical[img_key] = 'images'
+        canonical_to_mod['images'] = img_key
+    if spec_key is not None:
+        active_model_mods.append(spec_key)
+        active_canonical_mods.append('spectra')
+        mod_to_canonical[spec_key] = 'spectra'
+        canonical_to_mod['spectra'] = spec_key
+    
+    is_discrete = any(k.startswith('aion_') for k in active_model_mods)
+    is_multimodal = len(active_model_mods) > 1
+    
+    logger.info(f"Active modalities (model keys): {active_model_mods}")
+    logger.info(f"Active modalities (canonical):  {active_canonical_mods}")
+    logger.info(f"Tokenization mode: {'discrete (AION)' if is_discrete else 'continuous'}")
     logger.info(
         f"Embedding layer source: {'middle layer' if args.draw_from_centre else 'final layer'}"
     )
@@ -304,26 +334,37 @@ def main():
     data_dir = args.data_dir if args.data_dir else raw_config_dict.get('data_dir')
     data_dir = Path(data_dir)
     
-    # Retrieve Normalization Constants
-    norm_type_img = raw_config_dict.get('images_norm_type', raw_config_dict.get('img_norm_type', 'asinh'))
-    norm_scaler_img = raw_config_dict.get('images_norm_scaler', raw_config_dict.get('img_norm_scaler', 1.0))
-    norm_const_img = raw_config_dict.get('images_norm_const', raw_config_dict.get('img_norm_const', 1.0))
+    # Retrieve Normalization Constants (only needed for continuous mode)
+    tf_kwargs = {}
+    if not is_discrete or spec_key == 'spectra' or img_key == 'images':
+        norm_type_img = raw_config_dict.get('images_norm_type', raw_config_dict.get('img_norm_type', 'asinh'))
+        norm_scaler_img = raw_config_dict.get('images_norm_scaler', raw_config_dict.get('img_norm_scaler', 1.0))
+        norm_const_img = raw_config_dict.get('images_norm_const', raw_config_dict.get('img_norm_const', 1.0))
+        norm_type_spec = raw_config_dict.get('spectra_norm_type', 'constant')
+        norm_scaler_spec = raw_config_dict.get('spectra_norm_scaler', 1.0)
+        norm_const_spec = raw_config_dict.get('spectra_norm_const', 1.0)
+        tf_kwargs = dict(
+            norm_type_img=norm_type_img, norm_scaler_img=norm_scaler_img, norm_const_img=norm_const_img,
+            norm_type_spec=norm_type_spec, norm_scaler_spec=norm_scaler_spec, norm_const_spec=norm_const_spec,
+        )
     
     inverse_spec = raw_config_dict.get('spectra_inverse', False)
-    norm_type_spec = raw_config_dict.get('spectra_norm_type', 'constant')
-    norm_scaler_spec = raw_config_dict.get('spectra_norm_scaler', 1.0)
-    norm_const_spec = raw_config_dict.get('spectra_norm_const', 1.0)
+    data_tf = EuclidDESIDatasetArrow.data_transforms(**tf_kwargs) if tf_kwargs else {}
     
-    data_tf = EuclidDESIDatasetArrow.data_transforms(
-        norm_type_img=norm_type_img, norm_scaler_img=norm_scaler_img, norm_const_img=norm_const_img,
-        norm_type_spec=norm_type_spec, norm_scaler_spec=norm_scaler_spec, norm_const_spec=norm_const_spec,
-    )
+    # Dataset-specific arguments for AION discrete mode
+    ds_kwargs = {}
+    if is_discrete:
+        ds_kwargs['use_pretokenized'] = raw_config_dict.get('use_pretokenized', True)
+        ds_kwargs['unet_weights_path'] = raw_config_dict.get('images_unet_weights_path', 'logs/unet_adapter_weights/adapters_final.pt')
+        ds_kwargs['aion_image_size'] = raw_config_dict.get('images_aion_image_size', 112)
+        ds_kwargs['aion_image_transform'] = raw_config_dict.get('images_aion_image_transform', 'resize')
     
     logger.info(f"Initializing Dataset from: {data_dir}")
     ds = EuclidDESIDatasetArrow(
         arrow_folder_root=data_dir, split="test", modality_registry=registry,
         spiral=True, stochastic=False, transform=data_tf,
         spectra_inverse=inverse_spec,
+        **ds_kwargs,
     )
     dl = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
     
@@ -352,9 +393,11 @@ def main():
         save_path / 'ids.npy', mode='w+', dtype='int64', shape=(total_samples,)
     )
     
-    for mod in active_mods:
-        mmaps[mod] = np.lib.format.open_memmap(
-            save_path / f'{mod}.npy', mode='w+', dtype='float32', shape=(total_samples, emb_dim)
+    # Use canonical names for output files (images.npy, spectra.npy) regardless of
+    # whether the model internally uses aion_images/aion_spectra or images/spectra.
+    for canon_name in active_canonical_mods:
+        mmaps[canon_name] = np.lib.format.open_memmap(
+            save_path / f'{canon_name}.npy', mode='w+', dtype='float32', shape=(total_samples, emb_dim)
         )
         
     if is_multimodal:
@@ -384,12 +427,14 @@ def main():
                 device=device,
             )
 
-            # SAFE EMBEDDINGS EXTRACTION 
-            embeddings = {}
-            if is_multimodal and ("images" in active_mods) and ("spectra" in active_mods):
+            # SAFE EMBEDDINGS EXTRACTION
+            # Use model-level keys (e.g. "aion_images") for forward passes,
+            # then map results back to canonical names ("images") for output.
+            embeddings = {}  # keyed by model mod names
+            if is_multimodal and img_key is not None and spec_key is not None:
                 if args.order_mode == "isolated":
                     # 100% Causal Isolation: Only pass one modality per forward pass
-                    for mod in active_mods:
+                    for mod in active_model_mods:
                         isolated_X = {mod: X[mod], f"{mod}_positions": X[f"{mod}_positions"]}
                         emb = model.get_embeddings(
                             isolated_X,
@@ -404,35 +449,35 @@ def main():
                         model.config.use_token_mixing = False
                         
                     emb_img_first = model.get_embeddings(
-                        reorder_modal_inputs(X, ["images", "spectra"]),
+                        reorder_modal_inputs(X, [img_key, spec_key]),
                         draw_from_centre=args.draw_from_centre,
                     )
                     emb_spec_first = model.get_embeddings(
-                        reorder_modal_inputs(X, ["spectra", "images"]),
+                        reorder_modal_inputs(X, [spec_key, img_key]),
                         draw_from_centre=args.draw_from_centre,
                     )
                     
                     if original_mixing:
                         model.config.use_token_mixing = True
                         
-                    embeddings["images"] = emb_img_first["images"]
-                    embeddings["spectra"] = emb_spec_first["spectra"]
+                    embeddings[img_key] = emb_img_first[img_key]
+                    embeddings[spec_key] = emb_spec_first[spec_key]
                     
                 elif args.order_mode == "bidirectional_leaky":
-                    if batch_idx == 0:
+                    if start_idx == 0:
                         logger.warning("Using bidirectional_leaky! Embeddings are cross-contaminated via averaging. NOT valid for zero-shot downstream probing.")
                         
                     emb_forward = model.get_embeddings(
-                        reorder_modal_inputs(X, ["images", "spectra"]),
+                        reorder_modal_inputs(X, [img_key, spec_key]),
                         draw_from_centre=args.draw_from_centre,
                     )
                     emb_reverse = model.get_embeddings(
-                        reorder_modal_inputs(X, ["spectra", "images"]),
+                        reorder_modal_inputs(X, [spec_key, img_key]),
                         draw_from_centre=args.draw_from_centre,
                     )
-                    for modality in active_mods:
-                        if modality in emb_forward and modality in emb_reverse:
-                            embeddings[modality] = 0.5 * (emb_forward[modality] + emb_reverse[modality])
+                    for mod in active_model_mods:
+                        if mod in emb_forward and mod in emb_reverse:
+                            embeddings[mod] = 0.5 * (emb_forward[mod] + emb_reverse[mod])
             else:
                 embeddings = model.get_embeddings(
                     X,
@@ -443,15 +488,17 @@ def main():
             spec_pooled = None
             
             # DYNAMIC MODALITY PROCESSING
-            for modality in active_mods:
-                if modality in embeddings:
-                    method = args.pool_method_img if modality == 'images' else args.pool_method_spec
-                    pooled_tensor = apply_pooling(embeddings[modality], method=method)
+            # Map model keys back to canonical names for memmap storage.
+            for mod in active_model_mods:
+                if mod in embeddings:
+                    canon = mod_to_canonical[mod]
+                    method = args.pool_method_img if canon == 'images' else args.pool_method_spec
+                    pooled_tensor = apply_pooling(embeddings[mod], method=method)
                     
-                    if modality == 'images': img_pooled = pooled_tensor 
+                    if canon == 'images': img_pooled = pooled_tensor 
                     else: spec_pooled = pooled_tensor
                         
-                    mmaps[modality][start_idx:end_idx] = pooled_tensor.float().cpu().numpy()
+                    mmaps[canon][start_idx:end_idx] = pooled_tensor.float().cpu().numpy()
 
             # Hybrid Joint Embedding (Only if multimodal)
             if is_multimodal and 'joint' in mmaps:
@@ -487,8 +534,8 @@ def main():
     logger.info("Preparing files for PCA and .npz packaging...")
     
     final_paths = {'targetid': save_path / "ids.npy"}
-    for mod in active_mods:
-        final_paths[mod] = save_path / f"{mod}.npy"
+    for canon_name in active_canonical_mods:
+        final_paths[canon_name] = save_path / f"{canon_name}.npy"
     if is_multimodal:
         final_paths['joint'] = save_path / "joint.npy"
 
@@ -513,7 +560,9 @@ def main():
     metadata = {
         "ckpt_name": args.ckpt_name,
         "resolved_checkpoint": str(ckpt_path),
-        "active_modalities": active_mods,
+        "active_modalities_canonical": active_canonical_mods,
+        "active_modalities_model": active_model_mods,
+        "tokenization_mode": "discrete" if is_discrete else "continuous",
         "is_multimodal": is_multimodal,
         "pool_method_img": args.pool_method_img,
         "pool_method_spec": args.pool_method_spec,
