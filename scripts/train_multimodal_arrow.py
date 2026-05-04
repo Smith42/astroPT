@@ -145,7 +145,7 @@ class TrainingConfig:
     spectra_inverse: bool = False           # Reading spectra from red to blue 
     spectra_size: int = 7781                # Spectra total size
     spectra_patch_size: int = 10            # Patch size for each spectrum
-    spectra_loss_weight: float = 1.0        # Spectra importance for training 
+    spectra_loss_weight: float = 4.0        # Spectra importance for training 
     spectra_embed_pos: bool = True          # Spectra embedding positions learning
     spectra_pos_input_size: int = 1         # Spectra position input size
     spectra_norm_type: str = "asinh"        # Normalization method: constant, z_score or asinh
@@ -183,7 +183,7 @@ class TrainingConfig:
     log_interval: int = 200                 # How often to print to console/WandB
     checkpoint_interval: int = 1_000        # How often to save .pt files
     checkpoint_save_type: str = "both"      # Checkpoint saving mode: best, last, both or all
-    early_stopping_patience: int = 10       # Stop if no improvement after N evals
+    early_stopping_patience: int = 15       # Stop if no improvement after N evals
 
     #--- System & Backend ---#
     device: str = "cuda"                    # CPU/GPU device interface: cpu, cuda or mps
