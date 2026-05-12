@@ -568,13 +568,25 @@ def main():
     if args.plot_visual or args.plot_spectral:
         logger.info("Bypassing DataLoader logic and loading raw Arrow files directly...")
         
+        from datasets import Dataset
         test_dirs = sorted(data_dir.glob("test_*"))
         if not test_dirs:
             test_dirs = [data_dir / "test"] 
             
         logger.info(f"Loading {len(test_dirs)} Arrow parts directly to avoid unimodal filters...")
         
-        loaded_parts = [load_from_disk(str(d)) for d in test_dirs]
+        loaded_parts = []
+        for d in test_dirs:
+            files = sorted([str(f) for f in d.glob("*.arrow")])
+            if files:
+                logger.info(f" --> Loading {len(files)} files from {d.name}...")
+                for f in files:
+                    loaded_parts.append(Dataset.from_file(f))
+        
+        if not loaded_parts:
+            logger.error(f"No .arrow files found in {data_dir}")
+            sys.exit(1)
+
         raw_hf_ds = concatenate_datasets(loaded_parts)
         
         class RawArrowWrapper:

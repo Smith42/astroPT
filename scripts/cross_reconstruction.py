@@ -36,6 +36,19 @@ from tqdm import tqdm
 from astropt.euclid_desi_arrow_dataloader import EuclidDESIDatasetArrow
 from astropt.model_utils import load_local_model
 
+import os
+# Add workspace roots to path for AION and FMB
+WORKSPACE_ROOT = "/home/valonso/iac18_mhuertas_shared/valonso"
+sys.path.append(os.path.join(WORKSPACE_ROOT, "AION"))
+sys.path.append(os.path.join(WORKSPACE_ROOT, "foundation-models-benchmark/src"))
+
+from astropt.aion_tokeniser import MultiprocessCodecManager
+try:
+    from astropt.resnet_adapter import EuclidImage
+    from aion.modalities import DESISpectrum
+except ImportError:
+    logger.warning("Could not import AION modalities from fmb. Check paths.")
+
 # Logger Configuration
 logging.basicConfig(
     format="[%(asctime)s] [%(levelname)s] %(message)s",
@@ -398,14 +411,12 @@ def reconstruct_image_from_patches(
     if grid_side * grid_side != seq_len:
         return np.zeros((channels, grid_side*p_size, grid_side*p_size))
 
-    # 1. Deshacemos la espiral para volver a orden raster (solo si aplica)
     if apply_antispiral:
         spiral_indices = get_spiral_indices(grid_side)
         raster_patches = patch_sequence[spiral_indices]
     else:
         raster_patches = patch_sequence
-    
-    # 2. Reconstrucción con el orden EXACTO del dataloader: (p1 p2 c)
+
     image = einops.rearrange(
         raster_patches, 
         '(h w) (p1 p2 c) -> c (h p1) (w p2)', 
@@ -415,9 +426,7 @@ def reconstruct_image_from_patches(
 
 def denormalize(data: np.ndarray, method: str, scaler: float, const: float) -> np.ndarray:
     if method == "asinh": 
-        # Inversa matemática estricta: si y = asinh(x * const) / scaler 
-        # entonces x = sinh(y * scaler) / const
-        return np.sinh(data * scaler) / const
+        return scaler * np.sinh(data * const)
     elif method == "constant": 
         return data * const
     return data
@@ -457,37 +466,62 @@ def generate_autoregressive(
     max_len: int,
     device: torch.device,
     cond_mod: Optional[str] = None,
+    modality_registry: Optional[Any] = None,
 ) -> np.ndarray:
     """
     Generates a modality autoregressively from a single seed token.
     If cond_mod is provided, generation is cross-modal; otherwise it is self-modal.
     """
     
-    # We DO NOT turn off token mixing. If the model was trained with it, the latent
-    # topology expects the interleaved sequence. We will instead trick the model
-    # into giving us the next token by appending a "dummy" target token during 
-    # cross-modal generation so that its hidden state aligns exactly with predicting the next token.
+    # Check if target is discrete
+    is_discrete = False
+    if modality_registry:
+        m_config = modality_registry.get_config(target_mod)
+        is_discrete = getattr(m_config, 'tokenizer_method', 'continuous') == 'discrete' or getattr(m_config, 'vocab_size', 0) > 0
+
+    # Safety: ensure any discrete modalities in X_full are 2D
+    for mod_name in X_full:
+        if modality_registry and mod_name in modality_registry.modalities:
+            mc = modality_registry.get_config(mod_name)
+            if getattr(mc, 'vocab_size', 0) > 0:
+                if isinstance(X_full[mod_name], torch.Tensor) and X_full[mod_name].ndim == 3:
+                    X_full[mod_name] = X_full[mod_name].squeeze(-1)
 
     model.eval()
     with torch.no_grad():
         if cond_mod is not None:
             # To predict the very first target token (Target_0) cleanly, 
             # we provide the full cond_mod sequence and a 1-length dummy target_mod.
-            Target_dummy = torch.zeros_like(X_full[target_mod][:, 0:1, :])
+            if is_discrete:
+                Target_dummy = torch.zeros_like(X_full[target_mod][:, 0:1])
+            else:
+                Target_dummy = torch.zeros_like(X_full[target_mod][:, 0:1, :])
+            
+            # Ensure discrete tokens are (B, L) for the model
+            mod_tokens_init = Target_dummy
+            if is_discrete and mod_tokens_init.ndim == 3:
+                mod_tokens_init = mod_tokens_init.squeeze(-1)
+
             X_init = {
                 cond_mod: X_full[cond_mod], 
                 f"{cond_mod}_positions": X_full[f"{cond_mod}_positions"],
-                target_mod: Target_dummy,
+                target_mod: mod_tokens_init,
                 f"{target_mod}_positions": X_full[f"{target_mod}_positions"][:, 0:1]
             }
-            outputs, _ = model(X_init)
+            # We pass a copy of targets to avoid internal re-indexing affecting the original dict
+            outputs, _ = model(X_init, targets=X_init.copy())
             Target_0 = outputs[target_mod][:, -1:, :]
+            if is_discrete: Target_0 = Target_0.argmax(dim=-1, keepdim=True) # (B, 1, 1)
             generated_tokens = [Target_0]
         else:
             # Self-Generation:
             # Since there is no conditioning context and no discrete <BOS> token for continuous patches, 
             # we MUST seed the sequence with the real first token (typically the top-left sky patch).
-            generated_tokens = [X_full[target_mod][:, 0:1, :]]
+            # Note: generated_tokens will store (B, 1, D) for continuous or (B, 1, 1) for discrete
+            # X_full[target_mod] is (B, L) for discrete or (B, L, D) for continuous
+            t0 = X_full[target_mod][:, 0:1]
+            if is_discrete and t0.ndim == 2: t0 = t0.unsqueeze(-1)
+            generated_tokens = [t0]
 
         for step in tqdm(range(max_len - 1), desc=f"Generating {target_mod.upper()}", leave=False):
             X_current = {}
@@ -499,14 +533,19 @@ def generate_autoregressive(
             # Target history built autoregressively
             curr_tokens = torch.cat(generated_tokens, dim=1)
             
-            if cond_mod is not None:
-                # Add a dummy token so `outputs[target_mod]` captures the prediction for the NEXT step.
-                Target_dummy = torch.zeros_like(curr_tokens[:, 0:1, :])
-                curr_tokens_with_dummy = torch.cat([curr_tokens, Target_dummy], dim=1)
+            # Retrieve CLS config
+            cls_pos = getattr(model.config, 'cls_position', 'last').lower()
+            use_cls = getattr(model.config, 'use_cls_token', False)
+
+            # ALWAYS add a dummy token so the model has a slot to predict the NEXT token.
+            # In 'first' mode, Input [CLS, T1...Tn, Dummy] -> H_n predicts Dummy.
+            # In 'last' mode,  Input [T1...Tn, Dummy, CLS] -> H_n predicts Dummy.
+            # In both cases, the prediction for Tn+1 is the output at index Tn.
+            if is_discrete:
+                Target_dummy = torch.zeros_like(curr_tokens[:, 0:1])
             else:
-                # In self-generation (batch_modes=1), predicting the next token works naturally
-                # from the last actual sequence token without needing a dummy.
-                curr_tokens_with_dummy = curr_tokens
+                Target_dummy = torch.zeros_like(curr_tokens[:, 0:1, :])
+            curr_tokens_with_dummy = torch.cat([curr_tokens, Target_dummy], dim=1)
                 
             real_len = curr_tokens_with_dummy.shape[1]
 
@@ -517,7 +556,12 @@ def generate_autoregressive(
                 extra = torch.arange(input_pos.shape[1], real_len, device=device).unsqueeze(0)
                 input_pos = torch.cat([input_pos, extra], dim=1)
 
-            X_current[target_mod] = curr_tokens_with_dummy
+            # Ensure discrete tokens are (B, L) for the model, not (B, L, 1)
+            model_tokens = curr_tokens_with_dummy
+            if is_discrete and model_tokens.ndim == 3:
+                model_tokens = model_tokens.squeeze(-1)
+
+            X_current[target_mod] = model_tokens
             X_current[f"{target_mod}_positions"] = input_pos
 
             # Forward pass
@@ -525,6 +569,8 @@ def generate_autoregressive(
 
             # Next token is always read from the latest output slot.
             next_token = outputs[target_mod][:, -1:, :]
+            if is_discrete: 
+                next_token = next_token.argmax(dim=-1, keepdim=True) # (B, 1, 1)
             generated_tokens.append(next_token)
             
     full_sequence = torch.cat(generated_tokens, dim=1)
@@ -538,8 +584,23 @@ def postprocess_spectrum(
     norm_type_spec: str,
     norm_scaler_spec: float,
     norm_const_spec: float,
+    codec_manager: Optional[MultiprocessCodecManager] = None,
+    is_discrete: bool = False,
 ) -> np.ndarray:
-    spec_pred = denormalize(pred_spec_seq.flatten(), norm_type_spec, norm_scaler_spec, norm_const_spec)
+    if is_discrete and codec_manager is not None:
+        # Discrete AION Reconstruction
+        tokens_dict = {DESISpectrum.token_key: torch.from_numpy(pred_spec_seq).long().unsqueeze(0).squeeze(-1)}
+        try:
+            decoded_spec = codec_manager.decode(tokens_dict, DESISpectrum)
+            spec_pred = decoded_spec.flux.float().detach().cpu().numpy().flatten()
+            # AION decodes to normalized space, so we must denormalize
+            spec_pred = denormalize(spec_pred, norm_type_spec, norm_scaler_spec, norm_const_spec)
+        except Exception as e:
+            logger.error(f"AION Spectrum decoding failed: {e}")
+            spec_pred = np.zeros_like(wave_ang)
+    else:
+        spec_pred = denormalize(pred_spec_seq.flatten(), norm_type_spec, norm_scaler_spec, norm_const_spec)
+    
     spec_pred = spec_pred[: len(wave_ang)]
     if inverse_spec:
         spec_pred = spec_pred[::-1]
@@ -554,17 +615,41 @@ def postprocess_image_prediction(
     norm_scaler_img: float,
     norm_const_img: float,
     img_gt_raw: np.ndarray,
+    codec_manager: Optional[MultiprocessCodecManager] = None,
+    is_discrete: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    img_pred_phys = denormalize(
-        reconstruct_image_from_patches(
-            pred_img_seq,
-            img_config,
-            apply_antispiral=apply_antispiral,
-        ),
-        norm_type_img,
-        norm_scaler_img,
-        norm_const_img,
-    )
+    if is_discrete and codec_manager is not None:
+        # Discrete AION Reconstruction
+        tokens_dict = {EuclidImage.token_key: torch.from_numpy(pred_img_seq).long().unsqueeze(0).squeeze(-1)}
+        try:
+            decoded_img = codec_manager.decode(tokens_dict, EuclidImage)
+            img_pred_norm = decoded_img.flux.float().detach().cpu().numpy()
+            if img_pred_norm.ndim == 4: img_pred_norm = img_pred_norm[0]
+            
+            # AION decodes to normalized space, so we must denormalize
+            img_pred_phys = denormalize(img_pred_norm, norm_type_img, norm_scaler_img, norm_const_img)
+            
+            # Align channels (AION may return 9 bands, Euclid has 4)
+            if img_pred_phys.shape[0] != img_gt_raw.shape[0]:
+                if img_pred_phys.shape[0] > img_gt_raw.shape[0]:
+                    img_pred_phys = img_pred_phys[:img_gt_raw.shape[0]]
+                else:
+                    pad = np.zeros((img_gt_raw.shape[0] - img_pred_phys.shape[0], *img_pred_phys.shape[1:]))
+                    img_pred_phys = np.concatenate([img_pred_phys, pad], axis=0)
+        except Exception as e:
+            logger.error(f"AION Image decoding failed: {e}")
+            img_pred_phys = np.zeros_like(img_gt_raw)
+    else:
+        img_pred_phys = denormalize(
+            reconstruct_image_from_patches(
+                pred_img_seq,
+                img_config,
+                apply_antispiral=apply_antispiral,
+            ),
+            norm_type_img,
+            norm_scaler_img,
+            norm_const_img,
+        )
 
     RGB_WEIGHTS = [1.2, 1.3, 1.0]
     bg_val = np.percentile(img_gt_raw, 50, axis=(1, 2), keepdims=True)
@@ -599,13 +684,19 @@ def postprocess_image_prediction(
     rgb_gt = make_rgb_lupton(rgb_input_gt, Q=12.0, stretch=0.5)
     rgb_pred = make_rgb_lupton(rgb_input_pred, Q=12.0, stretch=0.5)
 
-    if img_gt_raw.shape == img_pred_phys.shape:
-        res_map = np.mean(img_gt_raw - img_pred_phys, axis=0)
+    # Residuals with Auto-Resize
+    if img_gt_raw.shape != img_pred_phys.shape:
+        try:
+            import torch.nn.functional as F
+            tmp_raw = torch.from_numpy(img_gt_raw).float().unsqueeze(0)
+            tmp_raw = F.interpolate(tmp_raw, size=img_pred_phys.shape[1:], mode='bilinear', align_corners=False)
+            gt_resized = tmp_raw.squeeze(0).numpy()
+            res_map = np.mean(gt_resized - img_pred_phys, axis=0)
+        except Exception as e:
+            logger.warning(f"Shape mismatch and resize error: {e}")
+            res_map = np.zeros((img_pred_phys.shape[1], img_pred_phys.shape[2]))
     else:
-        logger.warning(
-            f"Shape mismatch: GT {img_gt_raw.shape} vs Pred {img_pred_phys.shape}. Using zero residual map."
-        )
-        res_map = np.zeros((img_gt_raw.shape[1], img_gt_raw.shape[2]))
+        res_map = np.mean(img_gt_raw - img_pred_phys, axis=0)
 
     return rgb_gt, rgb_pred, res_map, img_pred_phys
 
@@ -639,7 +730,8 @@ def plot_reconstruction_dashboard(
     ax2.axis('off')
     
     ax3 = fig.add_subplot(gs[0, 2])
-    vlim = np.percentile(np.abs(res_map), 98)
+    vlim = np.percentile(np.abs(res_map), 99)
+    if vlim <= 0: vlim = 1e-3
     im = ax3.imshow(res_map, origin='lower', cmap='seismic', vmin=-vlim, vmax=vlim)
     ax3.set_title(r"\textbf{Residuals (Physical)}")
     ax3.axis('off')
@@ -718,9 +810,18 @@ def main():
         logger.critical(f"Model load failed: {e}")
         sys.exit(1)
         
-    img_config = registry.get_config("images")
+    img_config = registry.get_config("aion_images" if "aion_images" in registry.modalities else "images")
     data_dir = Path(raw_config_dict.get('data_dir', args.data_dir))
     
+    # Initialize Codec Manager for AION modalities (if any)
+    codec_manager = MultiprocessCodecManager(
+        resnet_weights_path=raw_config_dict.get("images_resnet_weights_path")
+    )
+    
+    # Identify actual modality keys
+    img_key = 'aion_images' if 'aion_images' in registry.modalities else 'images'
+    spec_key = 'aion_spectra' if 'aion_spectra' in registry.modalities else 'spectra'
+
     # Transforms & Dataloader setup
     # Recuperamos los parámetros exactos del config.json del .pt
     norm_type_img = raw_config_dict.get('images_norm_type', 'asinh')
@@ -799,23 +900,24 @@ def main():
         if device.type == 'cpu':
             for k, v in X.items():
                 if isinstance(v, torch.Tensor):
-                    if 'positions' in k:
+                    is_discrete_mod = any(dk in k for dk in [img_key, spec_key])
+                    if 'positions' in k or is_discrete_mod:
                         X[k] = v.to(torch.long)
                     else:
                         X[k] = v.to(torch.float32)
 
-        if 'images' not in X or 'spectra' not in X:
+        if img_key not in X or spec_key not in X:
             logger.warning("Missing modalities in batch. Skipping.")
             continue
             
         # Filtro de seguridad por si alguna galaxia viene vacía desde el catálogo
-        if X['images'].shape[1] == 0 or X['spectra'].shape[1] == 0:
+        if X[img_key].shape[1] == 0 or X[spec_key].shape[1] == 0:
             logger.warning(f"Target ID {target_id} is missing data. Skipping.")
             continue
 
         # Sequence lengths
-        max_img_len = X['images'].shape[1]
-        max_spec_len = X['spectra'].shape[1]
+        max_img_len = X[img_key].shape[1]
+        max_spec_len = X[spec_key].shape[1]
 
         with ctx:
             # Cross-modal generation
@@ -823,20 +925,22 @@ def main():
             pred_spec_seq_cross = generate_autoregressive(
                 model=model,
                 X_full=X,
-                target_mod='spectra',
+                target_mod=spec_key,
                 max_len=max_spec_len,
                 device=device,
-                cond_mod='images',
+                cond_mod=img_key,
+                modality_registry=registry,
             )
             
             logger.info(" --> Generating Image from Spectrum...")
             pred_img_seq_cross = generate_autoregressive(
                 model=model,
                 X_full=X,
-                target_mod='images',
+                target_mod=img_key,
                 max_len=max_img_len,
                 device=device,
-                cond_mod='spectra',
+                cond_mod=spec_key,
+                modality_registry=registry,
             )
 
             # Self-modal generation
@@ -844,26 +948,34 @@ def main():
             pred_spec_seq_self = generate_autoregressive(
                 model=model,
                 X_full=X,
-                target_mod='spectra',
+                target_mod=spec_key,
                 max_len=max_spec_len,
                 device=device,
                 cond_mod=None,
+                modality_registry=registry,
             )
 
             logger.info(" --> Generating Image from itself...")
             pred_img_seq_self = generate_autoregressive(
                 model=model,
                 X_full=X,
-                target_mod='images',
+                target_mod=img_key,
                 max_len=max_img_len,
                 device=device,
                 cond_mod=None,
+                modality_registry=registry,
             )
             
         # --- DATA POST-PROCESSING (De-normalization & Formatting) ---
         raw_record = ds.ds[int(batch['idx'][0])]
         wave_ang = np.array(raw_record['spectrum_wave']).flatten()
         spec_gt_raw = np.array(raw_record['spectrum_flux']).flatten()
+        
+        m_spec = registry.get_config(spec_key)
+        is_discrete_spec = getattr(m_spec, 'tokenizer_method', 'continuous') == 'discrete' or getattr(m_spec, 'vocab_size', 0) > 0
+        
+        m_img = registry.get_config(img_key)
+        is_discrete_img = getattr(m_img, 'tokenizer_method', 'continuous') == 'discrete' or getattr(m_img, 'vocab_size', 0) > 0
         
         spec_pred_cross = postprocess_spectrum(
             pred_spec_seq_cross,
@@ -872,6 +984,8 @@ def main():
             norm_type_spec,
             norm_scaler_spec,
             norm_const_spec,
+            codec_manager=codec_manager,
+            is_discrete=is_discrete_spec,
         )
         spec_pred_self = postprocess_spectrum(
             pred_spec_seq_self,
@@ -880,6 +994,8 @@ def main():
             norm_type_spec,
             norm_scaler_spec,
             norm_const_spec,
+            codec_manager=codec_manager,
+            is_discrete=is_discrete_spec,
         )
         
         min_l = min(len(spec_gt_raw), len(spec_pred_cross), len(spec_pred_self), len(wave_ang))
@@ -895,6 +1011,8 @@ def main():
             norm_scaler_img,
             norm_const_img,
             img_gt_raw,
+            codec_manager=codec_manager,
+            is_discrete=is_discrete_img,
         )
         rgb_gt_self, rgb_pred_self, res_map_self, img_pred_self_phys = postprocess_image_prediction(
             pred_img_seq_self,
@@ -904,6 +1022,8 @@ def main():
             norm_scaler_img,
             norm_const_img,
             img_gt_raw,
+            codec_manager=codec_manager,
+            is_discrete=is_discrete_img,
         )
 
         # FILENAME AND SUFFIX LOGIC

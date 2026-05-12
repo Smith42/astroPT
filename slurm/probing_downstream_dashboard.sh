@@ -117,14 +117,18 @@ else
   # Define the past baseline runs you want to compare
   # The python script will automatically find their downstream_results.csv and their names!
   RUNS_TO_COMPARE=(
-    "${LOGS_BASE}/astropt_100M_250K_arrow_20260408_baseline_images/"
+    "${LOGS_BASE}/astropt_100M_250K_arrow_20260408_baseline_images"
+    "${LOGS_BASE}/resnet18_images_supervised/embeddings/embeddings_all_targets_resnet18"
     "${LOGS_BASE}/astropt_100M_250K_arrow_20260409_baseline_spectra"
+    "${LOGS_BASE}/spectra_supervised_baseline/embeddings/embeddings_all_targets_specsupervised"
+    "${LOGS_BASE}/astroclip_20260422_matchingastropt/embeddings/astroclip-step0031000-valloss0.6454"
     #"${LOGS_BASE}/astropt_100M_250K_arrow_20260407_tokmix5_mask0p25"
     "${LOGS_BASE}/astropt_100M_250K_arrow_20260411_tokmixran_crossrecloss_longblocks"
     #"${LOGS_BASE}/astropt_100M_250K_arrow_20260412_tokmixran_crossrecloss_longblocks_dsinter"
     #"${LOGS_BASE}/astropt_100M_250K_arrow_20260413_tokmix16_crossrecloss_longblocks_dsinter"
     "${LOGS_BASE}/astropt_100M_250K_arrow_20260414_tokmix16_crossrecloss_dsinter_smallmod"
-    "${LOGS_BASE}/astropt_100M_250K_arrow_20260416_tokmix16_crossrecloss_dsinter_smallmod_shufftrue"
+    #"${LOGS_BASE}/astropt_100M_250K_arrow_20260416_tokmix16_crossrecloss_dsinter_smallmod_shufftrue"
+    #"${LOGS_BASE}/astropt_100M_250K_arrow_20260504_60m_tokmix16_cls_distok"
   )
 
   # Auto-add the CURRENT run being evaluated by the automated SLURM pipeline

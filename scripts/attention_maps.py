@@ -120,10 +120,22 @@ def reorder_modal_inputs(
     return ordered
 
 
-def get_interleaved_masks(l1, l2, block_size):
-    """Reconstructs modality masks for interleaved sequences."""
+def get_modality_keys(inputs: dict[str, torch.Tensor]):
+    """Helper to detect modality names dynamically (handles 'images' vs 'aion_images')."""
+    img_key = next((k for k in inputs.keys() if "image" in k and not k.endswith("_positions")), "images")
+    spec_key = next((k for k in inputs.keys() if "spec" in k and not k.endswith("_positions")), "spectra")
+    return img_key, spec_key
+
+
+def get_interleaved_masks(l1, l2, block_size, has_cls=False, cls_position="last"):
+    """Reconstructs modality masks for interleaved sequences, accounting for [CLS]."""
     idx = []
     i1, i2 = 0, 0
+    
+    # [CLS] position handling
+    if has_cls and cls_position == "first":
+        idx.append(-1) # Placeholder for CLS index
+
     while i1 < l1 or i2 < l2:
         if i1 < l1:
             c1 = min(block_size, l1 - i1)
@@ -133,11 +145,25 @@ def get_interleaved_masks(l1, l2, block_size):
             c2 = min(block_size, l2 - i2)
             idx.extend(range(l1 + i2, l1 + i2 + c2))
             i2 += c2
+            
+    if has_cls and cls_position == "last":
+        idx.append(-1)
     
     interleaved_idx = np.array(idx)
-    is_mod1 = interleaved_idx < l1
-    is_mod2 = interleaved_idx >= l1
-    return interleaved_idx, is_mod1, is_mod2
+    
+    if has_cls:
+        # Indices in the concatenated tensor (0 is CLS, then image tokens 1:L1+1, then spec L1+1:)
+        # But wait, logic depends on how the model concatenates.
+        # In AstroPTEmbeddingLayer: [CLS, Mod1, Mod2]
+        # In Token Mixing: [CLS, Interleaved(Mod1, Mod2)]
+        is_cls = interleaved_idx == -1
+        is_mod1 = (interleaved_idx >= 0) & (interleaved_idx < l1)
+        is_mod2 = interleaved_idx >= l1
+        return interleaved_idx, is_cls, is_mod1, is_mod2
+    else:
+        is_mod1 = interleaved_idx < l1
+        is_mod2 = interleaved_idx >= l1
+        return interleaved_idx, None, is_mod1, is_mod2
 
 
 def plot_cross_attention_single(
@@ -440,7 +466,13 @@ def main():
         modality_registry=registry,
         spiral=False,
         stochastic=False,
+        use_pretokenized=raw_config_dict.get("use_pretokenized", False),
+        resnet_weights_path=raw_config_dict.get("images_resnet_weights_path"),
     )
+    
+    img_key, spec_key = get_modality_keys(ds[0])
+    has_cls = getattr(config, 'use_cls_token', False)
+    logger.info(f"Detected Modalities: Img={img_key}, Spec={spec_key} | CLS={has_cls}")
 
     # Build index list: targeted IDs first, then random fill (same as plot_images_spectra.py)
     indices_to_plot = []
@@ -483,27 +515,34 @@ def main():
         z_val = float(raw_record.get('redshift', 0.0))
 
         # 2. Process data
-        B = EuclidDESIDatasetArrow.process_modes(batch, registry, device, use_token_mixing=use_token_mixing)
+        B = EuclidDESIDatasetArrow.process_modes(
+            batch, registry, device, 
+            use_token_mixing=use_token_mixing,
+            use_cls_token=has_cls,
+            cls_position=getattr(config, 'cls_position', 'last')
+        )
 
         if n_img_tokens is None:
-            n_img_tokens = B["X"]["images"].shape[1]
-            n_spec_tokens = B["X"]["spectra"].shape[1]
+            n_img_tokens = B["X"][img_key].shape[1]
+            n_spec_tokens = B["X"][spec_key].shape[1]
             logger.info(f"Token layout: Images={n_img_tokens}, Spectra={n_spec_tokens}")
 
         # 3. Forward Pass Logic
         if args.bidirectional and not use_token_mixing:
             # --- Pass 1: Images -> Spectra (Extraction of Spectra looking at Images) ---
-            X1 = reorder_modal_inputs(B["X"], ["images", "spectra"])
+            X1 = reorder_modal_inputs(B["X"], [img_key, spec_key])
             with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                model(X1, targets=None)
+                # Pass a copy of the inputs as targets to allow internal re-indexing for extraction
+                model(X1, targets=X1.copy())
             
             # Save ALL layers from Pass 1 for the average plot
             layers_attn1 = [block.attn.extracted_attention[0].mean(dim=0).float().numpy() for block in model.transformer.h]
             
             # --- Pass 2: Spectra -> Images (Extraction of Images looking at Spectra) ---
-            X2 = reorder_modal_inputs(B["X"], ["spectra", "images"])
+            X2 = reorder_modal_inputs(B["X"], [spec_key, img_key])
             with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                model(X2, targets=None)
+                # Pass a copy of the inputs as targets to allow internal re-indexing for extraction
+                model(X2, targets=X2.copy())
             
             # Save ALL layers from Pass 2 for the average plot
             layers_attn2 = [block.attn.extracted_attention[0].mean(dim=0).float().numpy() for block in model.transformer.h]
@@ -530,19 +569,34 @@ def main():
         else:
             # Single pass / Token Mixing logic
             with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                model(B["X"], targets=None)
+                # Pass a copy of the inputs as targets to allow internal re-indexing for extraction
+                model(B["X"], targets=B["X"].copy())
             last_attn = model.transformer.h[-1].attn.extracted_attention[0].mean(dim=0).float().numpy()
             
             if use_token_mixing:
                 block_size = raw_config_dict.get('token_mixing_block_size', 5)
-                _, is_img, is_spec = get_interleaved_masks(n_img_tokens, n_spec_tokens, block_size)
+                cls_pos = getattr(config, 'cls_position', 'last').lower()
+                _, is_cls, is_img, is_spec = get_interleaved_masks(
+                    n_img_tokens, n_spec_tokens, block_size, has_cls=has_cls, cls_position=cls_pos
+                )
                 
                 # Deinterleave the matrix so the plotting functions can slice it naively
+                offset = 1 if has_cls and cls_pos == 'first' else 0
                 deinterleaved_attn = np.zeros_like(last_attn)
-                deinterleaved_attn[:n_img_tokens, :n_img_tokens] = last_attn[is_img][:, is_img]
-                deinterleaved_attn[n_img_tokens:, :n_img_tokens] = last_attn[is_spec][:, is_img]
-                deinterleaved_attn[:n_img_tokens, n_img_tokens:] = last_attn[is_img][:, is_spec]
-                deinterleaved_attn[n_img_tokens:, n_img_tokens:] = last_attn[is_spec][:, is_spec]
+                
+                if has_cls:
+                    cls_idx = 0 if cls_pos == 'first' else -1
+                    deinterleaved_attn[cls_idx, :] = last_attn[cls_idx, :]
+                    deinterleaved_attn[:, cls_idx] = last_attn[:, cls_idx]
+                
+                # Slices for images and spectra in the deinterleaved matrix
+                img_slice = slice(offset, offset + n_img_tokens)
+                spec_slice = slice(offset + n_img_tokens, offset + n_img_tokens + n_spec_tokens)
+                
+                deinterleaved_attn[img_slice, img_slice] = last_attn[is_img][:, is_img]
+                deinterleaved_attn[spec_slice, img_slice] = last_attn[is_spec][:, is_img]
+                deinterleaved_attn[img_slice, spec_slice] = last_attn[is_img][:, is_spec]
+                deinterleaved_attn[spec_slice, spec_slice] = last_attn[is_spec][:, is_spec]
                 last_attn = deinterleaved_attn
 
                 # Update per-layer averages using masks
@@ -552,10 +606,21 @@ def main():
                     avg_per_layer_i2s[i] += layer_attn[is_img][:, is_spec].mean()
             else:
                 # Update per-layer averages (Standard Causal)
+                cls_pos = getattr(config, 'cls_position', 'last').lower()
+                off_q = 1 if has_cls and cls_pos == 'first' else 0
+                
                 for i, block in enumerate(model.transformer.h):
                     layer_attn = block.attn.extracted_attention[0].mean(dim=0).float().numpy()
-                    avg_per_layer_s2i[i] += layer_attn[n_img_tokens:, :n_img_tokens].mean()
-                    avg_per_layer_i2s[i] += layer_attn[:n_img_tokens, n_img_tokens:].mean()
+                    # Images -> Spectra: Queries are Spectra (starting after Images + optional CLS)
+                    # Indices: [off_q + n_img : off_q + n_img + n_spec]
+                    q_spec = slice(off_q + n_img_tokens, off_q + n_img_tokens + n_spec_tokens)
+                    k_img = slice(off_q, off_q + n_img_tokens)
+                    avg_per_layer_s2i[i] += layer_attn[q_spec, k_img].mean()
+                    
+                    # Spectra -> Images: Queries are Images (starting at off_q)
+                    q_img = slice(off_q, off_q + n_img_tokens)
+                    k_spec = slice(off_q + n_img_tokens, off_q + n_img_tokens + n_spec_tokens)
+                    avg_per_layer_i2s[i] += layer_attn[q_img, k_spec].mean()
 
         # 4. Accumulate population average for the heatmap
         if avg_attn_last is None:

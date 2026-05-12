@@ -83,12 +83,20 @@ def parse_args() -> argparse.Namespace:
 def apply_pooling(tensor: torch.Tensor,
                   method: str = "mean", 
                   p_value: float = 2.0, 
-                  mixed_lambda: float = 0.5
+                  mixed_lambda: float = 0.5,
+                  cls_token: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
     """
     Applying different pooling methods.
     Reference: Gholamalinezhad & Khosravi (2020).
     """
+    if method == 'cls':
+        if cls_token is not None:
+            return cls_token.squeeze(1)
+        else:
+            logger.warning("CLS pooling requested but cls_token is None. Falling back to mean.")
+            return tensor.mean(dim=1)
+            
     if method == 'mean':
         # Average Pooling
         return tensor.mean(dim=1)
@@ -355,7 +363,7 @@ def main():
     ds_kwargs = {}
     if is_discrete:
         ds_kwargs['use_pretokenized'] = raw_config_dict.get('use_pretokenized', True)
-        ds_kwargs['unet_weights_path'] = raw_config_dict.get('images_unet_weights_path', 'logs/unet_adapter_weights/adapters_final.pt')
+        ds_kwargs['resnet_weights_path'] = raw_config_dict.get('images_resnet_weights_path', 'logs/resnet_adapter_weights/adapters_final.pt')
         ds_kwargs['aion_image_size'] = raw_config_dict.get('images_aion_image_size', 112)
         ds_kwargs['aion_image_transform'] = raw_config_dict.get('images_aion_image_transform', 'resize')
     
@@ -489,11 +497,12 @@ def main():
             
             # DYNAMIC MODALITY PROCESSING
             # Map model keys back to canonical names for memmap storage.
+            cls_token = embeddings.get("cls")
             for mod in active_model_mods:
                 if mod in embeddings:
                     canon = mod_to_canonical[mod]
                     method = args.pool_method_img if canon == 'images' else args.pool_method_spec
-                    pooled_tensor = apply_pooling(embeddings[mod], method=method)
+                    pooled_tensor = apply_pooling(embeddings[mod], method=method, cls_token=cls_token)
                     
                     if canon == 'images': img_pooled = pooled_tensor 
                     else: spec_pooled = pooled_tensor

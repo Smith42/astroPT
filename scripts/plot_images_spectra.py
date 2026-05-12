@@ -19,6 +19,7 @@ Date: March 2026
 import argparse
 import json
 import logging
+import os
 from pathlib import Path
 import sys
 from typing import Optional, Any
@@ -31,6 +32,15 @@ from torch.utils.data import DataLoader, Subset
 
 from astropt.euclid_desi_arrow_dataloader import EuclidDESIDatasetArrow
 from astropt.model_utils import load_local_model
+
+# Workspace Paths for AION and FMB Dependencies
+WORKSPACE_ROOT = "/home/valonso/iac18_mhuertas_shared/valonso"
+sys.path.append(os.path.join(WORKSPACE_ROOT, "AION"))
+sys.path.append(os.path.join(WORKSPACE_ROOT, "foundation-models-benchmark/src"))
+
+from astropt.aion_tokeniser import MultiprocessCodecManager
+from aion.modalities import DESISpectrum
+from astropt.resnet_adapter import EuclidImage
 
 # Logger Configuration
 logging.basicConfig(
@@ -141,11 +151,17 @@ def reconstruct_image_from_patches(
         channels = 4
         p_size = int(np.sqrt(patch_dim // channels))
         
-    grid_side = int(np.sqrt(seq_len))
-    
     if grid_side * grid_side != seq_len:
         logger.error(f"Cannot reconstruct: Sequence length {seq_len} is not a perfect square.")
         return np.zeros((channels, grid_side*p_size, grid_side*p_size))
+
+    # Handle Discrete Tokens (AION)
+    # If the patch_dim is the vocab_size (e.g. 64000), we cannot reshape into pixels.
+    if patch_dim > 1024: # Heuristic for discrete vocab
+        logger.warning(f"Detected discrete tokens (dim={patch_dim}). Reshaping as a token map instead of pixels.")
+        # We return a 1-channel "image" where each pixel is the token ID
+        token_map = patch_sequence.reshape(grid_side, grid_side)
+        return token_map[np.newaxis, :, :] # (1, H, W)
 
     # Anti-Spiral (only if data was generated in spiral order)
     if apply_antispiral:
@@ -231,6 +247,12 @@ def rebuild_full_sequence_from_teacher_forcing(
     - pred_len == input_len + 1: prediction is already full sequence (no prepend)
     - pred_len == input_len    : prepend first input token
     """
+    # Ensure input and pred have same ndim (e.g. if one is (B,L) and other (B,L,1))
+    if input_tokens.ndim < pred_tokens.ndim:
+        input_tokens = input_tokens.unsqueeze(-1)
+    elif pred_tokens.ndim < input_tokens.ndim:
+        pred_tokens = pred_tokens.unsqueeze(-1)
+
     input_len = int(input_tokens.shape[1])
     pred_len = int(pred_tokens.shape[1])
 
@@ -239,21 +261,23 @@ def rebuild_full_sequence_from_teacher_forcing(
 
     if pred_len >= input_len - 1:
         # Prepend first token if necessary (for causal shifted predictions)
-        # We handle cases where we might be slightly over/under due to token mixing/shifts
         diff = input_len - pred_len
         if diff > 0:
-            start_token = input_tokens[:, 0:diff, :]
+            start_token = input_tokens[:, 0:diff, ...]
             return torch.cat([start_token, pred_tokens], dim=1)
         else:
-            return pred_tokens[:, :input_len, :]
+            return pred_tokens[:, :input_len, ...]
 
     # Fallback for Token Mixing (Interleaved Sparse Outputs)
-    # If the prediction is too short, we return it as is but padded with zeros
-    # to avoid crashing. The actual fix is disabling mixing during inference.
     logger.warning(f"Unexpected lengths: {mode_name} input={input_len}, pred={pred_len}. Padding with zeros.")
-    padded = torch.zeros((pred_tokens.shape[0], input_len, pred_tokens.shape[-1]), device=pred_tokens.device)
+    
+    # Preserve dimensionality (2D for tokens, 3D for continuous patches)
+    full_shape = list(pred_tokens.shape)
+    full_shape[1] = input_len
+    padded = torch.zeros(tuple(full_shape), device=pred_tokens.device, dtype=pred_tokens.dtype)
+    
     actual_len = min(input_len, pred_len)
-    padded[:, :actual_len, :] = pred_tokens[:, :actual_len, :]
+    padded[:, :actual_len, ...] = pred_tokens[:, :actual_len, ...]
     return padded
 
 
@@ -312,6 +336,7 @@ def plot_dashboard(
         
         ax3 = fig.add_subplot(gs[0, 2])
         vlim = np.percentile(np.abs(res_map), 98) if res_map is not None else 1
+        if vlim <= 0: vlim = 1.0
         im = ax3.imshow(res_map, origin='lower', cmap='seismic', vmin=-vlim, vmax=vlim) # type: ignore
         ax3.set_title(r"\textbf{Residuals (Physical)}")
         ax3.axis('off')
@@ -341,6 +366,17 @@ def plot_dashboard(
     plt.savefig(save_path, format='png', dpi=300, bbox_inches='tight')
     plt.close()
     logger.info(f" --> Saved dashboard: {save_path}\n")
+
+
+def get_modality_keys(registry_or_inputs):
+    """Helper to detect modality names dynamically (handles 'images' vs 'aion_images')."""
+    if hasattr(registry_or_inputs, 'modalities'):
+        keys = registry_or_inputs.modalities.keys()
+    else:
+        keys = registry_or_inputs.keys()
+    img_key = next((k for k in keys if "image" in k and not k.endswith("_positions")), "images")
+    spec_key = next((k for k in keys if "spec" in k and not k.endswith("_positions")), "spectra")
+    return img_key, spec_key
 
 
 def main():
@@ -418,7 +454,9 @@ def main():
         logger.critical(f"Model load failed: {e}")
         sys.exit(1)
         
-    img_config = registry.get_config("images")
+    # Modality detection (from registry)
+    img_key, spec_key = get_modality_keys(registry)
+    img_config = registry.get_config(img_key)
     
     # Arrow data directory
     data_dir = args.data_dir if args.data_dir else raw_config_dict.get('data_dir')
@@ -426,14 +464,14 @@ def main():
     assert data_dir is not None, "data_dir cannot be None. Check your config.json or --data_dir argument."
     
     # Retrieve Normalization Constants
-    norm_type_img = raw_config_dict.get('images_norm_type', raw_config_dict.get('img_norm_type', 'asinh'))
-    norm_scaler_img=raw_config_dict.get('images_norm_scaler',raw_config_dict.get('img_norm_scaler',1.0))
-    norm_const_img = raw_config_dict.get('images_norm_const',raw_config_dict.get('img_norm_const',1.0))
+    norm_type_img = raw_config_dict.get(f'{img_key}_norm_type', raw_config_dict.get('img_norm_type', 'asinh'))
+    norm_scaler_img=raw_config_dict.get(f'{img_key}_norm_scaler',raw_config_dict.get('img_norm_scaler',1.0))
+    norm_const_img = raw_config_dict.get(f'{img_key}_norm_const',raw_config_dict.get('img_norm_const',1.0))
     
-    inverse_spec = raw_config_dict.get('spectra_inverse', False)
-    norm_type_spec = raw_config_dict.get('spectra_norm_type', 'constant')
-    norm_scaler_spec = raw_config_dict.get('spectra_norm_scaler',1.0)
-    norm_const_spec = raw_config_dict.get('spectra_norm_const', 1.0)
+    inverse_spec = raw_config_dict.get(f'{spec_key}_inverse', False)
+    norm_type_spec = raw_config_dict.get(f'{spec_key}_norm_type', 'constant')
+    norm_scaler_spec = raw_config_dict.get(f'{spec_key}_norm_scaler',1.0)
+    norm_const_spec = raw_config_dict.get(f'{spec_key}_norm_const', 1.0)
     
     # Aplying tranformations
     data_tf = EuclidDESIDatasetArrow.data_transforms(
@@ -446,6 +484,14 @@ def main():
     )
     
     apply_antispiral = bool(raw_config_dict.get('spiral', True))
+    
+    # Initialize AION Codec Manager for discrete reconstruction
+    codec_manager = MultiprocessCodecManager(
+        device=device,
+        resnet_weights_path=raw_config_dict.get("images_resnet_weights_path"),
+        aion_image_size=raw_config_dict.get("images_aion_image_size", 112),
+        aion_image_transform=raw_config_dict.get("images_aion_image_transform", "resize"),
+    )
 
     ds = EuclidDESIDatasetArrow(
         arrow_folder_root=data_dir,
@@ -479,30 +525,41 @@ def main():
     subset = Subset(ds, indices_to_plot)
     loader = DataLoader(subset, batch_size=1, shuffle=False, num_workers=2)
     
+    # Modality detection
+    has_cls = getattr(config, 'use_cls_token', False)
+    logger.info(f"Detected Modalities: Img={img_key}, Spec={spec_key} | CLS={has_cls}")
+
     # Plotting Loop
     for batch_idx, batch in enumerate(loader):
         logger.info(f"Plotting {batch_idx+1}/{len(indices_to_plot)}...")
         
-        processed = EuclidDESIDatasetArrow.process_modes(batch, registry, device, use_token_mixing=config.use_token_mixing)
+        processed = EuclidDESIDatasetArrow.process_modes(
+            batch, registry, device, 
+            use_token_mixing=config.use_token_mixing,
+            use_cls_token=has_cls,
+            cls_position=getattr(config, 'cls_position', 'last')
+        )
         X = processed['X']
         
         # Inference
         with torch.no_grad():
             if device.type == 'cuda':
                 with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16): # type: ignore
-                    outputs, _ = model(X)
+                    outputs, _ = model(X, targets=X.copy())
             else:
                 model.to(torch.float32)
                 X = {}
                 for k, v in processed['X'].items():
                     if isinstance(v, torch.Tensor):
-                        if k.endswith('_positions'):
+                        # Positions and discrete tokens must be Long
+                        is_discrete_mod = any(dk in k for dk in ["aion_images", "aion_spectra"])
+                        if k.endswith('_positions') or is_discrete_mod:
                             X[k] = v.to(torch.long)
                         else:
                             X[k] = v.to(torch.float32)
                     else:
                         X[k] = v
-                outputs, _ = model(X)
+                outputs, _ = model(X, targets=X.copy())
 
         # Raw data
         try:
@@ -518,7 +575,7 @@ def main():
         has_image = False
         rgb_gt = rgb_pred = res_map = None
         
-        if 'images' in outputs:
+        if img_key in outputs:
             def get_raw(k): 
                 val = raw_record[k]
                 return np.array(val if val is not None else [], dtype=np.float32)
@@ -528,26 +585,64 @@ def main():
             if vis.size > 0:
                 raw_stack = np.stack([vis, h, j, y], axis=0)
                 
-                pred_tokens = outputs['images']
-                full_seq = rebuild_full_sequence_from_teacher_forcing(
-                    input_tokens=X['images'],
+                pred_tokens = outputs[img_key]
+                if pred_tokens.shape[-1] > 1024:
+                    # Discrete case: take argmax
+                    pred_tokens = pred_tokens.argmax(dim=-1, keepdim=True)
+
+                full_seq_tensor = rebuild_full_sequence_from_teacher_forcing(
+                    input_tokens=X[img_key],
                     pred_tokens=pred_tokens,
-                    mode_name='images',
-                ).float().detach().cpu().numpy()[0]
-                
-                img_pred_model = reconstruct_image_from_patches(
-                    full_seq,
-                    img_config,
-                    apply_antispiral=apply_antispiral,
+                    mode_name=img_key,
                 )
                 
-                # Denormalize
-                img_pred_phys = denormalize(
-                    img_pred_model, 
-                    norm_type_img, 
-                    norm_scaler_img,
-                    norm_const_img
-                )
+                is_discrete = (full_seq_tensor.shape[-1] == 1)
+                
+                if is_discrete:
+                    # Discrete AION Reconstruction using Decoder
+                    tokens_dict = {EuclidImage.token_key: full_seq_tensor.squeeze(-1)} # (B, T)
+                    try:
+                        decoded_img = codec_manager.decode(tokens_dict, EuclidImage)
+                        # flux is (B, C, H, W)
+                        img_pred_phys = decoded_img.flux.float().detach().cpu().numpy()
+                        if img_pred_phys.ndim == 4: img_pred_phys = img_pred_phys[0]
+                        
+                        # Match channel count with GT (Euclid 4 bands: VIS, Y, J, H)
+                        # AION decoder may return all registered survey bands (e.g. 9 or 5)
+                        if img_pred_phys.shape[0] != raw_stack.shape[0]:
+                            logger.warning(f"Channel mismatch: AION={img_pred_phys.shape[0]}, GT={raw_stack.shape[0]}. Slicing/Padding.")
+                            if img_pred_phys.shape[0] > raw_stack.shape[0]:
+                                img_pred_phys = img_pred_phys[:raw_stack.shape[0]]
+                            else:
+                                pad = np.zeros((raw_stack.shape[0] - img_pred_phys.shape[0], *img_pred_phys.shape[1:]))
+                                img_pred_phys = np.concatenate([img_pred_phys, pad], axis=0)
+                        
+                        # AION decoder output is now in Euclid linear physical units
+                        logger.info(f"  [DIAG] Decoded img shape: {img_pred_phys.shape} | "
+                                    f"range: [{img_pred_phys.min():.4e}, {img_pred_phys.max():.4e}] | "
+                                    f"mean: {img_pred_phys.mean():.4e}")
+                        logger.info(f"  [DIAG] GT raw_stack shape: {raw_stack.shape} | "
+                                    f"range: [{raw_stack.min():.4e}, {raw_stack.max():.4e}] | "
+                                    f"mean: {raw_stack.mean():.4e}")
+                    except Exception as e:
+                        logger.error(f"AION Image decoding failed: {e}")
+                        import traceback; traceback.print_exc()
+                        img_pred_phys = np.zeros((4, 112, 112)) # Fallback
+                else:
+                    # Continuous Regression Reconstruction
+                    full_seq = full_seq_tensor.float().detach().cpu().numpy()[0]
+                    img_pred_model = reconstruct_image_from_patches(
+                        full_seq,
+                        img_config,
+                        apply_antispiral=apply_antispiral,
+                    )
+                    # Denormalize to Physical Units
+                    img_pred_phys = denormalize(
+                        img_pred_model, 
+                        norm_type_img, 
+                        norm_scaler_img,
+                        norm_const_img
+                    )
                 
                 # Channel Weights [R, G, B]
                 RGB_WEIGHTS = [1.2, 1.3, 1.0]
@@ -604,11 +699,21 @@ def main():
                 rgb_pred = make_rgb_lupton(rgb_input_pred, Q=12.0, stretch=0.5)
                 
                 # Residuals
-                if raw_stack.shape == img_pred_phys.shape:
+                if raw_stack.shape != img_pred_phys.shape:
+                    try:
+                        import torch.nn.functional as F
+                        # Resize raw_stack to match img_pred_phys spatial dimensions
+                        tmp_raw = torch.from_numpy(raw_stack).float().unsqueeze(0) # (1, C, H_raw, W_raw)
+                        tmp_raw = F.interpolate(tmp_raw, size=img_pred_phys.shape[1:], mode='bilinear', align_corners=False)
+                        raw_stack_resized = tmp_raw.squeeze(0).numpy()
+                        diff = raw_stack_resized - img_pred_phys
+                        res_map = np.mean(diff, axis=0)
+                    except Exception as e:
+                        logger.warning(f"Could not compute residuals due to shape mismatch and resize error: {e}")
+                        res_map = np.zeros_like(rgb_gt[:,:,0])
+                else:
                     diff = raw_stack - img_pred_phys
                     res_map = np.mean(diff, axis=0)
-                else:
-                    res_map = np.zeros_like(rgb_gt[:,:,0])
                 
                 has_image = True
 
@@ -616,22 +721,41 @@ def main():
         has_spectra = False
         spec_gt = spec_pred = wave_ang = None
         
-        if 'spectra' in outputs and raw_record['spectrum_flux'] is not None:
+        if spec_key in outputs and raw_record['spectrum_flux'] is not None:
             spec_gt = np.array(raw_record['spectrum_flux']).flatten()
             
-            pred_s = outputs['spectra']
-            full_s = rebuild_full_sequence_from_teacher_forcing(
-                input_tokens=X['spectra'],
+            pred_s = outputs[spec_key]
+            if pred_s.shape[-1] > 1024:
+                # Discrete case: take argmax
+                pred_s = pred_s.argmax(dim=-1, keepdim=True)
+
+            full_s_tensor = rebuild_full_sequence_from_teacher_forcing(
+                input_tokens=X[spec_key],
                 pred_tokens=pred_s,
-                mode_name='spectra',
-            ).float().detach().cpu().numpy().flatten()
-            
-            spec_pred = denormalize(
-                full_s, 
-                norm_type_spec, 
-                norm_scaler_spec,
-                norm_const_spec
+                mode_name=spec_key,
             )
+
+            is_discrete_spec = (full_s_tensor.shape[-1] == 1)
+
+            if is_discrete_spec:
+                # Discrete AION Reconstruction
+                tokens_dict = {DESISpectrum.token_key: full_s_tensor.squeeze(-1)}
+                try:
+                    decoded_spec = codec_manager.decode(tokens_dict, DESISpectrum)
+                    spec_pred = decoded_spec.flux.float().detach().cpu().numpy().flatten()
+                    # AION decodes to normalized space, so we must denormalize
+                    spec_pred = denormalize(spec_pred, norm_type_spec, norm_scaler_spec, norm_const_spec)
+                except Exception as e:
+                    logger.error(f"AION Spectrum decoding failed: {e}")
+                    spec_pred = np.zeros_like(spec_gt)
+            else:
+                full_s = full_s_tensor.float().detach().cpu().numpy().flatten()
+                spec_pred = denormalize(
+                    full_s, 
+                    norm_type_spec, 
+                    norm_scaler_spec,
+                    norm_const_spec
+                )
             
             wave_ang = np.array(raw_record['spectrum_wave']).flatten()
             true_len = len(wave_ang)

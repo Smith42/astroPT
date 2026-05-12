@@ -8,14 +8,14 @@ import json
 
 # Expected X-axis categories in strict order
 CONFIG_ORDER = [
-    'images KNN', 
+    'images KNN',
+    'images LP',
+    'images MLP', 
     'spectra KNN',
-    'joint KNN',
-    'images LP', 
     'spectra LP',
-    'joint LP',
-    'images MLP',
     'spectra MLP', 
+    'joint KNN',
+    'joint LP',
     'joint MLP'
 ]
 
@@ -185,20 +185,34 @@ def generate_dashboard(
 
                 style = style_map[test_name]
                 
-                ax.plot(
-                    test_df['x_pos'], 
-                    test_df[metric], 
-                    marker=style['marker'],
-                    linestyle=style['linestyle'],
-                    linewidth=1.0,
-                    markersize=style['markersize'],
-                    alpha=0.8,
-                    label=test_name, 
-                    color=style['color']
-                )
+                # Split the data into continuous modality segments to avoid lines crossing the background blocks
+                for mod in ['images', 'spectra', 'joint']:
+                    mod_df = test_df[test_df['Config'].str.startswith(mod)].copy()
+                    if mod_df.empty:
+                        continue
+                        
+                    ax.plot(
+                        mod_df['x_pos'], 
+                        mod_df[metric], 
+                        marker=style['marker'],
+                        linestyle=style['linestyle'],
+                        linewidth=0.7,
+                        markersize=style['markersize'],
+                        alpha=0.9,
+                        label=test_name if (test_name not in [l.get_label() for l in ax.get_lines()]) else "", # Only label once for legend
+                        color=style['color']
+                    )
+
+            # Add background blocks for better modality separation
+            for mod, color in zip(['images', 'spectra', 'joint'], ['blue', 'green', 'orange']):
+                mod_indices = [idx for idx, cfg in enumerate(config_order) if cfg.startswith(mod)]
+                if mod_indices:
+                    start = min(mod_indices) - 0.5
+                    end = max(mod_indices) + 0.5
+                    ax.axvspan(start, end, color=color, alpha=0.05, zorder=0)
 
             # Formatting the subplot
-            ax.set_title(f'{target} - {metric}')
+            ax.set_title(f'{target} - {metric}', fontsize=12, fontweight='bold')
             ax.set_xticks(range(len(config_order)))
             ax.set_xticklabels(config_order, rotation=45, ha='right')
             ax.tick_params(axis='x', labelsize=10, pad=6)
@@ -337,7 +351,21 @@ def main():
                 emb_folder_name = chosen_csv.parent.parent.name if "downstream_tasks" in chosen_csv.parent.name else chosen_csv.parent.name
                 config_path = potential_root / "weights" / "config.json"
                 train_name = potential_root.name
-                if config_path.is_file():
+                
+                # Check for special cases for Supervised Baselines
+                if "resnet18_images_supervised" in str(chosen_csv):
+                    target_candidate = chosen_csv.parent.parent.parent.name
+                    if target_candidate == "embeddings":
+                        train_name = "ResNet18 Supervised (All Targets)"
+                    else:
+                        train_name = f"ResNet18 Supervised ({target_candidate})"
+                elif "spectra_supervised_baseline" in str(chosen_csv):
+                    target_candidate = chosen_csv.parent.parent.parent.name
+                    if target_candidate == "embeddings":
+                        train_name = "Spectra Supervised (All Targets)"
+                    else:
+                        train_name = f"Spectra Supervised ({target_candidate})"
+                elif config_path.is_file():
                     try:
                         with open(config_path, 'r') as f:
                             config = json.load(f)
@@ -345,8 +373,15 @@ def main():
                     except Exception:
                         pass
                 
-                if "best_meanrank" not in emb_folder_name and "img-mean" not in emb_folder_name:
+                if "best_meanrank" not in emb_folder_name and "img-mean" not in emb_folder_name and "spec-rank" not in emb_folder_name and "embeddings_all_targets" not in emb_folder_name:
                     train_name += f" [{emb_folder_name}]"
+                
+                # BUGFIX: Ensure unique names in the list to avoid legend collapsing
+                base_name = train_name
+                counter = 1
+                while train_name in names_list:
+                    train_name = f"{base_name} ({counter})"
+                    counter += 1
                     
                 csv_paths_list.append(chosen_csv)
                 names_list.append(train_name)

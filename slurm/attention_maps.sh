@@ -19,7 +19,7 @@ set -euo pipefail
 #--- DEFAULT VALUES ---#
 REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
 PYTHON_SCRIPT="scripts/attention_maps.py"
-DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_filter_corrupt"
+DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_interpolated_tokenized"
 
 # If invoked as: sbatch script.sh -- -w <weights> ...
 if [[ "${1:-}" == "--" ]]; then
