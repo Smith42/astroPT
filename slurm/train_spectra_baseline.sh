@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #--- SLURM option configuration ---#
-#SBATCH --job-name=ResNetBase
+#SBATCH --job-name=SpectraBase
 #SBATCH --partition=gpu
 #SBATCH --nodes=1                
 #SBATCH --ntasks=1               
@@ -9,20 +9,20 @@
 #SBATCH --gpus-per-task=1        
 #SBATCH --mem=64G                
 #SBATCH --time=10:00:00         
-#SBATCH --output=logs/resnet_base_%A_%a.out
-#SBATCH --error=logs/resnet_base_%A_%a.err
-#SBATCH --array=0  
+#SBATCH --output=logs/spectra_base_%A_%a.out
+#SBATCH --error=logs/spectra_base_%A_%a.err  
+#SBATCH --array=0-1
 
 set -euo pipefail
 
 #--- DEFAULT VALUES ---#
 REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
-PYTHON_SCRIPT="scripts/train_resnet_supervised.py"
+PYTHON_SCRIPT="scripts/train_spectra_supervised.py"
 DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_interpolated"
 METADATA_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.1.fits"
-SAVE_DIR="$REPO_ROOT/logs/resnet18_images_supervised"
+SAVE_DIR="$REPO_ROOT/logs/spectra_supervised_baseline"
 
-# Targets List
+# Targets List (Same as ResNet baseline for scientific comparison)
 TARGETS=(
     #"Z" 
     #"LOGMSTAR"
@@ -40,11 +40,11 @@ TARGETS=(
     #'has_spiral_arms_yes'
     #'smoothness'
     #'gini'
-    #'SPECTYPE'
+    'SPECTYPE'
     'data_set_release'
 )
 
-# Get current target from array task id (defauls to 0 if run locally)
+# Get current target from array task id
 TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
 CURRENT_TARGET="${TARGETS[$TASK_ID]}"
 
@@ -68,21 +68,27 @@ SAVE_DIR=$(readlink -f "$SAVE_DIR" || echo "$SAVE_DIR")
 NOW=$(date "+[%Y-%m-%d - %H:%M:%S]")
 
 echo "-----------------------------------------------"
-echo "ResNet18 Supervised Baseline ${SLURM_JOB_ID:-LOCAL} - $NOW"
+echo "Spectra Supervised Baseline ${SLURM_JOB_ID:-LOCAL} - $NOW"
 echo "Target: $CURRENT_TARGET"
 echo "-----------------------------------------------"
 
 cd "$REPO_ROOT" || { echo "[ERROR]: Cannot find REPO_ROOT: $REPO_ROOT"; exit 1; }
-source .venv/bin/activate
+
+# Activate virtual environment
+if [ -d ".venv" ]; then
+    source .venv/bin/activate
+elif [ -d "venv" ]; then
+    source venv/bin/activate
+fi
 
 echo "Running Python Script..."
-python "$PYTHON_SCRIPT" \
-    --metadata_path "$METADATA_PATH" \
+python3 "$PYTHON_SCRIPT" \
     --data_dir "$DATA_DIR" \
+    --metadata_path "$METADATA_PATH" \
     --target "$CURRENT_TARGET" \
     --train_dir "$SAVE_DIR" \
-    --max_run_hours "09:55:00"
+    --train_name "spectra_baseline_${CURRENT_TARGET}"
 
 echo "-----------------------------------------------"
-echo "ResNet18 Baseline Finished"
+echo "Spectra Baseline Finished"
 echo "-----------------------------------------------"
