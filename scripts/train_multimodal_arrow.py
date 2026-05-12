@@ -91,9 +91,9 @@ class TrainingConfig:
     n_embd: int = 512               # Embedding dimension (width of the network)
     n_chan: int = 4                 # Input channels: 1 VIS + 3 NISP (Y, J, H)
     block_size: int = 1024          # Context length (max tokens per sample)
-    dropout: float = 0.0            # Regularization (0.0 for pretraining is standard)
+    dropout: float = 0.1            # Regularization (0.0 for pretraining is standard)
     bias: bool = False              # Learnable bias in Linear layers (False is modern/faster)
-    attn_type: str = "causal"       # Attention mechanism type
+    attn_type: str = "causal"       # Attention mechanism type: casual or prefix 
     backbone: str = "native"        # Model bakcbone: native or llm
     use_qlora: bool = False         # Use Quantized Low-Rank Adaptation
     loss_type: str = "mae"          # Options: l1 / mae, mse, huber
@@ -103,20 +103,21 @@ class TrainingConfig:
     
     #--- Multimodality Mixing Parameters ---#
     use_token_mixing: bool = True               # Enable cross-modal interleaving
-    token_mixing_block_size: int = 128          # Interleaving block size
+    token_mixing_block_size: int = 16          # Interleaving block size
     token_mixing_stochastic: bool = False       # Enable stochastic block sizes
-    token_mixing_min_block_size: int = 64       # Minimum block size for stochastic mixing
+    token_mixing_min_block_size: int = 32       # Minimum block size for stochastic mixing
     token_mixing_max_block_size: int = 128      # Maximum block size for stochastic mixing
     token_mixing_seed: int = 61                 # Seed for reproducible stochastic mixing
     shuffle_modality_train: bool = True         # Shuffle modality order during training
     shuffle_modality_val: bool = False          # Shuffle modality order during validation
-    modality_dropout_prob: float = 0.1          # Probability to zero one modality in a micro-step
-    modality_dropout_mode: str = "spectra"      # none, images, spectra, random
+    modality_dropout_prob: float = 0.05          # Probability to zero one modality in a micro-step
+    modality_dropout_mode: str = "random"       # none, images, spectra, random
     cross_reconstruction_loss_use: bool = True  # Enable cross reconstruction explicitly via targets
     cross_reconstruction_weight: float = 1.2    # Weight multiplier for cross-reconstructed modal loss
     
     # Dual Modality Identity
     use_cls_token: bool = True                  # Use a [CLS] token that is prepended to the sequence
+    cls_position: str = "last"                  # Position of the [CLS] token: 'first' or 'last'
     use_modality_embeddings: bool = True        # Use a different vector to distinguish modalities
 
     # Images
@@ -124,19 +125,19 @@ class TrainingConfig:
     images_size: int = 224              # Images side size in pixels
     images_patch_size: int = 8          # Side size in pixels of each patch in an image
     images_channels: int = 4            # Channels per image (VIS + NISP Y,J,H)
-    images_loss_weight: float = 2.0     # Images importance for training
+    images_loss_weight: float = 1.0     # Images importance for training
     images_embed_pos: bool = True       # Images embedding positions learning
     images_pos_input_size: int = 1      # Images position input size
     images_norm_type: str = "asinh"     # Normalization method: constant, z_score or asinh
     images_norm_scaler: float = 1.0     # Scaler factor if normalization requieres it (default 1.0)
     images_norm_const: float = 1.0      # Normalization global constant for images: P99=7.603847
     images_mask: bool = True            # Enable tactical masking for image patches
-    images_mask_prob: float = 0.20      # Probability to mask each image patch
+    images_mask_prob: float = 0.2      # Probability to mask each image patch
     
     ## Images Tokenization Method
-    images_tokenizer_method: str = "discrete"  # "discrete" (AION) or "aim" or "affine" (both continuous)
+    images_tokenizer_method: str = "aim"  # "discrete" (AION) or "aim" or "affine" (both continuous)
     images_tokeniser_discrete_vocab_size: int = 64000 # AION discrete tokeniser vocabulary size
-    images_unet_weights_path: str = "logs/unet_adapter_weights/adapters_final.pt"  # Path to U-Net adapter weights
+    images_resnet_weights_path: str = "logs/resnet_adapter_weights/adapters_final.pt"  # Path to ResNet adapter weights
     images_aion_image_size: int = 112            # Target size for AION ImageCodec (controls token sequence length)
     images_aion_image_transform: str = "resize"  # "crop" or "resize" transform before U-Net
     
@@ -152,13 +153,13 @@ class TrainingConfig:
     spectra_norm_scaler: float = 1.0        # Scaler factor if normalization requieres it (default 1.0)
     spectra_norm_const: float = 1.0         # Normalization global constant for spectra: P99=7.956048
     spectra_mask: bool = True               # Enable tactical masking for spectra patches
-    spectra_mask_prob: float = 0.20         # Probability to mask each spectrum patch
-    spectra_tokenizer_method: str = "discrete"  # "discrete" (AION) or "aim" or "affine" (both continuous)
+    spectra_mask_prob: float = 0.2         # Probability to mask each spectrum patch
+    spectra_tokenizer_method: str = "aim"  # "discrete" (AION) or "aim" or "affine" (both continuous)
     spectra_tokeniser_discrete_vocab_size: int = 1024 # LFQ codebook_size
     
     #--- Optimization of the Learning Process ---#
     max_iters: int = 75_000         # Total training iters (NOT epochs)
-    weight_decay: float = 1e-1      # Regularization to prevent overfitting
+    weight_decay: float = 0.1       # Regularization to prevent overfitting
     beta1: float = 0.9              # AdamW parameter
     beta2: float = 0.95             # AdamW parameter
     grad_clip: float = 1.0          # Stabilizes training if gradients explode
@@ -170,7 +171,7 @@ class TrainingConfig:
     #--- Learning Rate Scheduler ---#
     learning_rate: float = 3e-4     # Learning rate per weight update
     lr_min: float = 3e-5            # Minimum LR (usually 10% of max)
-    lr_mult_images: float = 1.0    # LR multiplier for image encoder/decoder modality
+    lr_mult_images: float = 1.0     # LR multiplier for image encoder/decoder modality
     lr_mult_spectra: float = 1.0    # LR multiplier for spectra encoder/decoder modality
     lr_mult_backbone: float = 1.0   # LR multiplier for transformer/shared modality
     lr_decay: bool = True           # Activates the variable learning rate decay
@@ -220,6 +221,9 @@ class TrainingConfig:
             tokens = clean_name.split()
             suffix_name = "_".join(tokens)
             self.train_dir = f"./logs/astropt_100M_250K_arrow_{self.train_date}_{suffix_name}"
+            
+        if self.attn_type == "prefix" and self.use_token_mixing:
+            raise ValueError("Prefix attention is not compatible with token mixing. Set use_token_mixing = False.")
 
 def get_git_commit_hash() -> str:
     """Returns the current git commit hash or 'unknown' if not in a git repo."""
@@ -349,16 +353,31 @@ def _compute_modality_losses(
     """
     result: Dict[str, float] = {}
 
+    # If the model provided aligned targets (due to token mixing), use them
+    aligned_targets = outputs.get("_aligned_targets", targets)
+    
+    prefix_modality = outputs.get("_prefix_modality")
+    
     for mod_name, pred in outputs.items():
-        if mod_name not in targets:
+        if mod_name.startswith("_") or mod_name not in aligned_targets:
             continue
-        target = targets[mod_name]
+            
+        # Skip the prefix modality because its loss is not calculated (bidirectional context)
+        if mod_name == prefix_modality:
+            continue
+            
+        target = aligned_targets[mod_name]
 
         # Auto-align shapes when token_mixing causes length differences
         if pred.shape[1] != target.shape[1]:
             min_len = min(pred.shape[1], target.shape[1])
             pred = pred[:, :min_len]
             target = target[:, :min_len]
+
+        # Standard LLM Shift to prevent identity function bug
+        # Ensure we evaluate prediction t against target t+1
+        pred = pred[:, :-1].contiguous()
+        target = target[:, 1:].contiguous()
 
         # Use cross-entropy for discrete (AION) modalities
         if "aion" in mod_name:
@@ -401,13 +420,13 @@ def maybe_apply_modality_dropout(
     mode = config.modality_dropout_mode.lower().strip()
     if mode == "none":
         return "none"
+    
     if mode == "random":
         chosen = str(np.random.choice(available))
     else:
-        chosen = mode if mode in available else "none"
-
-    if chosen == "none":
-        return "none"
+        # Robust matching (e.g. 'spectra' matches 'aion_spectra')
+        matching = [m for m in available if mode == m or m == f"aion_{mode}"]
+        chosen = matching[0] if matching else "none"
 
     batch["X"][chosen] = torch.zeros_like(batch["X"][chosen])
     
@@ -426,6 +445,15 @@ def summarize_modality_dropout(drop_counts: Dict[str, int]) -> str:
         return "mixed"
     if len(drops) == 1:
         return drops[0]
+    return "none"
+
+def summarize_prefix_modality(prefix_counts: Dict[str, int]) -> str:
+    """Returns a string summary of which modalities acted as Prefix."""
+    prefixes = [k for k, v in prefix_counts.items() if v > 0]
+    if len(prefixes) > 1:
+        return "mixed"
+    if len(prefixes) == 1:
+        return prefixes[0]
     return "none"
 
 
@@ -686,13 +714,12 @@ def create_dataloaders(
             )
         modalities.append(image_modality_config)
         
-        # Transforms only needed for continuous mode
-        if config.images_tokenizer_method != "discrete":
-            tf_kwargs.update({
-                'norm_type_img': config.images_norm_type,
-                'norm_scaler_img': config.images_norm_scaler,
-                'norm_const_img': config.images_norm_const,
-            })
+        # Transforms (always needed as AION expects normalized inputs)
+        tf_kwargs.update({
+            'norm_type_img': config.images_norm_type,
+            'norm_scaler_img': config.images_norm_scaler,
+            'norm_const_img': config.images_norm_const,
+        })
         
     if config.spectra_train:
         if config.spectra_tokenizer_method == "discrete":
@@ -720,13 +747,12 @@ def create_dataloaders(
             )
         modalities.append(spectra_modality_config)
         
-        # Transforms only needed for continuous mode
-        if config.spectra_tokenizer_method != "discrete":
-            tf_kwargs.update({
-                'norm_type_spec': config.spectra_norm_type,
-                'norm_scaler_spec': config.spectra_norm_scaler,
-                'norm_const_spec': config.spectra_norm_const,
-            })
+        # Transforms (always needed as AION expects normalized inputs)
+        tf_kwargs.update({
+            'norm_type_spec': config.spectra_norm_type,
+            'norm_scaler_spec': config.spectra_norm_scaler,
+            'norm_const_spec': config.spectra_norm_const,
+        })
     
     # Instantiate the Registry
     registry = ModalityRegistry(modalities)
@@ -765,7 +791,7 @@ def create_dataloaders(
         spectra_mask_prob=config.spectra_mask_prob,
         images_mask=config.images_mask,
         images_mask_prob=config.images_mask_prob,
-        unet_weights_path=config.images_unet_weights_path,
+        resnet_weights_path=config.images_resnet_weights_path,
         aion_image_size=config.images_aion_image_size,
         aion_image_transform=config.images_aion_image_transform,
         use_pretokenized=config.use_pretokenized,
@@ -784,7 +810,7 @@ def create_dataloaders(
         spectra_mask_prob=config.spectra_mask_prob,
         images_mask=config.images_mask,
         images_mask_prob=config.images_mask_prob,
-        unet_weights_path=config.images_unet_weights_path,
+        resnet_weights_path=config.images_resnet_weights_path,
         aion_image_size=config.images_aion_image_size,
         aion_image_transform=config.images_aion_image_transform,
         use_pretokenized=config.use_pretokenized,
@@ -870,6 +896,7 @@ def create_model(
         cross_reconstruction_loss_use=config.cross_reconstruction_loss_use,
         cross_reconstruction_weight=config.cross_reconstruction_weight,
         use_cls_token=config.use_cls_token,
+        cls_position=config.cls_position,
         use_modality_embeddings=config.use_modality_embeddings,
     )
     
@@ -1334,6 +1361,9 @@ def main():
                         name=config.wandb_run_name, 
                         config=asdict(config))
 
+        # Stable reference to the unwrapped model (needed to set _token_mixing_seed
+        # outside of torch.compile's guard scope)
+        _raw_model = model.module if ddp else model
 
         # Pytorch profiler setup
         prof = nullcontext()
@@ -1396,6 +1426,7 @@ def main():
             cross_loss_sums = {"images": 0.0, "spectra": 0.0, "aion_images": 0.0, "aion_spectra": 0.0}
             cross_loss_counts = {"images": 0, "spectra": 0, "aion_images": 0, "aion_spectra": 0}
             modality_drop_counts = {"images": 0, "spectra": 0, "aion_images": 0, "aion_spectra": 0, "none": 0}
+            modality_prefix_counts = {"images": 0, "spectra": 0, "aion_images": 0, "aion_spectra": 0}
             branch_grad_norms = {
                 "images": float("nan"),
                 "spectra": float("nan"),
@@ -1435,7 +1466,9 @@ def main():
                     device=torch.device(device),
                     shuf=config.shuffle_modality_train,
                     use_token_mixing=config.use_token_mixing,
-                    token_mixing_seed=batch_seed
+                    token_mixing_seed=batch_seed,
+                    use_cls_token=config.use_cls_token,
+                    cls_position=config.cls_position
                 )
 
                 dropped_modality = maybe_apply_modality_dropout(B, config)
@@ -1459,17 +1492,30 @@ def main():
                     # Automatic Mixed Precision (AMP)
                     with ctx: 
                         
+                        # Extract token_mixing_seed from inputs BEFORE forward to
+                        # prevent torch.compile from guarding on its changing value.
+                        _raw_model._token_mixing_seed = B["X"].pop("token_mixing_seed", config.token_mixing_seed)
+                        
                         # Forward pass
-                        outputs, loss = model(B["X"], targets=B["Y"], dropped_modality=dropped_modality)
+                        # We pass a copy of the targets dictionary to avoid in-place mutations
+                        # (re-indexing) from affecting the diagnostics later in the loop.
+                        outputs, loss = model(B["X"], targets=B["Y"].copy(), dropped_modality=dropped_modality)
                         
                         # --- INITIAL LOSS BALANCE CHECK (Step 0) ---
                         if iter_num == 0 and micro_step == 0 and ddp_rank == 0:
                             logger.info(" --> INITIAL LOSS MODALITY BALANCE CHECK (Step 0) <-- ")
                             initial_losses = {}
+                            aligned_targets = outputs.get("_aligned_targets", B["Y"])
+                            prefix_modality = outputs.get("_prefix_modality")
+                            
                             for mod_name in registry.names():
-                                if mod_name in outputs and mod_name in B["Y"]:
+                                if mod_name in outputs and mod_name in aligned_targets:
+                                    if mod_name == prefix_modality:
+                                        logger.info(f"Modality: {mod_name:<10} | SKIPPED (Acts as Prefix)")
+                                        continue
+                                        
                                     pred = outputs[mod_name]
-                                    target = B["Y"][mod_name]
+                                    target = aligned_targets[mod_name]
                                     mod_config = registry.get_config(mod_name)
                                     
                                     # Auto-align shapes (token_mixing causes length differences
@@ -1516,6 +1562,11 @@ def main():
                                 if mod_name == dropped_modality:
                                     cross_loss_sums[mod_name] += mod_loss
                                     cross_loss_counts[mod_name] += 1
+                            
+                            # Track which modality was the prefix
+                            prefix_mod = outputs.get("_prefix_modality")
+                            if prefix_mod and prefix_mod in modality_prefix_counts:
+                                modality_prefix_counts[prefix_mod] += 1
                         
                         # Scale loss
                         loss = loss / config.gradient_accumulation_steps
@@ -1672,10 +1723,11 @@ def main():
                         else (cross_loss_sums.get("aion_spectra", 0) / cross_loss_counts.get("aion_spectra", 1) if cross_loss_counts.get("aion_spectra", 0) > 0 else float("nan"))
                     )
                     dropout_summary = summarize_modality_dropout(modality_drop_counts)
+                    prefix_summary = summarize_prefix_modality(modality_prefix_counts)
 
                     if diagnostics_due:
                         logger.info(
-                            f"Diag | Drop={dropout_summary} | "
+                            f"Diag | Drop={dropout_summary} | Prefix={prefix_summary} | "
                             f"Loss(img/spec)=({loss_images_diag:.4f}/{loss_spectra_diag:.4f}) | "
                             f"Cross(img/spec)=({cross_images_diag:.4f}/{cross_spectra_diag:.4f}) | "
                             f"Grad(img/spec/back)=({branch_grad_norms['images']:.2f}/"
@@ -1785,10 +1837,14 @@ def main():
                                 device=torch.device(device),
                                 shuf=config.shuffle_modality_val,
                                 use_token_mixing=config.use_token_mixing,
-                                token_mixing_seed=val_batch_seed
+                                token_mixing_seed=val_batch_seed,
+                                use_cls_token=config.use_cls_token,
+                                cls_position=config.cls_position
                             )
                             
                             with ctx:
+                                # Extract seed before forward (same pattern as training)
+                                _raw_model._token_mixing_seed = B_val["X"].pop("token_mixing_seed", config.token_mixing_seed)
                                 _, v_loss = model(B_val["X"], targets=B_val["Y"])
                             val_losses.append(v_loss.item())
 
@@ -1797,21 +1853,51 @@ def main():
                             spec_key = "aion_spectra" if "aion_spectra" in B_val["X"] else "spectra"
 
                             if img_key in B_val["X"] and spec_key in B_val["X"]:
-                                # 1. Images -> Spectra (Mask out Spectra Input completely)
-                                X_img2spec = {k: v for k, v in B_val["X"].items()}
-                                X_img2spec[spec_key] = torch.zeros_like(X_img2spec[spec_key])
-                                
+                                is_prefix_mode = config.attn_type == "prefix"
+
+                                # 1. Images -> Spectra
+                                # For Prefix-LM: reorder so Image is first (= prefix), Spectra is second (= target).
+                                # For Causal: zero out Spectra input so only Image is the context.
                                 with ctx:
+                                    if is_prefix_mode:
+                                        # Build X with image strictly first in dict order
+                                        X_img2spec = {}
+                                        for k, v in B_val["X"].items():
+                                            if k == img_key or k == img_key + "_positions":
+                                                X_img2spec[k] = v
+                                        for k, v in B_val["X"].items():
+                                            if k not in X_img2spec:
+                                                X_img2spec[k] = v
+                                        # CRITICAL: Zero out target to ensure true zero-shot reconstruction
+                                        X_img2spec[spec_key] = torch.zeros_like(X_img2spec[spec_key])
+                                    else:
+                                        X_img2spec = {k: v for k, v in B_val["X"].items()}
+                                        X_img2spec[spec_key] = torch.zeros_like(X_img2spec[spec_key])
+                                    
                                     out_img2spec, _ = model(X_img2spec, targets=B_val["Y"])
                                     iso_loss_s = _compute_modality_losses(out_img2spec, B_val["Y"], config)
                                     if spec_key in iso_loss_s:
                                         val_iso_img2spec.append(iso_loss_s[spec_key])
 
-                                # 2. Spectra -> Images (Mask out Images Input completely)
-                                X_spec2img = {k: v for k, v in B_val["X"].items()}
-                                X_spec2img[img_key] = torch.zeros_like(X_spec2img[img_key])
-
+                                # 2. Spectra -> Images
+                                # For Prefix-LM: reorder so Spectra is first (= prefix), Image is second (= target).
+                                # For Causal: zero out Image input so only Spectra is the context.
                                 with ctx:
+                                    if is_prefix_mode:
+                                        # Build X with spectra strictly first in dict order
+                                        X_spec2img = {}
+                                        for k, v in B_val["X"].items():
+                                            if k == spec_key or k == spec_key + "_positions":
+                                                X_spec2img[k] = v
+                                        for k, v in B_val["X"].items():
+                                            if k not in X_spec2img:
+                                                X_spec2img[k] = v
+                                        # CRITICAL: Zero out target to ensure true zero-shot reconstruction
+                                        X_spec2img[img_key] = torch.zeros_like(X_spec2img[img_key])
+                                    else:
+                                        X_spec2img = {k: v for k, v in B_val["X"].items()}
+                                        X_spec2img[img_key] = torch.zeros_like(X_spec2img[img_key])
+                                    
                                     out_spec2img, _ = model(X_spec2img, targets=B_val["Y"])
                                     iso_loss_i = _compute_modality_losses(out_spec2img, B_val["Y"], config)
                                     if img_key in iso_loss_i:

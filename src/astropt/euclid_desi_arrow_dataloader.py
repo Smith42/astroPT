@@ -32,7 +32,7 @@ class EuclidDESIDatasetArrow(Dataset):
         spectra_mask_prob: float = 0.5,
         images_mask: bool = False,
         images_mask_prob: float = 0.5,
-        unet_weights_path: str = "logs/unet_adapter_weights/adapters_final.pt",
+        resnet_weights_path: str = "logs/resnet_adapter_weights/adapters_final.pt",
         aion_image_size: int = 112,
         aion_image_transform: str = "crop",
         use_pretokenized: bool = False,
@@ -134,7 +134,7 @@ class EuclidDESIDatasetArrow(Dataset):
         self.spectra_mask_prob = spectra_mask_prob
         self.images_mask = images_mask
         self.images_mask_prob = images_mask_prob
-        self.unet_weights_path = unet_weights_path
+        self.resnet_weights_path = resnet_weights_path
         self.aion_image_size = aion_image_size
         self.aion_image_transform = aion_image_transform
         self.use_pretokenized = use_pretokenized
@@ -144,7 +144,7 @@ class EuclidDESIDatasetArrow(Dataset):
             from astropt.aion_tokeniser import MultiprocessCodecManager
             self.aion_tokeniser = MultiprocessCodecManager(
                 device="cpu", 
-                unet_weights_path=self.unet_weights_path,
+                resnet_weights_path=self.resnet_weights_path,
                 aion_image_size=self.aion_image_size,
                 aion_image_transform=self.aion_image_transform,
             )
@@ -572,7 +572,9 @@ class EuclidDESIDatasetArrow(Dataset):
         device: torch.device, 
         shuf: bool = False,
         use_token_mixing: bool = False,
-        token_mixing_seed: Optional[int] = None
+        token_mixing_seed: Optional[int] = None,
+        use_cls_token: bool = True,
+        cls_position: str = "last"
     ) -> Dict[str, Dict[str, torch.Tensor]]:
         """
         Prepares the batch for training by moving tensors to GPU and creating Input (X) 
@@ -610,21 +612,27 @@ class EuclidDESIDatasetArrow(Dataset):
                 X[f"{mode}_positions"] = pos
                 Y[mode] = data
             else:
-                # Create Targets (Shifted by 1)
-                if i == 0:
+                # Create Targets (Shifted by 1 if NO CLS token is used)
+                # If a CLS token is used (at either position), the model handles the shift.
+                if i == 0 and not use_cls_token:
                     Y[mode] = data[:, 1:]
                 else:
                     Y[mode] = data
     
                 # Create Inputs (X) and their Positions
-                if i == 0 and num_modes > 1:
-                    # First modality in sequence (context) -> Full sequence
-                    X[mode] = data 
-                    X[f"{mode}_positions"] = pos
+                if not use_token_mixing and not use_cls_token:
+                    if i == 0 and num_modes > 1:
+                        # First modality in sequence (context) -> Full sequence
+                        X[mode] = data 
+                        X[f"{mode}_positions"] = pos
+                    else:
+                        # Subsequent modalities -> Autoregressive input (Shifted)
+                        X[mode] = data[:, :-1] 
+                        X[f"{mode}_positions"] = pos[:, :-1]
                 else:
-                    # Subsequent modalities -> Autoregressive input (Shifted)
-                    X[mode] = data[:, :-1] 
-                    X[f"{mode}_positions"] = pos[:, :-1]
+                    # Token mixing or CLS token active -> pass full sequences, model handles it
+                    X[mode] = data
+                    X[f"{mode}_positions"] = pos
 
         if use_token_mixing and token_mixing_seed is not None:
             X["token_mixing_seed"] = token_mixing_seed
@@ -774,8 +782,14 @@ class EuclidDESIDatasetArrow(Dataset):
                         sample["aion_images_positions"] = torch.arange(0, len(tokens_tensor), dtype=torch.long)
                     else:
                         tokeniser = self._get_aion_tokeniser()
-                        from fmb.models.aion.modalities import EuclidImage
-                        euclid_img = EuclidImage(flux=raw_galaxy.unsqueeze(0).float(), bands=["EUCLID-VIS", "EUCLID-Y", "EUCLID-J", "EUCLID-H"])
+                        from astropt.resnet_adapter import EuclidImage
+                        
+                        # Apply normalization if configured
+                        norm_galaxy = raw_galaxy.clone().float()
+                        if "images_norm" in self.transform:
+                            norm_galaxy = self.transform["images_norm"](norm_galaxy)
+                        
+                        euclid_img = EuclidImage(flux=norm_galaxy.unsqueeze(0), bands=["EUCLID-VIS", "EUCLID-Y", "EUCLID-J", "EUCLID-H"])
                         tokens = tokeniser.encode(euclid_img)
                         tokens_tensor = list(tokens.values())[0].squeeze(0) # Returns sequence of IDs
                         sample["aion_images"] = tokens_tensor
@@ -788,7 +802,9 @@ class EuclidDESIDatasetArrow(Dataset):
                     sample["images_positions"] = torch.arange(0, len(patch_galaxy), dtype=torch.long)
 
             else:
-                logging.warning(f"Target {targetid}: VIS image is None in Arrow dataset. Skipping.")
+                mod_names = self.modality_registry.names()
+                if "images" in mod_names or "aion_images" in mod_names:
+                    logging.warning(f"Target {targetid}: VIS image is None in Arrow dataset. Skipping.")
                 pass
 
             
@@ -834,10 +850,16 @@ class EuclidDESIDatasetArrow(Dataset):
                             else:
                                 from aion.modalities import DESISpectrum
                                 tokeniser = self._get_aion_tokeniser()
-                                ivar = torch.ones_like(raw_flux)
-                                mask = torch.zeros_like(raw_flux, dtype=torch.bool)
+                                
+                                # Apply normalization if configured
+                                norm_flux = raw_flux.clone().float()
+                                if "spectra" in self.transform:
+                                    norm_flux = self.transform["spectra"](norm_flux)
+                                
+                                ivar = torch.ones_like(norm_flux)
+                                mask = torch.zeros_like(norm_flux, dtype=torch.bool)
                                 desi_spec = DESISpectrum(
-                                    flux=raw_flux.unsqueeze(0).float(), 
+                                    flux=norm_flux.unsqueeze(0), 
                                     ivar=ivar.unsqueeze(0).float(), 
                                     mask=mask.unsqueeze(0), 
                                     wavelength=raw_wave.unsqueeze(0).float()

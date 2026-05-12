@@ -380,10 +380,13 @@ class AstroPTEmbeddingLayer(nn.Module):
         # Concatenate modalities
         tok_emb = torch.cat(sequences, dim=1)
         
-        # 4. Prepend CLS token if active
+        # 4. Add CLS token if active
         if self.cls_token is not None:
             cls_tokens = self.cls_token.expand(bsz, -1, -1)
-            tok_emb = torch.cat([cls_tokens, tok_emb], dim=1)
+            if getattr(self.config, 'cls_position', 'last').lower() == 'first':
+                tok_emb = torch.cat([cls_tokens, tok_emb], dim=1)
+            else:
+                tok_emb = torch.cat([tok_emb, cls_tokens], dim=1)
             
         return tok_emb
 
@@ -418,6 +421,7 @@ class GPTConfig:
     cross_reconstruction_weight: float = 1.0
     # Dual Modality Identity
     use_cls_token: bool = True
+    cls_position: str = "last"  # first or last
     use_modality_embeddings: bool = True
 
 
@@ -624,6 +628,49 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
+    @torch.compiler.disable
+    def _get_interleaved_indices(self, l1, l2, stochastic, min_block, max_block, block_size, cls_pos, device):
+        """Helper to generate interleaved indices. Runs in eager mode (no compile).
+        
+        Reads self._token_mixing_seed internally so that torch.compile never
+        sees the changing seed value (prevents recompilation guards).
+        """
+        idx = []
+        i1, i2 = 0, 0
+        if stochastic:
+            # Read seed here (inside @torch.compiler.disable) so Dynamo cannot guard on it
+            batch_seed = getattr(self, '_token_mixing_seed', getattr(self.config, 'token_mixing_seed', 42))
+            g = torch.Generator()
+            g.manual_seed(int(batch_seed))
+            while i1 < l1 or i2 < l2:
+                if i1 < l1:
+                    c1 = torch.randint(min_block, max_block + 1, (1,), generator=g).item()
+                    c1 = min(c1, l1 - i1)
+                    idx.extend(range(i1, i1 + c1))
+                    i1 += c1
+                if i2 < l2:
+                    c2 = torch.randint(min_block, max_block + 1, (1,), generator=g).item()
+                    c2 = min(c2, l2 - i2)
+                    idx.extend(range(l1 + i2, l1 + i2 + c2))
+                    i2 += c2
+        else:
+            while i1 < l1 or i2 < l2:
+                if i1 < l1:
+                    c1 = min(block_size, l1 - i1)
+                    idx.extend(range(i1, i1 + c1))
+                    i1 += c1
+                if i2 < l2:
+                    c2 = min(block_size, l2 - i2)
+                    idx.extend(range(l1 + i2, l1 + i2 + c2))
+                    i2 += c2
+        
+        if cls_pos == 'first':
+            shifted_idx = [0] + [i + 1 for i in idx]
+        else:
+            shifted_idx = idx + [l1 + l2]
+            
+        return torch.tensor(shifted_idx, device=device, dtype=torch.long)
+
     def forward(
         self,
         inputs,
@@ -653,24 +700,56 @@ class GPT(nn.Module):
         attention_mask=None,
         dropped_modality=None,
     ):
-        # Determine strict static list of batch modes matching dictionary insertion order
-        batch_modes = [k for k in inputs if k in self.mod_names]
+        # IMPORTANT: batch_modes must reflect the ACTUAL order of modalities in the sequence
+        # as assembled by the dataloader (respecting shuffle_modality). Using self.mod_names
+        # (fixed registry order) would ignore the shuffle and always make the same modality
+        # the prefix, breaking Prefix-LM semantics.
+        # We use the insertion order of `inputs` (a regular Python dict, ordered since 3.7)
+        # and filter only known modality names (not positions, seeds, etc).
+        batch_modes = [name for name in inputs if name in self.mod_names]
+        # Fallback: if inputs is unordered for some reason, use registry order
+        if not batch_modes:
+            batch_modes = [name for name in self.mod_names if name in inputs]
 
         if self.config.attn_type == "prefix":
-            # TODO we need to make sure that the prefix hyperparameters are tuned well:
             if prefix_len is None:
-                # if we don't pass a prefix length assume we want it sampled at random
-                # TODO do we want this to be an eval mode switch?
-                prefix_len = random.randrange(self.config.block_size - 1)
+                # Dynamically determine prefix length based on the first modality
+                # in the ACTUAL shuffled sequence order (not the fixed registry order).
+                if len(batch_modes) > 1:
+                    prefix_mod = batch_modes[0]
+                    prefix_len = inputs[prefix_mod].size(1)
+                    # If CLS token is prepended (position='first'), it shifts all token
+                    # indices by 1, so the prefix boundary shifts by 1 as well.
+                    if getattr(self.config, 'use_cls_token', False) and \
+                       getattr(self.config, 'cls_position', 'last').lower() == 'first':
+                        prefix_len += 1  # CLS token occupies index 0
+                    # Flag this so downstream diagnostic tools know it was a bidirectional prefix
+                    self._current_prefix_modality = prefix_mod
+                else:
+                    # If only 1 modality is present (e.g., dropped), sequence is purely causal
+                    prefix_len = 0
+                    self._current_prefix_modality = None
+
+            # IMPORTANT: create_block_mask must use the ACTUAL sequence length, NOT block_size.
+            # Using block_size (e.g. 1024) when the real sequence is ~385 tokens means the
+            # mask is computed over a misaligned coordinate space, causing silent data leakage.
+            # The actual length will be computed AFTER the embedding layer, but we can compute
+            # it here from the inputs directly (same result).
+            actual_seq_len = sum(inputs[m].size(1) for m in batch_modes)
+            if getattr(self.config, 'use_cls_token', False):
+                actual_seq_len += 1  # +1 for the CLS token
+
             prefix_lm_mask = generate_prefix_lm_mask(prefix_len)
             block_mask = create_block_mask(
                 prefix_lm_mask,
                 None,
                 None,
-                self.config.block_size,
-                self.config.block_size,
+                actual_seq_len,
+                actual_seq_len,
+                device=self.transformer.h[0].attn.c_attn.weight.device,
             )
         else:
+            self._current_prefix_modality = None
             block_mask = None
 
         # forward the GPT model itself
@@ -697,43 +776,21 @@ class GPT(nn.Module):
             max_block = getattr(self.config, 'token_mixing_max_block_size', getattr(self.config, 'token_mixing_block_size', 5))
             max_block = max(min_block, max_block)
             
-            if stochastic:
-                # Use a combined seed from inputs if provided, else just the config seed
-                batch_seed = inputs.get("token_mixing_seed", getattr(self.config, 'token_mixing_seed', 42))
-                
-                # We need a reproducible random generator for the current step
-                g = torch.Generator()
-                g.manual_seed(int(batch_seed))
-                
-                # Interleave tokens stochastically
-                while i1 < l1 or i2 < l2:
-                    if i1 < l1:
-                        c1 = torch.randint(min_block, max_block + 1, (1,), generator=g).item()
-                        c1 = min(c1, l1 - i1)
-                        idx.extend(range(i1, i1 + c1))
-                        i1 += c1
-                    if i2 < l2:
-                        c2 = torch.randint(min_block, max_block + 1, (1,), generator=g).item()
-                        c2 = min(c2, l2 - i2)
-                        idx.extend(range(l1 + i2, l1 + i2 + c2))
-                        i2 += c2
-            else:
-                block_size = self.config.token_mixing_block_size
-                
-                # Interleave tokens iteratively
-                while i1 < l1 or i2 < l2:
-                    if i1 < l1:
-                        c1 = min(block_size, l1 - i1)
-                        idx.extend(range(i1, i1 + c1))
-                        i1 += c1
-                    if i2 < l2:
-                        c2 = min(block_size, l2 - i2)
-                        idx.extend(range(l1 + i2, l1 + i2 + c2))
-                        i2 += c2
-                        
-            # Shift the interleaved indices by +1 to leave the [CLS] token at index 0 unchanged
-            shifted_idx = [0] + [i + 1 for i in idx]
-            interleaved_idx = torch.tensor(shifted_idx, device=x.device, dtype=torch.long)
+            # Identify CLS position for the helper
+            cls_pos = getattr(self.config, 'cls_position', 'last').lower()
+            
+            # Use a helper to generate indices to avoid torch.compile issues.
+            # The seed is read INSIDE the helper (which is @torch.compiler.disable)
+            # so Dynamo never sees its changing value.
+            interleaved_idx = self._get_interleaved_indices(
+                l1, l2, 
+                stochastic, 
+                min_block, max_block, 
+                self.config.token_mixing_block_size,
+                cls_pos,
+                x.device
+            )
+            tgt_idx = interleaved_idx
             inverse_idx = torch.argsort(interleaved_idx)
             
             # Reorder tensors before entering the transformer
@@ -752,28 +809,49 @@ class GPT(nn.Module):
             # Instead, route each token's hidden state to the decoder of the Modality
             # it is expected to predict next according to the interleaved index mapping.
             # We drop the very last token from matching since it has no next token to predict.
-            hidden = x[:, :-1, :] 
-            tgt_idx = interleaved_idx[1:]
+            # Define original indices for correct target mapping
+            cls_pos = getattr(self.config, 'cls_position', 'last').lower()
+            if getattr(self.config, 'use_cls_token', False):
+                if cls_pos == 'first':
+                    # CLS is at the beginning (index 0). 
+                    # Hidden states 0..N-1 predict modality tokens 1..N.
+                    hidden = x[:, :-1, :]
+                    tgt_idx_orig = tgt_idx[1:] - 1
+                else:
+                    # CLS is at the end (index N).
+                    # Hidden states 0..N-1 predict modality tokens 1..N and CLS.
+                    # We predict T1...TN using H0...HN-1.
+                    hidden = x[:, :-1, :]
+                    tgt_idx_orig = tgt_idx[1:]
+            else:
+                hidden = x[:, :-1, :]
+                tgt_idx_orig = tgt_idx[1:]
             
-            # Identify indices matching each modality.
+            # Re-identify indices after possible shift
             mod1, mod2 = batch_modes[0], batch_modes[1]
             l1 = inputs[mod1].size(1)
-
-            # Define original indices for correct target mapping
-            if getattr(self.config, 'use_cls_token', False):
-                tgt_idx_orig = tgt_idx - 1
-            else:
-                tgt_idx_orig = tgt_idx
+            l2 = inputs[mod2].size(1)
+            
+            # Filter out CLS token index if it's in tgt_idx_orig
+            # CLS index is 0 if first, l1+l2 if last.
+            # Filter out CLS token index from targets
+            cls_index = 0 if cls_pos == 'first' else l1 + l2
+            is_not_cls = tgt_idx[1:] != cls_index
+            
+            # Only route hidden states that predict modality tokens
+            hidden = hidden[:, is_not_cls, :]
+            tgt_idx_orig = tgt_idx_orig[is_not_cls]
 
             is_mod1 = tgt_idx_orig < l1
-            is_mod2 = tgt_idx_orig >= l1
-            
+            is_mod2 = (tgt_idx_orig >= l1) & (tgt_idx_orig < l1 + l2)
+
             outputs[mod1] = self.decoders[mod1](hidden[:, is_mod1, :])
             outputs[mod2] = self.decoders[mod2](hidden[:, is_mod2, :])
             
             if targets is not None:
                 targets[mod1] = targets[mod1][:, tgt_idx_orig[is_mod1]]
                 targets[mod2] = targets[mod2][:, tgt_idx_orig[is_mod2] - l1]
+                outputs["_aligned_targets"] = targets
 
         else:
             # --- STANDARD LINEAR CAUSAL SEQUENCING (NO MIXING) ---
@@ -798,15 +876,31 @@ class GPT(nn.Module):
             current_idx = 0
             
             if getattr(self.config, 'use_cls_token', False):
-                # CLS token makes boundaries simple: it predicts the first token of mod1.
-                # Every hidden state i predicts target token i.
-                for mod_name in batch_modes:
-                    input_tensor = inputs[mod_name]
-                    seq_len = input_tensor.size(1)
-                    # Hidden states 0:N predict targets 0:N
-                    hidden_state = x[:, current_idx : current_idx + seq_len]
-                    outputs[mod_name] = self.decoders[mod_name](hidden_state)
-                    current_idx += seq_len
+                cls_pos = getattr(self.config, 'cls_position', 'last').lower()
+                if cls_pos == 'first':
+                    # CLS token predicts the first token of mod1.
+                    # Every hidden state i predicts target token i.
+                    for mod_name in batch_modes:
+                        input_tensor = inputs[mod_name]
+                        seq_len = input_tensor.size(1)
+                        hidden_state = x[:, current_idx : current_idx + seq_len]
+                        outputs[mod_name] = self.decoders[mod_name](hidden_state)
+                        current_idx += seq_len
+                else:
+                    # CLS token is at the end. Modalities T1...TN.
+                    # Nothing predicts T1. H1 predicts T2, ..., HN predicts CLS.
+                    for i, mod_name in enumerate(batch_modes):
+                        input_tensor = inputs[mod_name]
+                        seq_len = input_tensor.size(1)
+                        if i == 0:
+                            # Skip T1 prediction
+                            hidden_state = x[:, current_idx : current_idx + seq_len - 1]
+                        else:
+                            # Previous modality last token predicts current first token
+                            hidden_state = x[:, current_idx - 1 : current_idx + seq_len - 1]
+                        
+                        outputs[mod_name] = self.decoders[mod_name](hidden_state)
+                        current_idx += seq_len
             else:
                 for ii, mod_name in enumerate(batch_modes):
                     input_tensor = inputs[mod_name]
@@ -837,26 +931,31 @@ class GPT(nn.Module):
                     
                 pred = outputs[mod_name]
                 
-                if self.config.attn_type == "prefix":
-                    # TODO fix this and debug
-                    raise NotImplementedError(
-                        "Prefix attention not yet implemented for multimodal model"
-                    )
-                    ## if we have prefix attention on we only want to
-                    ## backprop through tokens where our model cannot
-                    ## look ahead! so we mask the loss to prefix_len
-                    # if current_idx + seq_len <= prefix_len:
-                    #    # entire modality within prefix so skip
-                    #    continue
-                    # elif current_idx >= prefix_len:
-                    #    # entire modality beyond prefix so backprop
-                    #    loss += F.huber_loss(pred, target) * mod_config.loss_weight
-                    # else:
-                    #    # some of modality within prefix so mask and bp
-                    #    prefix_mask = torch.ones_like(target, dtype=torch.bool)
-                    #    prefix_sublen = prefix_len - current_idx
-                    #    prefix_mask[:, :prefix_sublen] = False
-                elif attention_mask is not None:
+                # Align targets with predictions (handles shifts and CLS presence)
+                if target.shape[1] != pred.shape[1]:
+                    # If target is longer, it means it contains tokens that are not predicted
+                    # (like T1 in cls_position=last case, or when use_cls_token=False)
+                    if target.shape[1] > pred.shape[1]:
+                        target = target[:, -pred.shape[1]:]
+                    else:
+                        # Should not happen with current logic, but being safe
+                        pred = pred[:, :target.shape[1]]
+                
+                # If prefix attention is active, the first modality acts as bidirectional context.
+                # Calculating autoregressive loss on it would allow the model to cheat by looking ahead.
+                if self.config.attn_type == "prefix" and getattr(self, '_current_prefix_modality', None) == mod_name:
+                    if attention_mask is not None:
+                        current_idx += target.size(1)
+                    continue
+
+                # --- FIX: Standard LLM Shift ---
+                # To prevent the model from learning the identity function (reading the current token
+                # and outputting it directly), we apply the standard LLM shift.
+                # Prediction at position t (which has seen up to t) must predict target at t+1.
+                pred = pred[:, :-1].contiguous()
+                target = target[:, 1:].contiguous()
+
+                if attention_mask is not None:
                     # Extract attention mask for this modality
                     mod_mask = attention_mask[:, current_idx : current_idx + target.size(1)]
 
@@ -898,9 +997,16 @@ class GPT(nn.Module):
                     loss = loss + mod_loss * mod_loss_weight
                     
             # Ensure division by length trace perfectly as a tensor 
-            loss = loss / torch.tensor(len(batch_modes), device=loss.device, dtype=loss.dtype)
+            # We must only divide by the number of modalities that actually contributed to the loss
+            num_loss_contributors = len(batch_modes)
+            if self.config.attn_type == "prefix" and getattr(self, '_current_prefix_modality', None) is not None:
+                num_loss_contributors -= 1
+            loss = loss / torch.tensor(max(1, num_loss_contributors), device=loss.device, dtype=loss.dtype)
         else:
             loss = None
+
+        if getattr(self, '_current_prefix_modality', None) is not None:
+            outputs["_prefix_modality"] = self._current_prefix_modality
 
         return outputs, loss
 
@@ -1050,7 +1156,7 @@ class GPT(nn.Module):
 
         return self.tokenizer.decode(outputs[0], skip_special_tokens=False)
 
-    def get_embeddings(self, inputs, draw_from_centre=True, prefix_len=None):
+    def get_embeddings(self, inputs, draw_from_centre=True, prefix_len=None, batch_modes=None):
         """
         Get embeddings from AstroPT.
 
@@ -1058,6 +1164,7 @@ class GPT(nn.Module):
             inputs: dict of tensors with modality names as keys
             draw_from_centre = get embedding from centre from model not from penultimate layer
             prefix_len: optional prefix length to consider
+            batch_modes: optional list of modalities to include
 
         Returns:
             dictionary of embeddings for each modality
@@ -1120,32 +1227,13 @@ class GPT(nn.Module):
             return result
 
         elif self.backbone == "native":
-            tt = sum(v.size(1) for k, v in inputs.items() if k.endswith("_positions"))
-            assert tt <= self.config.block_size, (
-                f"Cannot forward sequence of length {tt}, block size is only {self.config.block_size}"
-            )
-
-            # generate token embeddings per modality
-            embeddings = []
-            pos_embeddings = []
-            batch_modes = [k for k in inputs if k in self.modality_registry.names()]
-            for mod_name in batch_modes:
-                try:
-                    input_tensor = inputs[mod_name]
-                    print(input_tensor.shape)
-                except KeyError as err:
-                    print(err)
-                    continue
-                embeddings.append(self.encoders[mod_name](input_tensor))
-                pos = inputs[mod_name + "_positions"]
-                pos_embeddings.append(self.embedders[mod_name](pos))
-            tok_emb = torch.cat(embeddings, dim=1)
-            pos_emb = torch.cat(pos_embeddings, dim=1)
-            x = self.transformer.drop(tok_emb + pos_emb)
-
-            for i, block in enumerate(
-                self.transformer.h
-            ):  # by default we take the penultimate layer as the embedding layer
+            # Use the common embedding layer logic to ensure consistency with forward()
+            # This includes [CLS] token injection and position handling.
+            if batch_modes is None:
+                batch_modes = [k for k in inputs if k in self.mod_names]
+            x = self.embedding_layer(inputs, batch_modes)
+            
+            for i, block in enumerate(self.transformer.h):
                 x = block(x)
                 if draw_from_centre and i == len(self.transformer.h) // 2:
                     centre_embeddings = x
@@ -1158,11 +1246,25 @@ class GPT(nn.Module):
             # split embeddings by modality
             result = {}
             current_idx = 0
+            
+            # Identify CLS position to skip it or extract it
+            has_cls = getattr(self.config, 'use_cls_token', False)
+            cls_pos = getattr(self.config, 'cls_position', 'last').lower()
+            
+            if has_cls and cls_pos == 'first':
+                result["cls"] = embeddings_out[:, 0:1]
+                current_idx += 1
+                
+            batch_modes = [k for k in inputs if k in self.modality_registry.names()]
             for mod_name in batch_modes:
                 input_tensor = inputs[mod_name]
                 seq_len = input_tensor.size(1)
                 result[mod_name] = embeddings_out[:, current_idx : current_idx + seq_len]
                 current_idx += seq_len
+                
+            if has_cls and cls_pos == 'last':
+                result["cls"] = embeddings_out[:, current_idx : current_idx + 1]
+                current_idx += 1
 
             return result
         else:
@@ -1310,7 +1412,18 @@ class GPT(nn.Module):
 
         # apply reduction for each modality
         for mod_name, embeddings in embeddings_dict.items():
-            if reduction == "mean":
+            if reduction == "cls":
+                # If CLS reduction is requested, we try to use the 'cls' key if it exists,
+                # otherwise we fall back to the first token of the modality?
+                # Actually, the user should use 'mean' for modality tokens.
+                if "cls" in embeddings_dict:
+                    result["cls"] = embeddings_dict["cls"].squeeze(1)
+                    # We break because CLS is a global embedding, not per-modality in this case
+                    return result
+                else:
+                    # Fallback to mean
+                    result[mod_name] = torch.mean(embeddings, dim=1)
+            elif reduction == "mean":
                 result[mod_name] = torch.mean(embeddings, dim=1)
             elif reduction == "exp_decay":
                 weights = (

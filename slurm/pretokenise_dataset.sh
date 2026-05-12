@@ -5,10 +5,10 @@
 #SBATCH --partition=gpu
 #SBATCH --nodes=1                
 #SBATCH --ntasks=1               
-#SBATCH --cpus-per-task=16       
+#SBATCH --cpus-per-task=32       
 #SBATCH --gpus-per-task=1        
 #SBATCH --mem=64G                
-#SBATCH --time=24:00:00          
+#SBATCH --time=10:00:00          
 
 #--- LOGS FILES ---#
 #SBATCH --output=logs/pretokenise_%j.out
@@ -18,9 +18,9 @@ set -euo pipefail
 
 #--- DEFAULT VALUES ---#
 REPO_ROOT="/home/valonso/iac18_mhuertas_shared/valonso/astroPT"
-DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_interpolated"
-OUTPUT_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_interpolated_tokenized"
-UNET_WEIGHTS="$REPO_ROOT/logs/unet_adapter_weights/adapters_final.pt"
+DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_interpolated_tokenized/test_0/"
+OUTPUT_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_interpolated_tokenized/test_0/"
+RESNET_WEIGHTS="$REPO_ROOT/logs/resnet_adapter_weights/adapters_final.pt"
 BATCH_SIZE=128
 DEVICE="cuda"
 
@@ -42,7 +42,7 @@ while getopts ":r:a:o:w:b:h" opt; do
     r) REPO_ROOT="$OPTARG" ;;
     a) DATA_DIR="$OPTARG" ;;
     o) OUTPUT_DIR="$OPTARG" ;;
-    w) UNET_WEIGHTS="$OPTARG" ;;
+    w) RESNET_WEIGHTS="$OPTARG" ;;
     b) BATCH_SIZE="$OPTARG" ;;
     h) print_usage; exit 0 ;;
     \?) echo "Invalid option -$OPTARG" >&2; exit 1 ;;
@@ -64,14 +64,14 @@ mkdir -p logs
 echo "Pre-tokenization Configuration:"
 echo "    DATA DIR:       $DATA_DIR"
 echo "    OUTPUT DIR:     $OUTPUT_DIR"
-echo "    UNET WEIGHTS:   $UNET_WEIGHTS"
+echo "    RESNET WEIGHTS: $RESNET_WEIGHTS"
 echo "    BATCH SIZE:     $BATCH_SIZE"
 echo "    DEVICE:         $DEVICE"
 
 CMD=(python scripts/pretokenise_dataset_arrow.py \
     --data_dir "$DATA_DIR" \
     --output_dir "$OUTPUT_DIR" \
-    --unet_weights "$UNET_WEIGHTS" \
+    --resnet_weights "$RESNET_WEIGHTS" \
     --batch_size "$BATCH_SIZE" \
     --device "$DEVICE")
 

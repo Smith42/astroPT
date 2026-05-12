@@ -267,7 +267,7 @@ JOB_TRAIN_1=$(sbatch --parsable \
     -a "$DATA_DIR" \
     -n "$TRAIN_NAME" \
     -d "$TRAIN_DESC" \
-    -m "scratch" \
+    -m "resume" \
     -k "all" \
     -x "$TRAIN_EXTRA_ARGS")
 echo "Training Job (Scratch) launched. ID: $JOB_TRAIN_1"
