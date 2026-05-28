@@ -1,0 +1,69 @@
+# AstroPT V4 Full Training Configuration (8 Layers)
+# Model with ~100M parameters + Contrastive Alignment
+
+# Training Metadata
+train_name: "Hybrid + Filter + CentralFiber"
+train_description: "Applying a metadata filter for excluding lower SNR object. New method of aligment between DESI fiber and central images patches. Training with a token mixing with fixed 16 block size. Training with a cross-rconstruction loss added to the usual train loss. Adding a CLIP Loss. This transforms the model into an hybrid model. This configuration expects to improve the cross reconstruction and the probing tasks forcing the modal to learn the cross modality physics. Some hyperparameters have been updated to balance both modalities. Interpolate Zoomin and Zoomout dataset has been used. This dataset contains galaxies with the same size inside the 224x224 images. Decreasing the size of the model to test how this change in the learning. Activating the suffle modality option. Using CLS token."
+
+#--- Model Architecture for the 30M Parameter Setup ---#
+n_layer: 8              # Depth of the Transformer
+n_head: 8               # Number of attention heads
+n_embd: 512             # Embedding dimension (width of the network)
+block_size: 2048        # Context length (max tokens per sample)
+dropout: 0.1            # Regularization (0.0 for pretraining is standard)
+loss_type: "mae"        # Options: l1 / mae, mse, huber
+
+#--- Data Loading ---#
+use_aug: True             # Active data augmentation by using image rotation
+applied_filters:          # Dynamic Dataset Filtering (new)
+  - "((Z < 0.15) && (SNR_SPEC_R > 3.0)) || ((Z >= 0.15) && (SNR_SPEC_Z > 3.0))"
+
+#--- Modality Orchestration ---#
+# Defines which specific modalities to load and train on
+modalities:
+  - "EuclidImage"
+  - "DESISpectrum"
+
+#--- Multimodality Mixing Parameters ---#
+use_token_mixing: True                        # Enable cross-modal interleaving
+shuffle_modality_train: True                  # Shuffle modality order during training
+modality_dropout_prob: 0.05                   # Probability to zero one modality in a micro-step
+modality_dropout_mode: "random"               # none, random or modality name
+cross_reconstruction_loss_use: True           # Enable cross reconstruction explicitly via targets
+cross_reconstruction_weight: 1.2              # Default weight for all cross-modal directions
+cross_reconstruction_weight_to_spectra: 2.5   # Extra boost when spectra is the TARGET (spectral-first design)
+spectral_modality_key: "DESISpectrum"         # Modality name that identifies the primary spectral modality
+
+# Dual Modality Identity
+use_cls_token: True                   # Use a [CLS] token that is prepended to the sequence
+cls_position: "last"                  # Position of the [CLS] token: 'first' or 'last'
+use_modality_embeddings: True         # Use a different vector to distinguish modalities
+use_aperture_embedding: True          # Add the aperture information in the input embedding (new)
+
+# CLIP: Contrastive Alignment Architecture (Hybrid model)
+use_contrastive_alignment: True       # Master flag: activates the V4 architecture
+clip_loss_weight: 0.5                 # Weight of the CLIP loss relative to the reconstruction loss
+
+# Images General parameters
+images_patch_size: 8          # Side size in pixels of each patch in an image
+images_norm_type: "asinh"     # Normalization method: constant, z_score or asinh
+images_mask: True             # Enable tactical masking for image patches
+images_mask_prob: 0.2         # Probability to mask each image patch
+
+# Specific images modalities parameters
+# EuclidImage
+EuclidImage_channels: 4
+EuclidImage_filters: 
+  - "VIS"
+  - "Y"
+  - "J"
+  - "H"
+
+# Spectra General parameters
+spectra_norm_type: "asinh"    # Normalization method: constant, z_score or asinh
+spectra_mask: True            # Enable tactical masking for spectra patches
+spectra_mask_prob: 0.2        # Probability to mask each spectrum patch
+
+# Specific spectra modalities parameters
+# DESISpectra
+DESISpectrum_size: 7781

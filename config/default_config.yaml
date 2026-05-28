@@ -1,0 +1,172 @@
+# AstroPT Training Configuration Template
+# Use this file to configure your experiments without touching the code.
+# Run with: python scripts/train.py config.yaml
+
+
+#--- Training Metadata ---#
+train_name: "Default configuration"                             # Name of the training
+train_date: "2026-05-18"                                        # Date of the training (example, computed internally in the code)
+train_description: "Default configuration trainig for AstroPT"  # Description or comment about the training
+
+#--- I/O & Paths ---#
+train_dir: "logs/astropt_"                          # Training output directory
+data_dir: "path/to/your/dataset/in/arrow/format"    # Dataset directory in Arrow format
+        
+#--- Model Architecture for the 100M Parameter Setup ---#
+n_layer: 12                 # Depth of the Transformer
+n_head: 12                  # Number of attention heads
+n_embd: 768                 # Embedding dimension (width of the network)
+n_chan: 4                   # Input channels: 1 VIS + 3 NISP (Y, J, H) (Eculid as default)
+block_size: 1024            # Context length (max tokens per sample)
+dropout: 0.0                # Regularization (0.0 for pretraining is standard)
+bias: False                 # Learnable bias in Linear layers (False is modern/faster)
+attn_type: "causal"         # Attention mechanism type: casual or prefix 
+backbone: "native"          # Model backbone: native or llm
+use_qlora: False            # Use Quantized Low-Rank Adaptation
+loss_type: "huber"          # Options: l1 / mae, mse, huber
+loss_huber_delta: 1.0       # Delta value for controlling Huber Loss Behaviour (default 1.0)
+
+#--- Data Loading ---#
+batch_size: 16            # Micro-batch size per GPU (what fits in VRAM)
+num_workers: 8            # Optimized for Teide HPC (CPU cores for loading)
+persistent_workers: True  # Keep workers active
+prefetch_factor: 2        # How many batches to preload per worker
+pin_memory: True          # Faster transfer RAM -> VRAM
+spiral: True              # Whether to apply spiral readout to galaxy images
+init_from: "scratch"      # Training from scratch or resume training
+use_aug: False            # Active data augmentation by using image rotation
+use_pretokenized: False   # Bypass tokenization for a discrete training
+
+#--- Modality Orchestration ---#
+# Defines which specific modalities to load and train on
+modalities:
+  - "EuclidImage"
+  - "DESISpectrum"
+
+#--- Multimodality Mixing Parameters ---#
+use_token_mixing: False                       # Enable cross-modal interleaving
+token_mixing_block_size: 16                   # Interleaving block size
+token_mixing_stochastic: False                # Enable stochastic block sizes
+token_mixing_min_block_size: 32               # Minimum block size for stochastic mixing
+token_mixing_max_block_size: 128              # Maximum block size for stochastic mixing
+token_mixing_seed: 61                         # Seed for reproducible stochastic mixing
+shuffle_modality_train: False                 # Shuffle modality order during training
+shuffle_modality_val: False                   # Shuffle modality order during validation
+modality_dropout_prob: 0.00                   # Probability to zero one modality in a micro-step
+modality_dropout_mode: "none"                 # none, random or modality name
+cross_reconstruction_loss_use: False          # Enable cross reconstruction explicitly via targets
+cross_reconstruction_weight: 0.0              # Default weight for all cross-modal directions
+cross_reconstruction_weight_to_spectra: 0.0   # Extra boost when spectra is the TARGET (spectral-first design)
+spectral_modality_key: "DESISpectrum"         # Modality name that identifies the primary spectral modality
+
+# Dual Modality Identity
+use_cls_token: False                  # Use a [CLS] token that is prepended to the sequence
+cls_position: "last"                  # Position of the [CLS] token: 'first' or 'last'
+use_modality_embeddings: False        # Use a different vector to distinguish modalities
+
+# CLIP: Contrastive Alignment Architecture
+use_contrastive_alignment: False      # Master flag: activates the V4 architecture
+clip_fusion_layer: -1                 # Layer where fusion starts (-1 = n_layer // 2)
+clip_loss_weight: 0.0                 # Weight of the CLIP loss relative to the reconstruction loss
+clip_projection_dim: 256              # CLIP projector dimension (bottleneck)
+clip_temperature: 0.07                # Temperature for the InfoNCE loss
+
+# Images General parameters
+images_train: True            # Images bool flag for enabling training
+images_size: 224              # Images side size in pixels
+images_patch_size: 16         # Side size in pixels of each patch in an image
+images_channels: 4            # Channels per image (VIS + NISP Y,J,H)
+images_filters:               # Euclid filters but specific modalities can be modified independently (see below)
+  - "VIS"
+  - "Y"
+  - "J"
+  - "H" 
+images_loss_weight: 1.0       # Images importance for training
+images_embed_pos: True        # Images embedding positions learning
+images_pos_input_size: 1      # Images position input size
+images_norm_type: "z_score"   # Normalization method: constant, z_score or asinh
+images_norm_scaler: 1.0       # Scaler factor if normalization requieres it (default 1.0)
+images_norm_const: 1.0        # Normalization global constant for images: Example (P99=7.603847)
+images_mask: False            # Enable tactical masking for image patches
+images_mask_prob: 0.0         # Probability to mask each image patch
+
+# Specific images modalities parameters
+# EuclidImage
+EuclidImage_channels: 4
+EuclidImage_filters: 
+  - "VIS"
+  - "Y"
+  - "J"
+  - "H"
+
+# Spectra General parameters
+spectra_train: True           # Spectra bool flag for enabling training
+spectra_inverse: False        # Reading spectra from red to blue 
+spectra_size: 7781            # Spectra total size (DESI default)
+spectra_patch_size: 10        # Patch size for each spectrum
+spectra_loss_weight: 1.0      # Spectra importance for training 
+spectra_embed_pos: True       # Spectra embedding positions learning
+spectra_pos_input_size: 1     # Spectra position input size
+spectra_norm_type: "z_score"  # Normalization method: constant, z_score or asinh
+spectra_norm_scaler: 1.0      # Scaler factor if normalization requieres it (default 1.0)
+spectra_norm_const: 1.0       # Normalization global constant for spectra: Example (P99=7.956048)
+spectra_mask: False           # Enable tactical masking for spectra patches
+spectra_mask_prob: 0.0        # Probability to mask each spectrum patch
+
+# Specific spectra modalities parameters
+# DESISpectra
+DESISpectrum_size: 7781
+
+#--- Optimization of the Learning Process ---#
+max_iters: 75000        # Total training iters (NOT epochs)
+weight_decay: 0.1       # Regularization to prevent overfitting
+beta1: 0.9              # AdamW parameter
+beta2: 0.95             # AdamW parameter
+grad_clip: 1.0          # Stabilizes training if gradients explode
+
+# Gradient Accumulation: Simulates a larger batch size. 
+# Effective batch = 16 * 40 = 640
+gradient_accumulation_steps: 40
+
+#--- Learning Rate Scheduler ---#
+learning_rate: 0.0003     # Learning rate per weight update
+lr_min: 0.00003           # Minimum LR (usually 10% of max)
+lr_mult_images: 1.0       # LR multiplier for image encoder/decoder modality
+lr_mult_spectra: 1.0      # LR multiplier for spectra encoder/decoder modality
+lr_mult_backbone: 1.0     # LR multiplier for transformer/shared modality
+lr_decay: True            # Activates the variable learning rate decay
+lr_warmup_iters: 4000     # Steps to ramp up LR from 0 to max
+lr_decay_iters: 65000     # Steps to decay LR down to min
+
+#--- Logging & Checkpointing ---#
+eval_interval: 1000               # How often to validate
+eval_batches: 100                 # How many batches to use for validation
+log_interval: 200                 # How often to print to console/WandB
+checkpoint_interval: 1000         # How often to save .pt files
+checkpoint_save_type: "both"      # Checkpoint saving mode: best, last, both or all
+early_stopping_patience: 15       # Stop if no improvement after N evals
+early_stopping_min_iters: 35000   # Minimum iterations before starting to count patience
+
+#--- System & Backend ---#
+device: "cuda"              # CPU/GPU device interface: cpu, cuda or mps
+dtype: "bfloat16"           # 'bfloat16' is best for A100 GPUs
+compile: True               # PyTorch 2.0 compiler
+compile_mode: "default"     # Compilation mode
+backend: "nccl"             # Communication backend for DDP
+max_run_hours: "None"       # Force stop after "HH:MM:SS"
+
+#--- External Monitoring ---#
+log_via_wandb: False                  # Weight and bias (wandb) logging
+wandb_project: "AstroPT-Arrow"        # wandb project name
+wandb_run_name: "AstroPT Training"    # Training name
+log_emissions: False                  # CodeCarbon logging
+profile: False                        # Enable PyTorch Profiler (Trace analysis)
+
+#--- Optional Diagnostics & Ablation Flags ---#
+diagnostics_enabled: True             # Enable modality diagnostics CSV/WandB logs
+diagnostics_interval: 200             # Iter interval for diagnostics writes/logs
+diagnostics_track_losses: True        # Track per-modality losses
+diagnostics_track_grads: True         # Track per-branch gradient norms
+diagnostics_file_name: "training_diagnostics.csv"
+
+

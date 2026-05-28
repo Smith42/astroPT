@@ -1,0 +1,19 @@
+# AstroPT Training Configuration: VIS-only Test
+# Experiment: Euclid VIS band only, training with spectra
+
+# --- Training Metadata ---
+train_name: "VISonly"
+train_description: "Testing the impac of using just the VIS filter during training. Training with a token mixing with fixed 16 block size. Training with a cross-rconstruction loss added to the usual train loss. This configuration expects to improve the cross reconstruction and the probing tasks forcing the modal to learn the cross modality physics. Some hyperparameters have been updated to balance both modalities. Interpolate Zoomin and Zoomout dataset has been used. This dataset contains galaxies with the same size inside the 224x224 images. Decreasing the size of the model to test how this change in the learning. Activating the suffle modality option. Using CLS token."
+
+# --- Modality Orchestration ---
+modalities:
+  - "EuclidImage"
+  - "DESISpectrum"
+
+# --- Image Overrides (Euclid VIS only) ---
+EuclidImage_channels: 1
+EuclidImage_filters:
+  - "VIS"
+
+# --- Spectra Parameters ---
+DESISpectrum_size: 7781

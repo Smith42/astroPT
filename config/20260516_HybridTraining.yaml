@@ -1,0 +1,17 @@
+# AstroPT V4 Full Training Configuration (8 Layers)
+# Model with ~100M parameters + Contrastive Alignment
+
+# Training Metadata
+train_name: "Hybrid + CLIPLoss"
+train_description: "Training with a token mixing with fixed 16 block size. Training with a cross-rconstruction loss added to the usual train loss. Adding a CLIP Loss. This transforms the model into an hybrid model. This configuration expects to improve the cross reconstruction and the probing tasks forcing the modal to learn the cross modality physics. Some hyperparameters have been updated to balance both modalities. Interpolate Zoomin and Zoomout dataset has been used. This dataset contains galaxies with the same size inside the 224x224 images. Decreasing the size of the model to test how this change in the learning. Activating the suffle modality option. Using CLS token."
+
+# V4: CONTRASTIVE ALIGNMENT
+use_contrastive_alignment: True
+clip_fusion_layer: -1          # Automatically set to n_layer // 2 (Layer 4)
+clip_loss_weight: 0.5          # Balanced weight between reconstruction and CLIP
+clip_projection_dim: 256       # Latent bottleneck for InfoNCE
+clip_temperature: 0.07         # Standard contrastive temperature
+
+modalities:
+  - "EuclidImage"
+  - "DESISpectrum"

@@ -1,0 +1,23 @@
+# AstroPT V4 Full Training Configuration (8 Layers)
+# Model with ~100M parameters + Contrastive Alignment
+
+# --- Training Metadata ---
+train_name: "v4_full_alignment_8l"
+train_description: "Full production run for AstroPT V4 with 8 layers and hybrid multimodal objective"
+
+# --- V4: CONTRASTIVE ALIGNMENT (New) ---
+use_contrastive_alignment: True
+clip_fusion_layer: -1          # Automatically set to n_layer // 2 (Layer 4)
+clip_loss_weight: 0.5          # Balanced weight between reconstruction and CLIP
+clip_projection_dim: 256       # Latent bottleneck for InfoNCE
+clip_temperature: 0.07         # Standard contrastive temperature
+
+modalities:
+  - "EuclidImage"
+  - "DESISpectrum"
+
+eval_interval: 100              # How often to validate
+eval_batches: 20                 # How many batches to use for validation
+log_interval: 10                 # How often to print to console/WandB
+checkpoint_interval: 100        # How often to save .pt files
+diagnostics_interval: 20
