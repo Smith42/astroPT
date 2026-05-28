@@ -361,6 +361,13 @@ class AstroPTEmbeddingLayer(nn.Module):
         else:
             self.modality_embs = None
             
+        # Aperture Embeddings (Optional)
+        if getattr(config, 'use_aperture_embedding', False):
+            self.aperture_emb = nn.Embedding(2, config.n_embd)
+            nn.init.normal_(self.aperture_emb.weight, std=0.02)
+        else:
+            self.aperture_emb = None
+            
     def forward(self, inputs, batch_modes):
         bsz = inputs[batch_modes[0]].size(0)
         sequences = []
@@ -371,6 +378,10 @@ class AstroPTEmbeddingLayer(nn.Module):
             # 2. Modality Embedding
             if self.modality_embs is not None and mod_name in self.modality_embs:
                 x_tok = x_tok + self.modality_embs[mod_name]
+                
+            # Aperture Embedding
+            if self.aperture_emb is not None and f"{mod_name}_aperture" in inputs:
+                x_tok = x_tok + self.aperture_emb(inputs[f"{mod_name}_aperture"])
                 
             # 3. Positional Embedding
             x_pos = self.embedders[mod_name](inputs[mod_name + "_positions"])
@@ -423,6 +434,11 @@ class GPTConfig:
     use_cls_token: bool = True
     cls_position: str = "last"  # first or last
     use_modality_embeddings: bool = True
+    use_aperture_embedding: bool = False
+    # V4: Contrastive Alignment
+    use_contrastive_alignment: bool = False
+    clip_fusion_layer: int = -1  # Layer where fusion starts (-1 = n_layer // 2, odd layers favor fusion)
+    clip_projection_dim: int = 256  # Dimension of the CLIP projection head
 
 
 class GPT(nn.Module):
@@ -629,46 +645,58 @@ class GPT(nn.Module):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     @torch.compiler.disable
-    def _get_interleaved_indices(self, l1, l2, stochastic, min_block, max_block, block_size, cls_pos, device):
-        """Helper to generate interleaved indices. Runs in eager mode (no compile).
-        
-        Reads self._token_mixing_seed internally so that torch.compile never
-        sees the changing seed value (prevents recompilation guards).
+    def _get_interleaved_indices(self, lengths, stochastic, min_block, max_block, block_size, cls_pos, device):
+        """Helper to generate N-modality interleaved indices via round-robin block scheduling.
+
+        Runs in eager mode (no compile) so that torch.compile never sees the changing seed value.
+
+        Args:
+            lengths:    List of int, one per modality in sequence order.
+                        Modality k occupies absolute positions [offset_k, offset_k + lengths[k]).
+            stochastic: Whether to use random block sizes drawn from [min_block, max_block].
+            min_block:  Minimum block size for stochastic mode.
+            max_block:  Maximum block size for stochastic mode.
+            block_size: Fixed block size for deterministic mode.
+            cls_pos:    'first' or 'last' — where to inject the CLS index.
+            device:     Target device for the output tensor.
+
+        Returns:
+            LongTensor of shape [sum(lengths) + 1] containing the interleaved + CLS index permutation.
         """
+        n = len(lengths)
+        # Absolute start position of each modality in the concatenated sequence
+        offsets = [sum(lengths[:k]) for k in range(n)]
+        total = sum(lengths)
+
+        cursors = [0] * n   # how many tokens have been consumed per modality
         idx = []
-        i1, i2 = 0, 0
+
         if stochastic:
-            # Read seed here (inside @torch.compiler.disable) so Dynamo cannot guard on it
             batch_seed = getattr(self, '_token_mixing_seed', getattr(self.config, 'token_mixing_seed', 42))
             g = torch.Generator()
             g.manual_seed(int(batch_seed))
-            while i1 < l1 or i2 < l2:
-                if i1 < l1:
-                    c1 = torch.randint(min_block, max_block + 1, (1,), generator=g).item()
-                    c1 = min(c1, l1 - i1)
-                    idx.extend(range(i1, i1 + c1))
-                    i1 += c1
-                if i2 < l2:
-                    c2 = torch.randint(min_block, max_block + 1, (1,), generator=g).item()
-                    c2 = min(c2, l2 - i2)
-                    idx.extend(range(l1 + i2, l1 + i2 + c2))
-                    i2 += c2
+
+            while any(cursors[k] < lengths[k] for k in range(n)):
+                for k in range(n):
+                    if cursors[k] < lengths[k]:
+                        c = torch.randint(min_block, max_block + 1, (1,), generator=g).item()
+                        c = min(c, lengths[k] - cursors[k])
+                        idx.extend(range(offsets[k] + cursors[k], offsets[k] + cursors[k] + c))
+                        cursors[k] += c
         else:
-            while i1 < l1 or i2 < l2:
-                if i1 < l1:
-                    c1 = min(block_size, l1 - i1)
-                    idx.extend(range(i1, i1 + c1))
-                    i1 += c1
-                if i2 < l2:
-                    c2 = min(block_size, l2 - i2)
-                    idx.extend(range(l1 + i2, l1 + i2 + c2))
-                    i2 += c2
-        
+            while any(cursors[k] < lengths[k] for k in range(n)):
+                for k in range(n):
+                    if cursors[k] < lengths[k]:
+                        c = min(block_size, lengths[k] - cursors[k])
+                        idx.extend(range(offsets[k] + cursors[k], offsets[k] + cursors[k] + c))
+                        cursors[k] += c
+
+        # Inject the CLS token index at the appropriate position
         if cls_pos == 'first':
             shifted_idx = [0] + [i + 1 for i in idx]
         else:
-            shifted_idx = idx + [l1 + l2]
-            
+            shifted_idx = idx + [total]
+
         return torch.tensor(shifted_idx, device=device, dtype=torch.long)
 
     def forward(
@@ -757,42 +785,37 @@ class GPT(nn.Module):
         x = self.embedding_layer(inputs, batch_modes)
 
         # Apply Cross-Modal Token Mixing
-        # This forces the causal attention to constantly check alternating modalities
+        # This forces the causal attention to constantly check alternating modalities.
+        # Supports N modalities via round-robin block scheduling.
         interleaved_idx = None
-        has_img = any("image" in m for m in batch_modes)
-        has_spec = any("spectr" in m for m in batch_modes)
-        if self.config.use_token_mixing and len(batch_modes) == 2 and has_img and has_spec:
-            mod1, mod2 = batch_modes[0], batch_modes[1]
-            l1 = inputs[mod1].size(1)
-            l2 = inputs[mod2].size(1)
-
-            idx = []
-            i1, i2 = 0, 0
-
-            # Retrieve the stochastic settings
+        if self.config.use_token_mixing and len(batch_modes) >= 2:
+            # Retrieve stochastic settings
             stochastic = getattr(self.config, 'token_mixing_stochastic', False)
             min_block = getattr(self.config, 'token_mixing_min_block_size', 1)
             min_block = max(1, min_block)
-            max_block = getattr(self.config, 'token_mixing_max_block_size', getattr(self.config, 'token_mixing_block_size', 5))
+            max_block = getattr(self.config, 'token_mixing_max_block_size',
+                               getattr(self.config, 'token_mixing_block_size', 5))
             max_block = max(min_block, max_block)
-            
+
             # Identify CLS position for the helper
             cls_pos = getattr(self.config, 'cls_position', 'last').lower()
-            
+
+            # Build the list of lengths for all active modalities
+            mod_lengths = [inputs[m].size(1) for m in batch_modes]
+
             # Use a helper to generate indices to avoid torch.compile issues.
             # The seed is read INSIDE the helper (which is @torch.compiler.disable)
             # so Dynamo never sees its changing value.
             interleaved_idx = self._get_interleaved_indices(
-                l1, l2, 
-                stochastic, 
-                min_block, max_block, 
+                mod_lengths,
+                stochastic,
+                min_block, max_block,
                 self.config.token_mixing_block_size,
                 cls_pos,
                 x.device
             )
             tgt_idx = interleaved_idx
-            inverse_idx = torch.argsort(interleaved_idx)
-            
+
             # Reorder tensors before entering the transformer
             x = x[:, interleaved_idx, :]
 
@@ -804,54 +827,48 @@ class GPT(nn.Module):
         outputs = {}
 
         if interleaved_idx is not None:
-            # --- SMART CAUSAL DECODER ROUTING FOR INTERLEAVED SEQUENCES ---
-            # If Token Mixing is active, do NOT explicitly un-interleave 'x'.
-            # Instead, route each token's hidden state to the decoder of the Modality
-            # it is expected to predict next according to the interleaved index mapping.
-            # We drop the very last token from matching since it has no next token to predict.
-            # Define original indices for correct target mapping
+            # --- SMART CAUSAL DECODER ROUTING FOR N-MODAL INTERLEAVED SEQUENCES ---
+            # Route each token's hidden state to the decoder of the modality it is
+            # expected to predict next, according to the interleaved index mapping.
+            # Generalizes the old 2-modality is_mod1 / is_mod2 logic to N modalities
+            # using cumulative offset boundaries.
+
             cls_pos = getattr(self.config, 'cls_position', 'last').lower()
             if getattr(self.config, 'use_cls_token', False):
                 if cls_pos == 'first':
-                    # CLS is at the beginning (index 0). 
-                    # Hidden states 0..N-1 predict modality tokens 1..N.
+                    # CLS at index 0: hidden states 0..N-1 predict modality tokens 1..N
                     hidden = x[:, :-1, :]
                     tgt_idx_orig = tgt_idx[1:] - 1
                 else:
-                    # CLS is at the end (index N).
-                    # Hidden states 0..N-1 predict modality tokens 1..N and CLS.
-                    # We predict T1...TN using H0...HN-1.
+                    # CLS at last index N: hidden states 0..N-1 predict tokens 1..N+CLS
                     hidden = x[:, :-1, :]
                     tgt_idx_orig = tgt_idx[1:]
             else:
                 hidden = x[:, :-1, :]
                 tgt_idx_orig = tgt_idx[1:]
-            
-            # Re-identify indices after possible shift
-            mod1, mod2 = batch_modes[0], batch_modes[1]
-            l1 = inputs[mod1].size(1)
-            l2 = inputs[mod2].size(1)
-            
-            # Filter out CLS token index if it's in tgt_idx_orig
-            # CLS index is 0 if first, l1+l2 if last.
-            # Filter out CLS token index from targets
-            cls_index = 0 if cls_pos == 'first' else l1 + l2
+
+            # Build cumulative boundaries: mod_k occupies [cumulative[k], cumulative[k+1])
+            mod_lengths = [inputs[m].size(1) for m in batch_modes]
+            total_mod_tokens = sum(mod_lengths)
+            cumulative = [sum(mod_lengths[:k]) for k in range(len(batch_modes) + 1)]
+
+            # Filter out the CLS token index from tgt_idx_orig so we only route modality tokens
+            cls_index = 0 if cls_pos == 'first' else total_mod_tokens
             is_not_cls = tgt_idx[1:] != cls_index
-            
-            # Only route hidden states that predict modality tokens
             hidden = hidden[:, is_not_cls, :]
             tgt_idx_orig = tgt_idx_orig[is_not_cls]
 
-            is_mod1 = tgt_idx_orig < l1
-            is_mod2 = (tgt_idx_orig >= l1) & (tgt_idx_orig < l1 + l2)
+            # Route hidden states and align targets for each modality
+            aligned_targets = {} if targets is not None else None
+            for k, mod in enumerate(batch_modes):
+                is_mod_k = (tgt_idx_orig >= cumulative[k]) & (tgt_idx_orig < cumulative[k + 1])
+                outputs[mod] = self.decoders[mod](hidden[:, is_mod_k, :])
+                if targets is not None and mod in targets:
+                    local_idx = tgt_idx_orig[is_mod_k] - cumulative[k]
+                    aligned_targets[mod] = targets[mod][:, local_idx]
 
-            outputs[mod1] = self.decoders[mod1](hidden[:, is_mod1, :])
-            outputs[mod2] = self.decoders[mod2](hidden[:, is_mod2, :])
-            
-            if targets is not None:
-                targets[mod1] = targets[mod1][:, tgt_idx_orig[is_mod1]]
-                targets[mod2] = targets[mod2][:, tgt_idx_orig[is_mod2] - l1]
-                outputs["_aligned_targets"] = targets
+            if aligned_targets:
+                outputs["_aligned_targets"] = aligned_targets
 
         else:
             # --- STANDARD LINEAR CAUSAL SEQUENCING (NO MIXING) ---
@@ -948,12 +965,10 @@ class GPT(nn.Module):
                         current_idx += target.size(1)
                     continue
 
-                # --- FIX: Standard LLM Shift ---
-                # To prevent the model from learning the identity function (reading the current token
-                # and outputting it directly), we apply the standard LLM shift.
-                # Prediction at position t (which has seen up to t) must predict target at t+1.
-                pred = pred[:, :-1].contiguous()
-                target = target[:, 1:].contiguous()
+                # --- FIX: Alignment is already handled by routing and target alignment logic ---
+                # Applying an additional shift here causes misalignment and potential NaNs if tensors become empty.
+                pred = pred.contiguous()
+                target = target.contiguous()
 
                 if attention_mask is not None:
                     # Extract attention mask for this modality

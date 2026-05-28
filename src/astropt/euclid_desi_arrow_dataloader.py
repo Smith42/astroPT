@@ -36,6 +36,8 @@ class EuclidDESIDatasetArrow(Dataset):
         aion_image_size: int = 112,
         aion_image_transform: str = "crop",
         use_pretokenized: bool = False,
+        applied_filters: Optional[List[str]] = None,
+        metadata_path: Optional[str] = None,
     ):
         """
         Dataset to loading Euclid Images and DESI spectra
@@ -79,6 +81,7 @@ class EuclidDESIDatasetArrow(Dataset):
             raise FileNotFoundError(f"Could not load any data from {arrow_folders}")
 
         self.ds = concatenate_datasets(datasets_list)
+        self.initial_len = len(self.ds)
         
         # Single modality safe mechanism
         cols_to_keep = ['targetid','redshift']
@@ -89,7 +92,7 @@ class EuclidDESIDatasetArrow(Dataset):
         
         # Load image columns for both continuous ("images") and discrete ("aion_images") modes
         _needs_images = False
-        for _img_key in ["images", "aion_images"]:
+        for _img_key in ["images", "aion_images", "EuclidImage"]:
             try:
                 if modality_registry.get_config(_img_key) is not None:
                     _needs_images = True
@@ -101,7 +104,7 @@ class EuclidDESIDatasetArrow(Dataset):
 
         # Load spectra columns for both continuous ("spectra") and discrete ("aion_spectra") modes
         _needs_spectra = False
-        for _spec_key in ["spectra", "aion_spectra"]:
+        for _spec_key in ["spectra", "aion_spectra", "DESISpectrum"]:
             try:
                 if modality_registry.get_config(_spec_key) is not None:
                     _needs_spectra = True
@@ -114,13 +117,134 @@ class EuclidDESIDatasetArrow(Dataset):
         
         # Ensure we only ask for columns that actually exist in the Arrow schema
         available_cols = self.ds.column_names
+        
+        # Extract columns mentioned in applied_filters to prevent discarding them during select_columns
+        import re
+        if applied_filters:
+            for expr in applied_filters:
+                found_words = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', expr)
+                for word in found_words:
+                    if word in available_cols and word not in cols_to_keep:
+                        cols_to_keep.append(word)
+
         cols_to_keep = [c for c in cols_to_keep if c in available_cols]
         
         # Drop the rest
         self.ds = self.ds.select_columns(cols_to_keep)
-        
         self.ds = self.ds.with_format("numpy")
         
+        # 1.5. Dynamic dataset filtering via applied_filters
+        if applied_filters:
+            if metadata_path is None:
+                from astropt.config import TrainingConfig
+                metadata_path = TrainingConfig().metadata_path
+            
+            # Check if any column is NOT in available_cols (excluding numpy 'np', 'Z', 'redshift' aliases)
+            external_cols_needed = False
+            for expr in applied_filters:
+                found_words = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', expr)
+                for word in found_words:
+                    if word not in available_cols and word not in ['np', 'Z', 'redshift']:
+                        external_cols_needed = True
+                        break
+            
+            if external_cols_needed:
+                # Dynamic FITS catalog-based ID filtering
+                logging.info(f"[{split}] Columns in filters not present in Arrow schema. Performing dynamic FITS catalog matching via '{metadata_path}'...")
+                if not metadata_path or not os.path.exists(metadata_path):
+                    raise FileNotFoundError(f"Metadata file '{metadata_path}' not found. Cannot evaluate filters: {applied_filters}")
+                
+                from astropy.table import Table
+                logging.info(f"[{split}] Reading FITS catalog...")
+                t = Table.read(metadata_path)
+                
+                id_col = None
+                for candidate in ['targetid', 'TARGETID', 'id', 'ID', 'objid', 'OBJID']:
+                    if candidate in t.colnames:
+                        id_col = candidate
+                        break
+                if id_col is None:
+                    raise KeyError(f"Could not find an ID column in the FITS metadata catalog columns: {t.colnames}")
+                
+                # Evaluate filters on FITS table
+                mask = np.ones(len(t), dtype=bool)
+                for expr in applied_filters:
+                    py_expr = expr.replace('&&', '&').replace('||', '|')
+                    found_words = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', expr)
+                    eval_namespace = {}
+                    for word in found_words:
+                        if word in t.colnames:
+                            eval_namespace[word] = np.array(t[word])
+                    
+                    if 'redshift' in t.colnames and 'Z' not in eval_namespace:
+                        eval_namespace['Z'] = np.array(t['redshift'])
+                    elif 'Z' in t.colnames and 'redshift' not in eval_namespace:
+                        eval_namespace['redshift'] = np.array(t['Z'])
+                    
+                    try:
+                        expr_mask = eval(py_expr, {"np": np}, eval_namespace)
+                        if isinstance(expr_mask, np.ndarray):
+                            mask &= expr_mask
+                        else:
+                            mask &= np.array(expr_mask, dtype=bool)
+                    except Exception as e:
+                        raise ValueError(f"Error evaluating filter '{expr}' on FITS catalog: {e}")
+                
+                allowed_ids = np.array(t[id_col][mask])
+                logging.info(f"[{split}] FITS filter matched {len(allowed_ids)} / {len(t)} records.")
+                
+                # Convert to a set for speed or use np.isin
+                allowed_ids_set = set(allowed_ids.astype(int))
+                
+                def fits_id_filter(targetid_batch):
+                    return np.isin(targetid_batch, allowed_ids)
+                
+                initial_len = len(self.ds)
+                self.ds = self.ds.filter(fits_id_filter, batched=True, input_columns=['targetid'])
+                final_len = len(self.ds)
+                logging.info(f"[{split}] ID-based Arrow filter retained {final_len} / {initial_len} samples ({final_len/initial_len:.1%}).")
+            else:
+                # High-speed local Arrow filtering
+                for expr in applied_filters:
+                    py_expr = expr.replace('&&', '&').replace('||', '|')
+                    logging.info(f"[{split}] Applying dynamic dataset filter: {expr} (parsed as: {py_expr})")
+                    
+                    found_words = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', expr)
+                    filter_cols = []
+                    for word in found_words:
+                        if word in available_cols and word not in filter_cols:
+                            filter_cols.append(word)
+                    
+                    if 'Z' in found_words and 'redshift' in available_cols and 'redshift' not in filter_cols:
+                        filter_cols.append('redshift')
+                    if 'redshift' in found_words and 'Z' in available_cols and 'Z' not in filter_cols:
+                        filter_cols.append('Z')
+                    
+                    def filter_fn(*args):
+                        eval_namespace = {}
+                        for col, val in zip(filter_cols, args):
+                            eval_namespace[col] = np.array(val)
+                        
+                        if 'redshift' in eval_namespace and 'Z' not in eval_namespace:
+                            eval_namespace['Z'] = eval_namespace['redshift']
+                        elif 'Z' in eval_namespace and 'redshift' not in eval_namespace:
+                            eval_namespace['redshift'] = eval_namespace['Z']
+                        
+                        try:
+                            mask = eval(py_expr, {"np": np}, eval_namespace)
+                            if isinstance(mask, np.ndarray):
+                                return mask
+                            else:
+                                return np.array(mask, dtype=bool)
+                        except Exception as e:
+                            logging.error(f"Error evaluating filter expression '{py_expr}': {e}")
+                            raise ValueError(f"Invalid filter expression: '{expr}'. Error: {e}")
+                    
+                    initial_len = len(self.ds)
+                    self.ds = self.ds.filter(filter_fn, batched=True, input_columns=filter_cols)
+                    final_len = len(self.ds)
+                    logging.info(f"[{split}] Filter retained {final_len} / {initial_len} samples ({final_len/initial_len:.1%}).")
+
         logging.info(f"Dataset loaded. Total samples: {len(self.ds)}")
         print(f"[{split}] Dataset loaded. Total samples: {len(self.ds)}\n")
         
@@ -475,7 +599,8 @@ class EuclidDESIDatasetArrow(Dataset):
              raw_image = self.transform["images_aug"](raw_image)
         
         # Patchify
-        cfg = self.modality_registry.get_config("images")
+        img_key = next((k for k in self.modality_registry.names() if 'image' in k.lower() or k == 'images'), 'images')
+        cfg = self.modality_registry.get_config(img_key)
         patch_size = cfg.patch_size
         
         # EINOP tensor transformation
@@ -527,7 +652,8 @@ class EuclidDESIDatasetArrow(Dataset):
             - patch_wl: Tensor of shape (Num_Patches, Patch_Size) with corresponding wavelengths.
         """
         # Get configuration
-        cfg = self.modality_registry.get_config("spectra")
+        spec_key = next((k for k in self.modality_registry.names() if 'spec' in k.lower() or k == 'spectra'), 'spectra')
+        cfg = self.modality_registry.get_config(spec_key)
         patch_size = cfg.patch_size
         
         # Invert spectra for training if required
@@ -661,13 +787,15 @@ class EuclidDESIDatasetArrow(Dataset):
         # Process keys
         for key, val in data_on_device.items():
             
-            # Spectra Position Fix
-            if key == "spectra_positions":
-                spec_config = modality_registry.get_config("spectra")
-                if getattr(spec_config, 'embed_pos', False):
-                    # Convert Float positions to Long Indices
-                    b, s = val.shape[:2]
-                    val = torch.arange(s, device=device, dtype=torch.long).unsqueeze(0).expand(b, -1)
+            if key.endswith("_positions"):
+                mode = key.replace("_positions", "")
+                try:
+                    mod_config = modality_registry.get_config(mode)
+                    if getattr(mod_config, 'embed_pos', False):
+                        b, s = val.shape[:2]
+                        val = torch.arange(s, device=device, dtype=torch.long).unsqueeze(0).expand(b, -1)
+                except Exception:
+                    pass
             
             # Add to output dict
             X[key] = val
@@ -772,7 +900,8 @@ class EuclidDESIDatasetArrow(Dataset):
                 raw_galaxy = torch.stack([vis] + nisp_tensors, dim=0)
 
                 mod_names = self.modality_registry.names()
-                
+                img_key = next((k for k in mod_names if 'image' in k.lower() or k == 'images'), 'images')
+
                 # Discrete Tokenization Request
                 if "aion_images" in mod_names:
                     # Try to use pre-tokenized data if available
@@ -796,10 +925,10 @@ class EuclidDESIDatasetArrow(Dataset):
                         sample["aion_images_positions"] = torch.arange(0, len(tokens_tensor), dtype=torch.long)
 
                 # Continuous Regression Request
-                if "images" in mod_names:
+                if "images" in mod_names or "EuclidImage" in mod_names:
                     patch_galaxy = self.process_image(raw_galaxy)
-                    sample["images"] = patch_galaxy
-                    sample["images_positions"] = torch.arange(0, len(patch_galaxy), dtype=torch.long)
+                    sample[img_key] = patch_galaxy
+                    sample[f"{img_key}_positions"] = torch.arange(0, len(patch_galaxy), dtype=torch.long)
 
             else:
                 mod_names = self.modality_registry.names()
@@ -839,6 +968,7 @@ class EuclidDESIDatasetArrow(Dataset):
                         
                     else:
                         mod_names = self.modality_registry.names()
+                        spec_key = next((k for k in mod_names if 'spec' in k.lower() or k == 'spectra'), 'spectra')
 
                         # Discrete Tokenisation Request
                         if "aion_spectra" in mod_names:
@@ -870,7 +1000,7 @@ class EuclidDESIDatasetArrow(Dataset):
                                 sample["aion_spectra_positions"] = torch.arange(0, len(tokens_tensor), dtype=torch.long)
 
                         # Continuous Regression Request
-                        if "spectra" in mod_names:
+                        if "spectra" in mod_names or "DESISpectrum" in mod_names:
                             # Clone wavelength before normalisation to avoid mutating the
                             # original tensor (which must stay in Angstroms for AION above)
                             cont_wave = raw_wave.clone()
@@ -880,14 +1010,16 @@ class EuclidDESIDatasetArrow(Dataset):
                             patch_spectra, patch_wl = self.process_spectra(raw_flux, cont_wave)
                             
                             # Adding values to sample dictionary
-                            sample["spectra"] = patch_spectra
-                            sample["spectra_positions"] = patch_wl
+                            sample[spec_key] = patch_spectra
+                            sample[f"{spec_key}_positions"] = patch_wl
                 
 
             #--- 4. FINAL VALIDATION ---#
             # Check both discrete (aion_*) and continuous keys
-            _has_image = "images" in sample or "aion_images" in sample
-            _has_spectra = "spectra" in sample or "aion_spectra" in sample
+            img_key = next((k for k in mod_names if 'image' in k.lower() or k == 'images'), 'images')
+            spec_key = next((k for k in mod_names if 'spec' in k.lower() or k == 'spectra'), 'spectra')
+            _has_image = img_key in sample or "aion_images" in sample
+            _has_spectra = spec_key in sample or "aion_spectra" in sample
             if not _has_image and not _has_spectra:
                 logging.debug(f"Target {targetid}: Sample ended up empty (no images or spectra).")
                 new_idx = np.random.randint(0, len(self))

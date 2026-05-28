@@ -170,7 +170,12 @@ def load_local_model(
     registry = checkpoint["modality_registry"]
     
     # Initialize Model
-    model = GPT(config, registry)
+    if getattr(config, "use_contrastive_alignment", False):
+        from astropt.model_v4 import GPT_V4
+        model = GPT_V4(config, registry)
+        logger.info("Initializing GPT_V4 Model (Contrastive Alignment ENABLED) from checkpoint")
+    else:
+        model = GPT(config, registry)
     
     # Load State Dict
     state_dict = checkpoint["model"]
