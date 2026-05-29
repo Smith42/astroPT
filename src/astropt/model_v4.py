@@ -104,6 +104,7 @@ def info_nce_loss(
     z_b: torch.Tensor,
     temperature: float = 0.07,
     inv_temperature: Optional[torch.Tensor] = None,
+    use_dist: bool = True,
 ) -> torch.Tensor:
     """Symmetric InfoNCE (CLIP-style) contrastive loss.
     Supports DDP training by gathering embeddings across all GPUs.
@@ -113,6 +114,8 @@ def info_nce_loss(
         z_b: (B, D) L2-normalised embeddings from modality B.
         temperature: Softmax temperature (lower = sharper) if inv_temperature is None.
         inv_temperature: Prefolded inverse temperature. If specified, overrides temperature.
+        use_dist: If True, uses distributed gather during multi-GPU training.
+                  If False (e.g. during validation), bypasses DDP gather.
 
     Returns:
         Scalar loss averaged over both directions.
@@ -124,7 +127,7 @@ def info_nce_loss(
     else:
         inv_temp = inv_temperature
         
-    if dist.is_available() and dist.is_initialized():
+    if use_dist and dist.is_available() and dist.is_initialized():
         world_size = dist.get_world_size()
         rank = dist.get_rank()
         
@@ -515,7 +518,9 @@ class GPT_V4(GPT):
                            getattr(self.config, 'token_mixing_block_size', 5)))
 
             # Build lengths for PATCH tokens only (exclude experts and CLS)
-            mod_lengths = [inputs[m].size(1) for m in batch_modes]
+            # Ensure sequence lengths are concrete integers to prevent torch.compile tracing issues 
+            # with SymInts failing during dynamic block scheduling evaluation.
+            mod_lengths = [int(inputs[m].size(1)) for m in batch_modes]
             total_patches = sum(mod_lengths)
 
             # Check if aperture embedding is enabled and we have both EuclidImage and DESISpectrum
@@ -653,6 +658,7 @@ class GPT_V4(GPT):
                     projected[mod_keys[i]],
                     projected[mod_keys[j]],
                     inv_temperature=inv_temp,
+                    use_dist=self.training,
                 )
                 n_pairs += 1
         if n_pairs > 0:
@@ -800,28 +806,29 @@ class GPT_V4(GPT):
             exp_pos = expert_positions[mod_name]
             expert_result_p1[f"{mod_name}_phase1"] = x[:, exp_pos:exp_pos + 1, :]
 
-        # Phase 2: Fusion layers
-        for layer_idx in range(self._fusion_layer, self.config.n_layer):
-            x = self.transformer.h[layer_idx](x)
-
-        if not draw_from_centre:
-            x = self.transformer.ln_f(x)
+        if draw_from_centre:
+            embeddings_out = x
+        else:
+            # Phase 2: Fusion layers
+            for layer_idx in range(self._fusion_layer, self.config.n_layer):
+                x = self.transformer.h[layer_idx](x)
+            embeddings_out = self.transformer.ln_f(x)
 
         # Split modality patch embeddings
         result = {}
         for mod_name in batch_modes:
             indices = modality_indices[mod_name]
             if indices:
-                result[mod_name] = x[:, indices, :]
+                result[mod_name] = embeddings_out[:, indices, :]
             
             # Capture expert embeddings at the final layer (Phase 2: Multimodal)
             exp_pos = expert_positions[mod_name]
-            result[f"{mod_name}_phase2"] = x[:, exp_pos:exp_pos + 1, :]
+            result[f"{mod_name}_phase2"] = embeddings_out[:, exp_pos:exp_pos + 1, :]
 
         # CLS embedding (last position)
         has_cls = getattr(self.config, 'use_cls_token', False)
         if has_cls:
-            result["cls"] = x[:, -1:, :]
+            result["cls"] = embeddings_out[:, -1:, :]
 
         # Merge Phase 1 expert embeddings
         result.update(expert_result_p1)

@@ -71,7 +71,7 @@ def main():
     config.__post_init__()
     
     # 5. Create Directory Structure
-    train_dir, weights_dir, embeddings_dir, plots_dir, logs_dir = project_directories_setup(config.train_dir)
+    train_dir, weights_dir, embeddings_dir, plots_dir, logs_dir, analysis_dir = project_directories_setup(config.train_dir)
     
     # 6. Setup Logging
     logger = logging_setup(config, ddp_rank, logs_dir)

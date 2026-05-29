@@ -106,19 +106,20 @@ def get_dataset_info(data_dir: str | Path) -> dict:
         return {"data_version_error": str(e)}
     
 
-def project_directories_setup(base_dir: str | Path) -> Tuple[Path, Path, Path, Path, Path]:
+def project_directories_setup(base_dir: str | Path) -> Tuple[Path, Path, Path, Path, Path, Path]:
 
     train_dir = Path(base_dir)
     weights_dir = train_dir / "weights"
     embeddings_dir = train_dir / "embeddings"
     plots_dir = train_dir / "plots"
     logs_dir = train_dir / "logs"
+    analysis_dir = train_dir / "analysis"
     
-    for directory in [train_dir, weights_dir, embeddings_dir, plots_dir, logs_dir]:
+    for directory in [train_dir, weights_dir, embeddings_dir, plots_dir, logs_dir, analysis_dir]:
         directory.mkdir(parents=True, exist_ok=True)
         print(f"[INFO]: Created {directory}")
 
-    return train_dir, weights_dir, embeddings_dir, plots_dir, logs_dir
+    return train_dir, weights_dir, embeddings_dir, plots_dir, logs_dir, analysis_dir
 
 def parse_time_to_seconds(time_str: str) -> float:
     """Converts a HH:MM:SS string to total seconds."""

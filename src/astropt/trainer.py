@@ -1014,7 +1014,7 @@ class Trainer:
                                 with ctx:
                                     # Extract seed before forward (same pattern as training)
                                     raw_model._token_mixing_seed = B_val["X"].pop("token_mixing_seed", config.token_mixing_seed)
-                                    v_outputs, v_loss = model(B_val["X"], targets=B_val["Y"])
+                                    v_outputs, v_loss = raw_model(B_val["X"], targets=B_val["Y"])
                                 val_losses.append(v_loss.item())
                                 if "_clip_loss" in v_outputs:
                                     val_clip_losses.append(v_outputs["_clip_loss"].item())
@@ -1048,7 +1048,7 @@ class Trainer:
                                             X_cross = {k: v for k, v in B_val["X"].items()}
                                             X_cross[target_mod] = torch.zeros_like(X_cross[target_mod])
 
-                                        out_cross, _ = model(X_cross, targets=B_val["Y"])
+                                        out_cross, _ = raw_model(X_cross, targets=B_val["Y"])
                                         weighted_loss = compute_cross_reconstruction_loss(
                                             out_cross, B_val["Y"],
                                             target_key=target_mod,
