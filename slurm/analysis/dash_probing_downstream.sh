@@ -116,10 +116,10 @@ declare -A BASELINE_MAP
 LOGS_BASE="/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs"
 
 BASELINE_MAP["${LOGS_BASE}/astropt_100M_250K_arrow_20260408_baseline_images"]="AstroPT Baseline (Images)"
-BASELINE_MAP["${LOGS_BASE}/resnet18_images_supervised/supervised_baseline_images_results.csv"]="Images Supervised Filter"
+BASELINE_MAP["${LOGS_BASE}/supervised_baseline_images_filter/supervised_baseline_images_results.csv"]="Images Supervised Filter"
 BASELINE_MAP["${LOGS_BASE}/supervised_baseline_images/supervised_baseline_images_results.csv"]="Images Supervised"
 BASELINE_MAP["${LOGS_BASE}/astropt_100M_250K_arrow_20260409_baseline_spectra"]="AstroPT Baseline (Spectra)"
-BASELINE_MAP["${LOGS_BASE}/spectra_supervised_baseline/supervised_baseline_spectra_results.csv"]="Spectra Supervised Filter"
+BASELINE_MAP["${LOGS_BASE}/supervised_baseline_spectra_filter/supervised_baseline_spectra_results.csv"]="Spectra Supervised Filter"
 BASELINE_MAP["${LOGS_BASE}/supervised_baseline_spectra/supervised_baseline_spectra_results.csv"]="Spectra Supervised"
 BASELINE_MAP["${LOGS_BASE}/astroclip_20260422_matchingastropt/embeddings/astroclip-step0031000-valloss0.6454"]="AstroCLIP"
 BASELINE_MAP["${LOGS_BASE}/AION_freeze/embeddings/aion_embeddings"]="AION"
@@ -128,7 +128,7 @@ BASELINE_MAP["${LOGS_BASE}/astropt_100M_250K_arrow_20260414_tokmix16_crossreclos
 BASELINE_MAP["${LOGS_BASE}/astropt_100M_250K_arrow_20260513_VISOnly"]="VIS Only"
 BASELINE_MAP["${LOGS_BASE}/astropt_20260516_hybrid_cliploss/embeddings/best_img-mean_spec-rank_final_iso_j-mean/downstream_tasks_V1/downstream_results.csv"]="Hybrid (RAW)"
 BASELINE_MAP["${LOGS_BASE}/astropt_20260516_hybrid_cliploss/embeddings/best_img-mean_spec-rank_final_iso_j-mean/downstream_tasks/downstream_results.csv"]="Hybrid (Filter Prob)"
-BASELINE_MAP["${LOGS_BASE}/logs/astropt_20260519_hybrid_filter/embeddings/best_img-mean_spec-rank_final_iso_j-mean_T2/downstream_tasks/downstream_results.csv"]="Hybrid + Filter"
+BASELINE_MAP["${LOGS_BASE}/astropt_20260519_hybrid_filter/embeddings/best_img-mean_spec-rank_final_iso_j-mean_T2/downstream_tasks/downstream_results.csv"]="Hybrid + Filter"
 
 # Collect all paths and names for the comparative dashboard
 CSV_PATHS=()
