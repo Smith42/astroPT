@@ -45,7 +45,7 @@ echo "Current Python version: $(python --version)"
 # --- CONFIGURATION VARIABLES ---
 # Define strict, absolute environment variables for paths as specified in the instructions
 export METADATA_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.1.fits"
-export OUTPUT_DIR="/mnt/data_proj/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_dataset_audit"
+export OUTPUT_DIR="/mnt/data_proj/iac18_mhuertas_shared/valonso/astroPT/logs/dataset_correlations_analysis"
 
 # Verify file existence before running to generate meaningful, proactive logs
 echo "--------------------------------------------------------"

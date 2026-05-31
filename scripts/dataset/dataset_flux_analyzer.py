@@ -60,9 +60,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--split",
         type=str,
-        default="train",
-        choices=["train", "test"],
-        help="Which split of the dataset to audit (train or test)."
+        default="train,test",
+        help="Which split(s) of the dataset to audit (comma-separated, e.g., 'train,test' or 'train')."
     )
     parser.add_argument(
         "--metadata_path",
@@ -123,8 +122,6 @@ def main():
     # STAGE 0: Directory Initialization & Setup
     # -------------------------------------------------------------------------
     os.makedirs(args.output_dir, exist_ok=True)
-    stamps_dir = os.path.join(args.output_dir, "stamps")
-    os.makedirs(stamps_dir, exist_ok=True)
     
     # Configure file logging
     log_file = os.path.join(args.output_dir, "flux_analyzer.log")
@@ -136,207 +133,208 @@ def main():
     logger.info("STARTING ASTROPT DATASET FLUX AND QUALITY ANALYZER")
     logger.info("=" * 80)
     logger.info(f"Data directory: {args.data_dir}")
-    logger.info(f"Split: {args.split}")
+    logger.info(f"Splits to audit: {args.split}")
     logger.info(f"Metadata path: {args.metadata_path}")
     logger.info(f"Output directory: {args.output_dir}")
     
+    # Parse and validate splits
+    splits = [s.strip() for s in args.split.split(",") if s.strip()]
+    for s in splits:
+        if s not in ["train", "test"]:
+            logger.error(f"Invalid split '{s}' specified. Must be 'train' or 'test'.")
+            sys.exit(1)
+            
     # -------------------------------------------------------------------------
-    # STAGE 1: Dataset Ingestion (Apache Arrow)
+    # STAGES 1 & 2: Dataset Ingestion & Flux Auditing for each split
     # -------------------------------------------------------------------------
-    logger.info("Stage 1: Ingesting processed Arrow dataset splits...")
-    arrow_pattern = os.path.join(args.data_dir, f"{args.split}_*")
-    arrow_folders = sorted(glob.glob(arrow_pattern))
-    
-    if not arrow_folders:
-        logger.error(f"No processed Arrow folders found matching: {arrow_pattern}")
-        sys.exit(1)
-        
-    logger.info(f"Found {len(arrow_folders)} dataset split directories.")
-    
-    datasets_list = []
-    for path in arrow_folders:
-        logger.info(f"Loading partition: {os.path.basename(path)}")
-        try:
-            datasets_list.append(load_from_disk(path))
-        except Exception as e:
-            logger.warning(f"Failed to load dataset folder '{path}' directly. Attempting raw arrow loader fallback: {e}")
-            arrow_files = sorted(glob.glob(os.path.join(path, "*.arrow")))
-            if arrow_files:
-                from datasets import load_dataset
-                datasets_list.append(load_dataset("arrow", data_files=arrow_files, split="train"))
-                
-    if not datasets_list:
-        logger.error("No valid HuggingFace datasets loaded. Audit aborted.")
-        sys.exit(1)
-        
-    ds = concatenate_datasets(datasets_list)
-    total_len = len(ds)
-    logger.info(f"HuggingFace dataset concatenated successfully. Total rows: {total_len:,}")
-    
-    # Setup sample indices
-    # OPTIMIZATION: Random sampling on HuggingFace Datasets with .select() is extremely slow because 
-    # non-contiguous indices trigger PyArrow to perform random disk seeks across 180 GB of Arrow shards.
-    # By selecting a contiguous slice sequentially, we keep PyArrow in sequential disk-read mode.
-    # Since Arrow shards are pre-randomized during creation, a contiguous slice is perfectly representative.
-    if args.max_samples > 0 and args.max_samples < total_len:
-        logger.info(f"Representative contiguous subset requested. Selecting the first {args.max_samples:,} sources sequentially to leverage C++ PyArrow sequential memory mapping...")
-        sample_indices = list(range(args.max_samples))
-    else:
-        logger.info("Full dataset audit requested. Processing all records...")
-        sample_indices = list(range(total_len))
-        
-    # Column checking
-    required_cols = ["targetid", "redshift", "image_vis", "image_nisp_y", "image_nisp_j", "image_nisp_h"]
-    missing_cols = [c for c in required_cols if c not in ds.column_names]
-    if missing_cols:
-        logger.error(f"Missing required columns in dataset schema: {missing_cols}")
-        sys.exit(1)
-        
-    # -------------------------------------------------------------------------
-    # STAGE 2: Image Flux Auditing (High-Speed Batch Parsing)
-    # -------------------------------------------------------------------------
-    logger.info("Stage 2: Starting high-speed image flux audit across VIS, Y, J, and H filters...")
-    
     audited_data = []
-    
-    # Setup sub-slices for visual stamp extraction
     good_stamps = []
     dark_stamps = []
     
-    # Process dataset in batches to avoid CPU memory overhead
-    num_samples = len(sample_indices)
-    batch_size = args.batch_size
-    
-    # Check if sample_indices is a contiguous range to allow direct dictionary slicing
-    is_contiguous = (sample_indices == list(range(num_samples)))
-    
-    for start_idx in range(0, num_samples, batch_size):
-        end_idx = min(start_idx + batch_size, num_samples)
+    for split in splits:
+        logger.info("-" * 80)
+        logger.info(f"AUDITING DATASET SPLIT: {split.upper()}")
+        logger.info("-" * 80)
         
-        # Load batch of rows as dict
-        logger.info(f"Processing batch: sources {start_idx:,} to {end_idx:,} / {num_samples:,}...")
+        arrow_pattern = os.path.join(args.data_dir, f"{split}_*")
+        arrow_folders = sorted(glob.glob(arrow_pattern))
         
-        if is_contiguous:
-            # OPTIMIZATION: Direct dictionary slicing ds[start:end] is up to 1000x faster than .select()
-            # because it completely bypasses pointer index resolution and reads memory-mapped columns sequentially!
-            batch_data = ds[start_idx:end_idx]
+        if not arrow_folders:
+            logger.warning(f"No processed Arrow folders found matching: {arrow_pattern} for split '{split}'. Skipping.")
+            continue
+            
+        logger.info(f"Found {len(arrow_folders)} dataset split directories for '{split}'.")
+        
+        datasets_list = []
+        for path in arrow_folders:
+            logger.info(f"Loading partition: {os.path.basename(path)}")
+            try:
+                datasets_list.append(load_from_disk(path))
+            except Exception as e:
+                logger.warning(f"Failed to load dataset folder '{path}' directly. Attempting raw arrow loader fallback: {e}")
+                arrow_files = sorted(glob.glob(os.path.join(path, "*.arrow")))
+                if arrow_files:
+                    from datasets import load_dataset
+                    datasets_list.append(load_dataset("arrow", data_files=arrow_files, split="train"))
+                    
+        if not datasets_list:
+            logger.warning(f"No valid HuggingFace datasets loaded for split '{split}'. Skipping.")
+            continue
+            
+        ds = concatenate_datasets(datasets_list)
+        total_len = len(ds)
+        logger.info(f"HuggingFace dataset for split '{split}' concatenated successfully. Total rows: {total_len:,}")
+        
+        # Setup sample indices
+        # OPTIMIZATION: Contiguous slice selection to leverage C++ PyArrow sequential memory mapping.
+        if args.max_samples > 0 and args.max_samples < total_len:
+            logger.info(f"Representative contiguous subset requested. Selecting the first {args.max_samples:,} sources sequentially...")
+            sample_indices = list(range(args.max_samples))
         else:
-            batch_indices = sample_indices[start_idx:end_idx]
-            batch_ds = ds.select(batch_indices)
-            batch_data = {
-                "targetid": batch_ds["targetid"],
-                "redshift": batch_ds["redshift"],
-                "image_vis": batch_ds["image_vis"],
-                "image_nisp_y": batch_ds["image_nisp_y"],
-                "image_nisp_j": batch_ds["image_nisp_j"],
-                "image_nisp_h": batch_ds["image_nisp_h"]
-            }
-        
-        targetids = batch_data["targetid"]
-        redshifts = batch_data["redshift"]
-        image_vis = batch_data["image_vis"]
-        image_y = batch_data["image_nisp_y"]
-        image_j = batch_data["image_nisp_j"]
-        image_h = batch_data["image_nisp_h"]
-        
-        for i in range(len(targetids)):
-            tid = int(targetids[i])
-            z = float(redshifts[i]) if redshifts[i] is not None else 0.0
+            logger.info(f"Full dataset audit requested for split '{split}'. Processing all records...")
+            sample_indices = list(range(total_len))
             
-            ch_stats = {}
-            bands = {"VIS": image_vis[i], "Y": image_y[i], "J": image_j[i], "H": image_h[i]}
+        # Column checking
+        required_cols = ["targetid", "redshift", "image_vis", "image_nisp_y", "image_nisp_j", "image_nisp_h"]
+        missing_cols = [c for c in required_cols if c not in ds.column_names]
+        if missing_cols:
+            logger.error(f"Missing required columns in dataset schema for split '{split}': {missing_cols}")
+            sys.exit(1)
             
-            for band_name, band_data in bands.items():
-                if band_data is None:
-                    ch_stats[f"{band_name}_missing"] = True
-                    ch_stats[f"{band_name}_black"] = False
-                    ch_stats[f"{band_name}_nan_fraction"] = 1.0
-                    ch_stats[f"{band_name}_mean"] = 0.0
-                    ch_stats[f"{band_name}_max"] = 0.0
-                    ch_stats[f"{band_name}_std"] = 0.0
-                else:
-                    arr = np.array(band_data, dtype=np.float32)
-                    ch_stats[f"{band_name}_missing"] = False
-                    
-                    # Identify NaNs or Infs
-                    nan_mask = np.isnan(arr) | np.isinf(arr)
-                    nan_fraction = float(np.mean(nan_mask))
-                    ch_stats[f"{band_name}_nan_fraction"] = nan_fraction
-                    
-                    clean_arr = arr[~nan_mask]
-                    if clean_arr.size == 0:
-                        ch_stats[f"{band_name}_black"] = True
+        # Process dataset in batches to avoid CPU memory overhead
+        num_samples = len(sample_indices)
+        batch_size = args.batch_size
+        is_contiguous = (sample_indices == list(range(num_samples)))
+        
+        for start_idx in range(0, num_samples, batch_size):
+            end_idx = min(start_idx + batch_size, num_samples)
+            
+            logger.info(f"[{split.upper()}] Processing batch: sources {start_idx:,} to {end_idx:,} / {num_samples:,}...")
+            
+            if is_contiguous:
+                batch_data = ds[start_idx:end_idx]
+            else:
+                batch_indices = sample_indices[start_idx:end_idx]
+                batch_ds = ds.select(batch_indices)
+                batch_data = {
+                    "targetid": batch_ds["targetid"],
+                    "redshift": batch_ds["redshift"],
+                    "image_vis": batch_ds["image_vis"],
+                    "image_nisp_y": batch_ds["image_nisp_y"],
+                    "image_nisp_j": batch_ds["image_nisp_j"],
+                    "image_nisp_h": batch_ds["image_nisp_h"]
+                }
+            
+            targetids = batch_data["targetid"]
+            redshifts = batch_data["redshift"]
+            image_vis = batch_data["image_vis"]
+            image_y = batch_data["image_nisp_y"]
+            image_j = batch_data["image_nisp_j"]
+            image_h = batch_data["image_nisp_h"]
+            
+            for i in range(len(targetids)):
+                tid = int(targetids[i])
+                z = float(redshifts[i]) if redshifts[i] is not None else 0.0
+                
+                ch_stats = {}
+                bands = {"VIS": image_vis[i], "Y": image_y[i], "J": image_j[i], "H": image_h[i]}
+                
+                for band_name, band_data in bands.items():
+                    if band_data is None:
+                        ch_stats[f"{band_name}_missing"] = True
+                        ch_stats[f"{band_name}_black"] = False
+                        ch_stats[f"{band_name}_nan_fraction"] = 1.0
                         ch_stats[f"{band_name}_mean"] = 0.0
                         ch_stats[f"{band_name}_max"] = 0.0
                         ch_stats[f"{band_name}_std"] = 0.0
                     else:
-                        mean_val = float(np.mean(clean_arr))
-                        max_val = float(np.max(clean_arr))
-                        std_val = float(np.std(clean_arr))
+                        arr = np.array(band_data, dtype=np.float32)
+                        ch_stats[f"{band_name}_missing"] = False
                         
-                        ch_stats[f"{band_name}_mean"] = mean_val
-                        ch_stats[f"{band_name}_max"] = max_val
-                        ch_stats[f"{band_name}_std"] = std_val
+                        # Identify NaNs or Infs
+                        nan_mask = np.isnan(arr) | np.isinf(arr)
+                        nan_fraction = float(np.mean(nan_mask))
+                        ch_stats[f"{band_name}_nan_fraction"] = nan_fraction
                         
-                        # An image is black if max is zero, extremely close to zero, or if variance is zero
-                        ch_stats[f"{band_name}_black"] = (std_val == 0.0) or (max_val <= 1e-7)
-            
-            # Outlier Quality Classification
-            vis_black = ch_stats["VIS_black"] or ch_stats["VIS_missing"]
-            y_black = ch_stats["Y_black"] or ch_stats["Y_missing"]
-            j_black = ch_stats["J_black"] or ch_stats["J_missing"]
-            h_black = ch_stats["H_black"] or ch_stats["H_missing"]
-            
-            is_all_black = vis_black and y_black and j_black and h_black
-            is_partially_black = (vis_black or y_black or j_black or h_black) and not is_all_black
-            
-            vis_nan = ch_stats["VIS_nan_fraction"] == 1.0
-            y_nan = ch_stats["Y_nan_fraction"] == 1.0
-            j_nan = ch_stats["J_nan_fraction"] == 1.0
-            h_nan = ch_stats["H_nan_fraction"] == 1.0
-            is_nan_corrupted = vis_nan or y_nan or j_nan or h_nan
-            
-            if is_all_black:
-                quality_class = "All-Black"
-            elif is_nan_corrupted:
-                quality_class = "NaN-Corrupted"
-            elif is_partially_black:
-                quality_class = "Partially-Black"
-            else:
-                quality_class = "Good"
+                        clean_arr = arr[~nan_mask]
+                        if clean_arr.size == 0:
+                            ch_stats[f"{band_name}_black"] = True
+                            ch_stats[f"{band_name}_mean"] = 0.0
+                            ch_stats[f"{band_name}_max"] = 0.0
+                            ch_stats[f"{band_name}_std"] = 0.0
+                        else:
+                            mean_val = float(np.mean(clean_arr))
+                            max_val = float(np.max(clean_arr))
+                            std_val = float(np.std(clean_arr))
+                            
+                            ch_stats[f"{band_name}_mean"] = mean_val
+                            ch_stats[f"{band_name}_max"] = max_val
+                            ch_stats[f"{band_name}_std"] = std_val
+                            
+                            # An image is black if max is close to zero, or if standard deviation is close to zero (flat constant-filled image)
+                            ch_stats[f"{band_name}_black"] = (std_val < 1e-4) or (max_val <= 1e-7)
                 
-            entry = {
-                "TargetID": tid,
-                "redshift": z,
-                "quality_class": quality_class,
-                "VIS_missing": ch_stats["VIS_missing"],
-                "VIS_black": ch_stats["VIS_black"],
-                "VIS_mean": ch_stats["VIS_mean"],
-                "VIS_max": ch_stats["VIS_max"],
-                "VIS_std": ch_stats["VIS_std"],
-                "Y_missing": ch_stats["Y_missing"],
-                "Y_black": ch_stats["Y_black"],
-                "Y_mean": ch_stats["Y_mean"],
-                "Y_max": ch_stats["Y_max"],
-                "Y_std": ch_stats["Y_std"],
-                "J_missing": ch_stats["J_missing"],
-                "J_black": ch_stats["J_black"],
-                "J_mean": ch_stats["J_mean"],
-                "J_max": ch_stats["J_max"],
-                "J_std": ch_stats["J_std"],
-                "H_missing": ch_stats["H_missing"],
-                "H_black": ch_stats["H_black"],
-                "H_mean": ch_stats["H_mean"],
-                "H_max": ch_stats["H_max"],
-                "H_std": ch_stats["H_std"],
-            }
-            audited_data.append(entry)
-            
-            # Pull stamps for diagnostic visual checker (save raw matrices for plotting later)
-            if quality_class == "Good" and len(good_stamps) < 3 and bands["VIS"] is not None:
-                good_stamps.append((tid, np.array(bands["VIS"]), np.array(bands["Y"]), np.array(bands["J"]), np.array(bands["H"])))
-            elif quality_class == "All-Black" and len(dark_stamps) < 3 and bands["VIS"] is not None:
-                dark_stamps.append((tid, np.array(bands["VIS"]), np.array(bands["Y"]), np.array(bands["J"]), np.array(bands["H"])))
+                # Outlier Quality Classification
+                vis_black = ch_stats["VIS_black"] or ch_stats["VIS_missing"]
+                y_black = ch_stats["Y_black"] or ch_stats["Y_missing"]
+                j_black = ch_stats["J_black"] or ch_stats["J_missing"]
+                h_black = ch_stats["H_black"] or ch_stats["H_missing"]
+                
+                is_all_black = vis_black and y_black and j_black and h_black
+                is_partially_black = (vis_black or y_black or j_black or h_black) and not is_all_black
+                
+                vis_nan = ch_stats["VIS_nan_fraction"] == 1.0
+                y_nan = ch_stats["Y_nan_fraction"] == 1.0
+                j_nan = ch_stats["J_nan_fraction"] == 1.0
+                h_nan = ch_stats["H_nan_fraction"] == 1.0
+                is_nan_corrupted = vis_nan or y_nan or j_nan or h_nan
+                
+                if is_all_black:
+                    quality_class = "All-Black"
+                elif is_nan_corrupted:
+                    quality_class = "NaN-Corrupted"
+                elif is_partially_black:
+                    quality_class = "Partially-Black"
+                else:
+                    quality_class = "Good"
+                    
+                entry = {
+                    "TargetID": tid,
+                    "split": split,
+                    "redshift": z,
+                    "quality_class": quality_class,
+                    "VIS_missing": ch_stats["VIS_missing"],
+                    "VIS_black": ch_stats["VIS_black"],
+                    "VIS_mean": ch_stats["VIS_mean"],
+                    "VIS_max": ch_stats["VIS_max"],
+                    "VIS_std": ch_stats["VIS_std"],
+                    "Y_missing": ch_stats["Y_missing"],
+                    "Y_black": ch_stats["Y_black"],
+                    "Y_mean": ch_stats["Y_mean"],
+                    "Y_max": ch_stats["Y_max"],
+                    "Y_std": ch_stats["Y_std"],
+                    "J_missing": ch_stats["J_missing"],
+                    "J_black": ch_stats["J_black"],
+                    "J_mean": ch_stats["J_mean"],
+                    "J_max": ch_stats["J_max"],
+                    "J_std": ch_stats["J_std"],
+                    "H_missing": ch_stats["H_missing"],
+                    "H_black": ch_stats["H_black"],
+                    "H_mean": ch_stats["H_mean"],
+                    "H_max": ch_stats["H_max"],
+                    "H_std": ch_stats["H_std"],
+                }
+                audited_data.append(entry)
+                
+                # Pull stamps for diagnostic visual checker (save raw matrices for plotting later)
+                if quality_class == "Good" and len(good_stamps) < 3:
+                    good_stamps.append((tid, quality_class, {b: np.array(v) if v is not None else None for b, v in bands.items()}))
+                elif quality_class in ["All-Black", "Partially-Black", "NaN-Corrupted"] and len(dark_stamps) < 3:
+                    dark_stamps.append((tid, quality_class, {b: np.array(v) if v is not None else None for b, v in bands.items()}))
+
+    if not audited_data:
+        logger.error("No data could be audited across the requested splits. Aborting.")
+        sys.exit(1)
 
     # Convert audit results to DataFrame
     df_audit = pd.DataFrame(audited_data)
@@ -541,80 +539,155 @@ def main():
     plt.savefig(flux_plot_path, dpi=200, bbox_inches='tight')
     plt.close()
     
-    # Plot 2: Correlation of Quality Flags to Blank Images
-    # We plot P(Black | flag == val) for different quality flags
-    plt.figure(figsize=(12, 6))
-    flag_plot_data = []
-    for flag, vals in flag_stats.items():
-        for val, stats in vals.items():
-            flag_plot_data.append({
-                "Quality Flag Indicator": f"{flag} == {val}",
-                "Outlier Ratio (%)": stats["conditional_black_probability"] * 100.0,
-                "Sample Count": stats["total_records"]
+    # Plot 2: Correlation of Quality Flags to Anomalies (Percentage of Anomalies Caught)
+    plt.figure(figsize=(12, 7))
+    
+    # Define flag conditions that represent "Flagged/Suspect" states
+    flag_conditions = {
+        "flag_vis == 0": lambda df: df["flag_vis"] == 0 if "flag_vis" in df.columns else pd.Series(False, index=df.index),
+        "flag_y == 0": lambda df: df["flag_y"] == 0 if "flag_y" in df.columns else pd.Series(False, index=df.index),
+        "flag_j == 0": lambda df: df["flag_j"] == 0 if "flag_j" in df.columns else pd.Series(False, index=df.index),
+        "flag_h == 0": lambda df: df["flag_h"] == 0 if "flag_h" in df.columns else pd.Series(False, index=df.index),
+        "spurious_flag == 1": lambda df: df["spurious_flag"] == 1 if "spurious_flag" in df.columns else pd.Series(False, index=df.index),
+        "det_quality_flag == 1": lambda df: df["det_quality_flag"] == 1 if "det_quality_flag" in df.columns else pd.Series(False, index=df.index)
+    }
+    
+    anomaly_classes = ["All-Black", "Partially-Black", "NaN-Corrupted"]
+    plot_rows = []
+    
+    for cls in anomaly_classes:
+        df_cls = df_joined[df_joined["quality_class"] == cls]
+        total_cls = len(df_cls)
+        if total_cls == 0:
+            continue
+            
+        for label, cond_fn in flag_conditions.items():
+            # Count how many of this anomaly class are caught by this flag
+            caught_series = cond_fn(df_cls)
+            caught_count = int(caught_series.sum())
+            percentage_caught = (caught_count / total_cls) * 100.0
+            
+            plot_rows.append({
+                "Anomaly Class": cls,
+                "Quality Flag Filter": label,
+                "Percentage Caught (%)": percentage_caught,
+                "Caught Count": caught_count,
+                "Total Count": total_cls
             })
             
-    df_plot_flags = pd.DataFrame(flag_plot_data)
+    df_plot_flags = pd.DataFrame(plot_rows)
+    
     if not df_plot_flags.empty:
+        # Grouped horizontal bar chart
         sns.barplot(
             data=df_plot_flags,
-            x="Outlier Ratio (%)",
-            y="Quality Flag Indicator",
-            palette="viridis",
-            edgecolor="black"
+            x="Percentage Caught (%)",
+            y="Quality Flag Filter",
+            hue="Anomaly Class",
+            palette={"All-Black": "#d9534f", "Partially-Black": "#f0ad4e", "NaN-Corrupted": "#5bc0de"},
+            edgecolor="black",
+            alpha=0.85
         )
-        plt.title("Euclid Quality Metadata Flags vs. Blank Image Outlier Ratios\n(Identifying which survey markers correlate with zero-flux images)", fontsize=13, fontweight="bold", pad=15)
-        plt.xlabel("Probability of Galaxy Image Being Blank P(All-Black | Flag) (%)", fontsize=10, fontweight="bold")
-        plt.ylabel("Survey Metadata Flag State", fontsize=10, fontweight="bold")
-        plt.grid(True, alpha=0.15)
-        plt.xlim(0, 105)
+        plt.title("AstroPT Quality Flag Sensitivity Audit\n(Percentage of each image anomaly class captured by survey metadata flags)", fontsize=13, fontweight="bold", pad=15)
+        plt.xlabel("Percentage of Anomalies Captured (%) [Sensitivity / Recall]", fontsize=10, fontweight="bold")
+        plt.ylabel("Survey Quality Flag Condition", fontsize=10, fontweight="bold")
+        plt.grid(True, linestyle="--", alpha=0.3)
+        plt.xlim(0, 115)
+        plt.legend(title="Anomaly Class", loc="lower right", frameon=True, facecolor="white", edgecolor="gray")
         
-        # Label bars with count of samples
-        for index, row in df_plot_flags.iterrows():
-            plt.text(
-                row["Outlier Ratio (%)"] + 1,
-                index,
-                f"N={row['Sample Count']:,}",
-                color="black",
-                ha="left",
-                va="center",
-                fontsize=9
-            )
-            
+        # Add labels on bars
+        ax = plt.gca()
+        for p in ax.patches:
+            width = p.get_width()
+            if width > 0.0: # Only label if bar is visible
+                y = p.get_y() + p.get_height() / 2.0
+                ax.text(
+                    width + 1.0,
+                    y,
+                    f"{width:.1f}%",
+                    ha="left",
+                    va="center",
+                    fontsize=8,
+                    fontweight="semibold",
+                    color="black"
+                )
+                
         plt.tight_layout()
         flag_plot_path = os.path.join(args.output_dir, "quality_flags_correlation.png")
         plt.savefig(flag_plot_path, dpi=200, bbox_inches='tight')
         plt.close()
 
-    # Plot 3: Visual Verification Stamps Grid (3x2 Comparison)
-    # Renders 3 Good and 3 All-Black galaxies side-by-side using false-color RGB Lupton stretching
-    if len(good_stamps) > 0 or len(dark_stamps) > 0:
-        logger.info("Generating false-color RGB visual stamp grid...")
-        fig = plt.figure(figsize=(18, 12), dpi=150)
-        gs = gridspec.GridSpec(2, 3, hspace=0.3, wspace=0.2)
+    # Plot 3: Visual Verification Stamps Grid (Detailed multi-band scientifically resolved panel)
+    all_stamps = []
+    for tid, qclass, bands_dict in good_stamps:
+        all_stamps.append((tid, qclass, bands_dict))
+    for tid, qclass, bands_dict in dark_stamps:
+        all_stamps.append((tid, qclass, bands_dict))
         
-        # Plot Good Stamps (Row 0)
-        for idx, (tid, vis, y, j, h) in enumerate(good_stamps):
-            ax = fig.add_subplot(gs[0, idx])
-            try:
-                rgb_stamp = make_rgb_lupton(vis, y, j, h)
-                ax.imshow(rgb_stamp, origin='lower')
-                ax.set_title(f"Operational Galaxy\nTargetID: {tid}", color="darkgreen", fontsize=11, fontweight="bold")
-            except Exception as e:
-                ax.text(0.5, 0.5, f"RGB Render Failed: {e}", ha='center', va='center', fontsize=9)
-            ax.axis('off')
+    total_rows = len(all_stamps)
+    
+    if total_rows > 0:
+        logger.info(f"Generating detailed multi-band scientific stamp panel for {total_rows} galaxies...")
+        fig = plt.figure(figsize=(16, 3 * total_rows), dpi=150)
+        gs = gridspec.GridSpec(total_rows, 4, hspace=0.4, wspace=0.3)
+        
+        channels = ["VIS", "Y", "J", "H"]
+        
+        for r_idx, (tid, qclass, bands_dict) in enumerate(all_stamps):
+            is_good = (qclass == "Good")
+            row_color = "darkgreen" if is_good else "darkred"
             
-        # Plot All-Black Stamps (Row 1)
-        for idx, (tid, vis, y, j, h) in enumerate(dark_stamps):
-            ax = fig.add_subplot(gs[1, idx])
-            try:
-                rgb_stamp = make_rgb_lupton(vis, y, j, h)
-                ax.imshow(rgb_stamp, origin='lower')
-                ax.set_title(f"Zero-Flux Outlier Stamp\nTargetID: {tid}", color="darkred", fontsize=11, fontweight="bold")
-            except Exception as e:
-                ax.text(0.5, 0.5, f"RGB Render Failed: {e}", ha='center', va='center', fontsize=9)
-            ax.axis('off')
-            
-        plt.suptitle("AstroPT Visual Quality Stamps: Operational Galaxies vs. Zero-Flux Outlier Stamps\n(Euclid VIS+NISP False-Color RGB composite plots with asinh scaling)", fontsize=14, fontweight="bold", y=0.96)
+            for c_idx, ch in enumerate(channels):
+                ax = fig.add_subplot(gs[r_idx, c_idx])
+                arr = bands_dict[ch]
+                
+                # Title formatting
+                if c_idx == 0:
+                    # Row header on the leftmost subplot
+                    ax.set_ylabel(f"ID: {tid}\n({qclass})", color=row_color, fontsize=10, fontweight="bold", labelpad=15, rotation=0, ha='right', va='center')
+                
+                ax.set_title(f"{ch} Channel", fontsize=10, fontweight="bold")
+                
+                if arr is None:
+                    # Draw a gray square with "MISSING" text
+                    ax.fill([0, 120, 120, 0], [0, 0, 120, 120], color="#eaeaea", edgecolor="#d9534f", linewidth=1.5)
+                    ax.text(60, 60, "MISSING", color="#d9534f", ha="center", va="center", fontsize=11, fontweight="black")
+                    ax.set_xlim(0, 120)
+                    ax.set_ylim(0, 120)
+                else:
+                    # Check for NaNs or Flat constant-field
+                    nan_mask = np.isnan(arr) | np.isinf(arr)
+                    nan_fraction = np.mean(nan_mask)
+                    std_val = np.std(arr[~nan_mask]) if np.any(~nan_mask) else 0.0
+                    
+                    if nan_fraction == 1.0:
+                        ax.fill([0, 120, 120, 0], [0, 0, 120, 120], color="#f9f2f2", edgecolor="#d9534f", linewidth=1.5, hatch="//")
+                        ax.text(60, 60, "NaN CORRUPTED", color="#d9534f", ha="center", va="center", fontsize=9, fontweight="black")
+                        ax.set_xlim(0, 120)
+                        ax.set_ylim(0, 120)
+                    elif std_val < 1e-4:
+                        ax.fill([0, 120, 120, 0], [0, 0, 120, 120], color="#fcf8e3", edgecolor="#f0ad4e", linewidth=1.5)
+                        mean_val = np.mean(arr[~nan_mask])
+                        ax.text(60, 75, "FLAT FIELD", color="#f0ad4e", ha="center", va="center", fontsize=10, fontweight="black")
+                        ax.text(60, 45, f"std={std_val:.1e}\nmean={mean_val:.2f}", color="#555555", ha="center", va="center", fontsize=8, fontweight="semibold")
+                        ax.set_xlim(0, 120)
+                        ax.set_ylim(0, 120)
+                    else:
+                        # Scientific visual of normal or scaled data
+                        # We use magma colormap for premium astrophysics feel
+                        clean_arr = arr[~nan_mask]
+                        vmin = float(np.percentile(clean_arr, 1))
+                        vmax = float(np.percentile(clean_arr, 99))
+                        if vmin == vmax:
+                            vmin = float(np.min(clean_arr))
+                            vmax = float(np.max(clean_arr))
+                        
+                        im = ax.imshow(arr, cmap="magma", origin="lower", vmin=vmin, vmax=vmax)
+                        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04).ax.tick_params(labelsize=7)
+                        
+                ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+                
+        plt.suptitle("AstroPT Visual Quality Stamps Grid: Operational vs. Anomalous Galaxies\n(4-Channel resolved scientific panel displaying VIS, NISP Y, J, and H bands with independent normalization)", fontsize=14, fontweight="bold", y=0.98)
         
         stamps_plot_path = os.path.join(args.output_dir, "dark_vs_good_stamps.png")
         plt.savefig(stamps_plot_path, dpi=200, bbox_inches='tight')

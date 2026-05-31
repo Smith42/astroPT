@@ -48,8 +48,8 @@ PYTHON_SCRIPT="$REPO_ROOT/scripts/dataset/dataset_flux_analyzer.py"
 
 # Default values
 MAX_SAMPLES=-1
-SPLIT="train"
-OUTPUT_DIR="/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/dataset_images_audit"
+SPLIT="train,test"
+OUTPUT_DIR="/home/valonso/iac18_mhuertas_shared/valonso/astroPT/logs/dataset_images_flux_analysis"
 METADATA_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.1.fits"
 DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_interpolated"
 
@@ -68,7 +68,7 @@ while getopts ":n:s:o:m:h" opt; do
     h)
       echo "Usage: $0 [-n MAX_SAMPLES] [-s SPLIT] [-o OUTPUT_DIR] [-m METADATA_PATH]"
       echo "  -n: Max samples to audit (default: -1, i.e., all)"
-      echo "  -s: Dataset split to audit (default: 'train')"
+      echo "  -s: Dataset split(s) to audit (default: 'train,test')"
       echo "  -o: Directory to save the audit outputs"
       echo "  -m: Path to the catalog metadata FITS file"
       exit 0

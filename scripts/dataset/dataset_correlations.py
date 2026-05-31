@@ -483,62 +483,151 @@ def main():
     
     specified_scientific = [
         # Physics & Fluxes
-        'Z', 'LOGMSTAR', 'LOGSFR', 'AGNLUM', 'segmentation_area', 'flux_detection_total',
+        'Z', 'LOGMSTAR', 'LOGSFR', 'AGNLUM', 'segmentation_area', 'flux_detection_total', 'FLUX_DETECTION_TOTAL',
         # Spectral lines
         'HALPHA_FLUX', 'NII_6584_FLUX', 'OIII_5007_FLUX', 'HBETA_FLUX', 'OII_3726_FLUX',
         # Morphology (Sersic)
         'sersic_sersic_vis_radius', 'sersic_sersic_vis_index', 'sersic_sersic_vis_axis_ratio',
+        'sersic_vis_radius', 'sersic_vis_index', 'sersic_vis_axis_ratio',
+        'sersic_vis_radius_err', 'sersic_vis_index_err',
         # Spiral Arms & Shape
-        'has_spiral_arms_yes', 'smoothness'
+        'has_spiral_arms_yes', 'has_spiral_arms', 'has_spiral_arms_no',
+        'smoothness', 'smoothness_yes', 'smoothness_no'
     ]
     
-    # Map exact column names case-insensitively using columns available in clean DataFrame
-    df_cols_lower = {col.lower(): col for col in df_clean.columns}
+    # --- SEPARATE CHEM/PHYS VS MORPHOLOGY HEATMAPS (ROBUST PAIRWISE CORRELATIONS) ---
+    specified_physics_chem = [
+        # Physics & Fluxes
+        'Z', 'LOGMSTAR', 'LOGSFR', 'AGNLUM', 'segmentation_area', 'flux_detection_total', 'FLUX_DETECTION_TOTAL',
+        # Spectral lines
+        'HALPHA_FLUX', 'NII_6584_FLUX', 'OIII_5007_FLUX', 'HBETA_FLUX', 'OII_3726_FLUX'
+    ]
+    
+    specified_morphology = [
+        # Morphology (Sersic)
+        'sersic_sersic_vis_radius', 'sersic_sersic_vis_index', 'sersic_sersic_vis_axis_ratio',
+        'sersic_vis_radius', 'sersic_vis_index', 'sersic_vis_axis_ratio',
+        'sersic_vis_radius_err', 'sersic_vis_index_err',
+        # Spiral Arms & Shape
+        'has_spiral_arms_yes', 'has_spiral_arms', 'has_spiral_arms_no',
+        'smoothness', 'smoothness_yes', 'smoothness_no'
+    ]
+    
+    # Map exact column names case-insensitively using columns available in original DataFrame
+    # (Using df instead of df_clean to bypass columns dropped due to high NaN density/survey mismatch)
+    df_cols_lower = {col.lower(): col for col in df.columns}
     
     active_instrumental = [df_cols_lower[col.lower()] for col in specified_instrumental if col.lower() in df_cols_lower]
-    active_scientific = [df_cols_lower[col.lower()] for col in specified_scientific if col.lower() in df_cols_lower]
+    active_phys_chem = [df_cols_lower[col.lower()] for col in specified_physics_chem if col.lower() in df_cols_lower]
+    active_morphology = [df_cols_lower[col.lower()] for col in specified_morphology if col.lower() in df_cols_lower]
     
-    if active_instrumental and active_scientific:
-        logger.info(f"Rendering scientific cross-talk heatmap ({len(active_scientific)} targets vs {len(active_instrumental)} controls)...")
+    # 1. RENDER PHYSICS & CHEMISTRY BIAS HEATMAP
+    if active_instrumental and active_phys_chem:
+        logger.info(f"Computing Physics & Chemistry cross-talk Spearman correlations ({len(active_phys_chem)} targets vs {len(active_instrumental)} controls)...")
         
-        # Extract the rectangular correlation slice
-        cross_corr = corr_matrix.loc[active_scientific, active_instrumental]
+        # Calculate pairwise Spearman correlation dynamically to handle NaNs/survey disjoints robustly
+        cross_corr_phys = pd.DataFrame(index=active_phys_chem, columns=active_instrumental, dtype=float)
+        for pc_col in active_phys_chem:
+            for inst_col in active_instrumental:
+                # Align both series and drop NaNs pairwise
+                aligned = df[[pc_col, inst_col]].dropna()
+                if len(aligned) >= 100:  # Require at least 100 overlapping samples
+                    cross_corr_phys.loc[pc_col, inst_col] = aligned[pc_col].corr(aligned[inst_col], method='spearman')
+                else:
+                    cross_corr_phys.loc[pc_col, inst_col] = np.nan
         
-        # Setup plot dimensions and aesthetics
-        plt.figure(figsize=(16, 12))
+        # Drop columns or rows that ended up entirely NaN to keep plot clean
+        cross_corr_phys_clean = cross_corr_phys.dropna(how='all', axis=0).dropna(how='all', axis=1)
         
-        sns.heatmap(
-            cross_corr,
-            annot=True,
-            fmt=".2f",
-            cmap="coolwarm",
-            vmin=-1.0,
-            vmax=1.0,
-            center=0.0,
-            linewidths=0.5,
-            linecolor="#efefef",
-            cbar_kws={"label": "Spearman Rank Correlation Coefficient ($r_s$)"},
-            annot_kws={"size": 8, "weight": "bold"}
-        )
-        
-        plt.title(
-            "AstroPT Target Properties vs. Instrumental Controls Cross-Correlation\n"
-            "(Isolating selection biases across galaxy physics, spectral lines, and morphology)",
-            fontsize=14,
-            fontweight='bold',
-            pad=20
-        )
-        plt.xlabel("Instrumental Controls & Survey Noise Markers", fontsize=11, fontweight='bold', labelpad=12)
-        plt.ylabel("Scientific Target Properties (Physics, Spectral Lines, Morphology)", fontsize=11, fontweight='bold', labelpad=12)
-        plt.xticks(rotation=45, ha='right')
-        plt.yticks(rotation=0)
-        
-        cross_talk_path = os.path.join(args.output_dir, "scientific_vs_instrumental_bias_heatmap.png")
-        plt.savefig(cross_talk_path, dpi=200, bbox_inches='tight')
-        plt.close()
-        logger.info(f"Scientific cross-talk correlation heatmap successfully saved to: {cross_talk_path}")
+        if not cross_corr_phys_clean.empty:
+            plt.figure(figsize=(16, 10))
+            sns.heatmap(
+                cross_corr_phys_clean,
+                annot=True,
+                fmt=".2f",
+                cmap="coolwarm",
+                vmin=-1.0,
+                vmax=1.0,
+                center=0.0,
+                linewidths=0.5,
+                linecolor="#efefef",
+                cbar_kws={"label": "Spearman Rank Correlation Coefficient ($r_s$)"},
+                annot_kws={"size": 9, "weight": "bold"}
+            )
+            plt.title(
+                "AstroPT Galaxy Physics & Chemistry vs. Instrumental Controls Cross-Correlation\n"
+                "(Isolating selection biases across masses, SFR, redshift, and emission lines - pairwise NaN handling)",
+                fontsize=14,
+                fontweight='bold',
+                pad=20
+            )
+            plt.xlabel("Instrumental Controls & Survey Noise Markers", fontsize=11, fontweight='bold', labelpad=12)
+            plt.ylabel("Physics & Spectroscopy Properties", fontsize=11, fontweight='bold', labelpad=12)
+            plt.xticks(rotation=45, ha='right')
+            plt.yticks(rotation=0)
+            
+            phys_chem_path = os.path.join(args.output_dir, "chemistry_physics_vs_instrumental_bias_heatmap.png")
+            plt.savefig(phys_chem_path, dpi=200, bbox_inches='tight')
+            plt.close()
+            logger.info(f"Physics & Chemistry bias heatmap successfully saved to: {phys_chem_path}")
+        else:
+            logger.warning("Physics & Chemistry pairwise matrix is empty after NaN filtering.")
     else:
-        logger.warning("Could not map active columns to construct the scientific cross-talk rectangular heatmap.")
+        logger.warning("Could not map active columns to construct the Physics & Chemistry cross-talk heatmap.")
+        
+    # 2. RENDER MORPHOLOGY BIAS HEATMAP
+    if active_instrumental and active_morphology:
+        logger.info(f"Computing Morphology cross-talk Spearman correlations ({len(active_morphology)} targets vs {len(active_instrumental)} controls)...")
+        
+        # Calculate pairwise Spearman correlation dynamically to handle NaNs/survey disjoints robustly
+        cross_corr_morph = pd.DataFrame(index=active_morphology, columns=active_instrumental, dtype=float)
+        for morph_col in active_morphology:
+            for inst_col in active_instrumental:
+                # Align both series and drop NaNs pairwise
+                aligned = df[[morph_col, inst_col]].dropna()
+                if len(aligned) >= 100:  # Require at least 100 overlapping samples
+                    cross_corr_morph.loc[morph_col, inst_col] = aligned[morph_col].corr(aligned[inst_col], method='spearman')
+                else:
+                    cross_corr_morph.loc[morph_col, inst_col] = np.nan
+        
+        # Drop columns or rows that ended up entirely NaN to keep plot clean
+        cross_corr_morph_clean = cross_corr_morph.dropna(how='all', axis=0).dropna(how='all', axis=1)
+        
+        if not cross_corr_morph_clean.empty:
+            plt.figure(figsize=(16, 10))
+            sns.heatmap(
+                cross_corr_morph_clean,
+                annot=True,
+                fmt=".2f",
+                cmap="coolwarm",
+                vmin=-1.0,
+                vmax=1.0,
+                center=0.0,
+                linewidths=0.5,
+                linecolor="#efefef",
+                cbar_kws={"label": "Spearman Rank Correlation Coefficient ($r_s$)"},
+                annot_kws={"size": 9, "weight": "bold"}
+            )
+            plt.title(
+                "AstroPT Galaxy Morphology & Structure vs. Instrumental Controls Cross-Correlation\n"
+                "(Isolating selection biases across Sérsic profiles, spiral features, and smoothness - pairwise NaN handling)",
+                fontsize=14,
+                fontweight='bold',
+                pad=20
+            )
+            plt.xlabel("Instrumental Controls & Survey Noise Markers", fontsize=11, fontweight='bold', labelpad=12)
+            plt.ylabel("Morphological & Geometric Properties", fontsize=11, fontweight='bold', labelpad=12)
+            plt.xticks(rotation=45, ha='right')
+            plt.yticks(rotation=0)
+            
+            morph_path = os.path.join(args.output_dir, "morphology_vs_instrumental_bias_heatmap.png")
+            plt.savefig(morph_path, dpi=200, bbox_inches='tight')
+            plt.close()
+            logger.info(f"Morphology bias heatmap successfully saved to: {morph_path}")
+        else:
+            logger.warning("Morphology pairwise matrix is empty after NaN filtering.")
+    else:
+        logger.warning("Could not map active columns to construct the Morphology cross-talk heatmap.")
 
     logger.info("=" * 80)
     logger.info("ASTROPT FORENSIC DATASET AUDIT COMPLETED SUCCESSFULLY")
