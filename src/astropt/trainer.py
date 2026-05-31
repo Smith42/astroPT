@@ -124,8 +124,9 @@ class Trainer:
                 model, 
                 device_ids=[local_rank], 
                 output_device=local_rank,
-                find_unused_parameters=False 
+                find_unused_parameters=True 
             )
+
 
         return model
 
@@ -325,7 +326,8 @@ class Trainer:
         torch.backends.cuda.matmul.allow_tf32 = True 
         torch.backends.cudnn.allow_tf32 = True
         torch.backends.cudnn.benchmark = True
-        torch.autograd.set_detect_anomaly(True)
+        torch.autograd.set_detect_anomaly(False)
+
 
         try:
             #--- DATA PIPELINE ---#

@@ -135,8 +135,6 @@ early_stopping_min_iters: 50000  # Do not trigger patience before 50k iters
 #--- System & Backend ---#
 device: "cuda"
 dtype: "bfloat16"             # Best precision/speed for A100 GPUs
-compile: True                 # PyTorch 2.0 torch.compile
-compile_mode: "reduce-overhead"  # [TUNED] Better throughput than "default" on A100
 backend: "nccl"               # NCCL for multi-GPU DDP communication
 
 #--- Diagnostics ---#
