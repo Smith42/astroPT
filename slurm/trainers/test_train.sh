@@ -15,18 +15,8 @@ if [[ "$REPO_ROOT" == "/var/spool"* ]]; then
     REPO_ROOT="$PWD"
 fi
 
-cd "$REPO_ROOT" || exit 1
-
-# Activate environment
-source "$REPO_ROOT/.venv/bin/activate"
-
-# Environment Configuration
-# We use paths relative to REPO_ROOT to make the script portable
-export UV_CACHE_DIR="$REPO_ROOT/../cache/uv_cache"
-export HF_HOME="$REPO_ROOT/../cache/huggingface"
-export OMP_NUM_THREADS=4 
-
-# Default values
+# --- OPTION PARSING & PATH RESOLUTION ---
+# This MUST happen before we 'cd' so that relative paths resolve correctly relative to the user's directory.
 CONFIG_FILE="$REPO_ROOT/config/default_config.yaml"
 T_NAME="Debug_Run"
 
@@ -38,7 +28,30 @@ while getopts "c:n:" opt; do
   esac
 done
 
+# Shift parsed options to check for any remaining positional arguments
+shift $((OPTIND - 1))
+
+# Fallback: if a positional argument is provided, treat it as the config file
+if [[ -n "$1" && "$CONFIG_FILE" == *"/default_config.yaml" ]]; then
+    CONFIG_FILE="$1"
+fi
+
+# Resolve to absolute path before changing working directory
 CONFIG_FILE=$(readlink -f "$CONFIG_FILE")
+
+# --- DIRECTORY CHANGE & ENVIRONMENT ACTIVATION ---
+cd "$REPO_ROOT" || exit 1
+
+# Activate environment
+source "$REPO_ROOT/.venv/bin/activate"
+
+# Environment Configuration
+# We use paths relative to REPO_ROOT to make the script portable
+export UV_CACHE_DIR="$REPO_ROOT/../cache/uv_cache"
+export HF_HOME="$REPO_ROOT/../cache/huggingface"
+export OMP_NUM_THREADS=4 
+
+
 
 echo "========================================="
 echo "Running Fast Test: $T_NAME"

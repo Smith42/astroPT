@@ -183,11 +183,15 @@ class Trainer:
                 {"params": nodecay_params, "weight_decay": 0.0, "lr_scale": 1.0, "group_name": "nodecay"},
             ]
         else:
-            branch_lr = {
-                "images": float(config.lr_mult_images),
-                "spectra": float(config.lr_mult_spectra),
-                "backbone": float(config.lr_mult_backbone),
-            }
+            def get_lr_scale(branch_name: str) -> float:
+                if branch_name == "backbone":
+                    return float(config.lr_mult_backbone)
+                elif "Image" in branch_name:
+                    return float(config.lr_mult_images)
+                elif "Spectrum" in branch_name or "Spectra" in branch_name:
+                    return float(config.lr_mult_spectra)
+                else:
+                    return float(config.lr_mult_backbone)
 
             grouped: Dict[Tuple[str, str], Dict[str, Any]] = {}
             for name, param in param_dict.items():
@@ -199,13 +203,14 @@ class Trainer:
                     grouped[key] = {
                         "params": [],
                         "weight_decay": config.weight_decay if decay_key == "decay" else 0.0,
-                        "lr_scale": branch_lr[branch],
+                        "lr_scale": get_lr_scale(branch),
                         "group_name": f"{branch}_{decay_key}",
                     }
                 grouped[key]["params"].append(param)
 
             optim_groups = list(grouped.values())
             logger.info("Optimizer Config: branch LR multipliers enabled.")
+
             for group in optim_groups:
                 n_params = sum(p.numel() for p in group["params"])
                 logger.info(
