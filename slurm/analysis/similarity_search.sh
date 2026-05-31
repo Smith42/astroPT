@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #--- SLURM option configuration ---#
-#SBATCH --job-name=AstroPT_Anoms
+#SBATCH --job-name=AstroPT_Sims
 #SBATCH --partition=gpu
 #SBATCH --account=iac18
 #SBATCH --nodes=1                
@@ -9,11 +9,11 @@
 #SBATCH --cpus-per-task=16       
 #SBATCH --gpus-per-task=1        
 #SBATCH --mem=64G                
-#SBATCH --time=03:00:00         
+#SBATCH --time=01:00:00         
 
 #--- LOGS FILES ---#
-#SBATCH --output=logs/astropt_anom_hunter_%j.out
-#SBATCH --error=logs/astropt_anom_hunter_%j.err
+#SBATCH --output=logs/astropt_sim_search_%j.out
+#SBATCH --error=logs/astropt_sim_search_%j.err
 
 # Robust repository root detection based on script location
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -28,16 +28,16 @@ if [[ "$REPO_ROOT" == "/var/spool"* ]]; then
     fi
 fi
 
-PYTHON_SCRIPT="$REPO_ROOT/scripts/analysis/anomalies/anomalies_analysis.py"
+PYTHON_SCRIPT="$REPO_ROOT/scripts/analysis/similarity/similarity_search.py"
 
 # Default metadata and data paths (can be overridden with flags)
 DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
 META_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.1_FILTERED.fits"
-N_ANOMALIES=10
-BASE_MODALITY="joint"
+K=5
+QUERY_ID=""
 
 #--- ARGUMENT PARSING (FLAGS) ---#
-while getopts ":r:w:s:e:f:a:n:m:" opt; do
+while getopts ":r:w:s:e:f:a:q:k:" opt; do
   case $opt in
     r) REPO_ROOT="$OPTARG" ;;
     w) WEIGHTS_DIR="$OPTARG" ;;
@@ -45,15 +45,15 @@ while getopts ":r:w:s:e:f:a:n:m:" opt; do
     e) EMB_DIR="$OPTARG" ;;
     f) META_PATH="$OPTARG" ;;
     a) DATA_DIR="$OPTARG" ;;
-    n) N_ANOMALIES="$OPTARG" ;;
-    m) BASE_MODALITY="$OPTARG" ;;
+    q) QUERY_ID="$OPTARG" ;;
+    k) K="$OPTARG" ;;
     \?) echo "[ERROR] Invalid option -$OPTARG" >&2; exit 1 ;;
   esac
 done
 
-if [ -z "$WEIGHTS_DIR" ] || [ -z "$EMB_DIR" ]; then
-  echo "[ERROR]: WEIGHTS_DIR and EMB_DIR are required"
-  echo "Usage: $0 -w <weights_dir> -e <embeddings_dir_or_root> [-s save_dir] [-a data_dir] [-f metadata_path] [-n n_anomalies] [-m base_modality]"
+if [ -z "$WEIGHTS_DIR" ] || [ -z "$EMB_DIR" ] || [ -z "$QUERY_ID" ]; then
+  echo "[ERROR]: WEIGHTS_DIR, EMB_DIR and QUERY_ID are required"
+  echo "Usage: $0 -w <weights_dir> -e <embeddings_dir_or_root> -q <query_targetid> [-k num_neighbors] [-s save_dir] [-a data_dir] [-f metadata_path]"
   exit 1
 fi
 
@@ -88,7 +88,7 @@ fi
 NOW=$(date "+[%Y-%m-%d - %H:%M:%S]")
 
 echo "--------------------------------------------------------"
-echo "Starting AstroPT Multimodal Anomaly Hunter Job $SLURM_JOB_ID - $NOW"
+echo "Starting AstroPT Multimodal Similarity Search Job $SLURM_JOB_ID - $NOW"
 echo "--------------------------------------------------------"
 
 # 1. Change directory
@@ -98,7 +98,7 @@ cd "$REPO_ROOT" || { echo "[ERROR]: Cannot find REPO_ROOT: $REPO_ROOT"; exit 1; 
 # 2. Activate Environment
 source "$REPO_ROOT/.venv/bin/activate"
 
-# 3. Activating LaTeX (Required for high-quality astrophysical plots & reports)
+# 3. Activating LaTeX (Required for high-quality plots & reports)
 export PATH="$HOME/.TinyTeX/bin/x86_64-linux:$PATH"
 export MPLCONFIGDIR="/home/valonso/iac18_mhuertas_shared/valonso/cache/matplotlib"
 export XDG_CACHE_HOME="/home/valonso/iac18_mhuertas_shared/valonso/cache"
@@ -132,14 +132,14 @@ if [ -n "$SAVE_DIR" ]; then
 fi
 
 #--- EXECUTION ---#
-echo "Multimodal Anomaly Hunter Configuration:"
+echo "Multimodal Similarity Search Configuration:"
 echo "    PYTHON SCRIPT:  $PYTHON_SCRIPT"
 echo "    CHECKPOINT:     $CKPT_PATH"
 echo "    EMB DIR:        $DETECTED_EMB"
 echo "    METADATA:       $META_PATH"
 echo "    DATA DIR:       $DATA_DIR"
-echo "    N ANOMALIES:    $N_ANOMALIES"
-echo "    BASE MODALITY:  $BASE_MODALITY"
+echo "    QUERY TARGETID: $QUERY_ID"
+echo "    NEIGHBORS (K):  $K"
 if [ -n "$SAVE_DIR" ]; then
     echo "    SAVE DIR:       $SAVE_DIR (User-Specified)"
 fi
@@ -150,11 +150,10 @@ python3 "$PYTHON_SCRIPT" \
     --ckpt_path "$CKPT_PATH" \
     --data_dir "$DATA_DIR" \
     --metadata_path "$META_PATH" \
-    --n_anomalies "$N_ANOMALIES" \
-    --base_modality "$BASE_MODALITY" \
-    $OUTPUT_ARG \
-    --plot_projection
+    --query_id "$QUERY_ID" \
+    --k "$K" \
+    $OUTPUT_ARG
 
 echo "--------------------------------------------------------"
-echo "AstroPT Multimodal Anomaly Hunter Finished"
+echo "AstroPT Multimodal Similarity Search Finished"
 echo "--------------------------------------------------------"
