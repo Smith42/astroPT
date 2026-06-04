@@ -31,16 +31,18 @@ CLI_TRAIN_NAME=""
 CLI_TRAIN_DESC=""
 TRAIN_DIR=""
 TRAIN_EXTRA_ARGS=""
+PIPELINE_MODE="both"
 
-while getopts ":c:n:d:t:x:h" opt; do
+while getopts ":c:n:d:t:x:m:h" opt; do
   case $opt in
     c) CONFIG_FILE="$OPTARG" ;;
     n) CLI_TRAIN_NAME="$OPTARG" ;;
     d) CLI_TRAIN_DESC="$OPTARG" ;;
     t) TRAIN_DIR="$OPTARG" ;;
     x) TRAIN_EXTRA_ARGS="$OPTARG" ;;
+    m) PIPELINE_MODE="$OPTARG" ;;
     h) 
-       echo "Usage: $0 [-c 'config.yaml'] [-n 'Name'] [-d 'Description'] [-t 'output_path/'] [-x 'extra flags']"
+       echo "Usage: $0 [-c 'config.yaml'] [-n 'Name'] [-d 'Description'] [-t 'output_path/'] [-x 'extra flags'] [-m 'both|train|analysis']"
        exit 0 
        ;;
     \?) 
@@ -49,6 +51,16 @@ while getopts ":c:n:d:t:x:h" opt; do
        ;;
   esac
 done
+
+# Normalize PIPELINE_MODE
+PIPELINE_MODE=$(echo "$PIPELINE_MODE" | tr '[:upper:]' '[:lower:]')
+if [[ "$PIPELINE_MODE" == "only_train" || "$PIPELINE_MODE" == "only-train" || "$PIPELINE_MODE" == "train" ]]; then
+    PIPELINE_MODE="train"
+elif [[ "$PIPELINE_MODE" == "only_analysis" || "$PIPELINE_MODE" == "only-analysis" || "$PIPELINE_MODE" == "analysis" ]]; then
+    PIPELINE_MODE="analysis"
+else
+    PIPELINE_MODE="both"
+fi
 
 CONFIG_FILE=$(readlink -f "$CONFIG_FILE")
 
@@ -87,22 +99,32 @@ cd "$REPO_ROOT" || { echo "[ERROR] Failed to cd to $REPO_ROOT"; exit 1; }
 # We pass --train_dir via extra args so Python overrides the config and uses our known path.
 COMBINED_EXTRA_ARGS="--train_dir \"$TRAIN_DIR\" --train_name \"$TRAIN_NAME\" --train_description \"$TRAIN_DESC\" --data_dir \"$DATA_DIR\" $TRAIN_EXTRA_ARGS"
 
-echo "STEP 1: SUBMITTING TRAINING JOB"
-JOB_TRAIN=$(sbatch --parsable \
-    "$TRAIN_SCRIPT" \
-    -c "$CONFIG_FILE" \
-    -x "$COMBINED_EXTRA_ARGS")
+JOB_TRAIN="any"
+if [[ "$PIPELINE_MODE" == "both" || "$PIPELINE_MODE" == "train" ]]; then
+    echo "STEP 1: SUBMITTING TRAINING JOB"
+    JOB_TRAIN=$(sbatch --parsable \
+        "$TRAIN_SCRIPT" \
+        -c "$CONFIG_FILE" \
+        -x "$COMBINED_EXTRA_ARGS")
 
-if [[ -z "$JOB_TRAIN" ]]; then
-    echo "[ERROR] Training submission failed. Aborting pipeline."
-    exit 1
+    if [[ -z "$JOB_TRAIN" ]]; then
+        echo "[ERROR] Training submission failed. Aborting pipeline."
+        exit 1
+    fi
+    echo "Training Job launched successfully. ID: $JOB_TRAIN"
+else
+    echo "STEP 1: SKIPPING TRAINING JOB (mode: $PIPELINE_MODE)"
 fi
-echo "Training Job launched successfully. ID: $JOB_TRAIN"
 
 # 2. CHAIN ANALYSIS PIPELINE
-echo "-------------------------------------------------"
-echo "STEP 2: CHAINING ANALYSIS PIPELINE"
-$ANALYSIS_PIPELINE -t "$TRAIN_DIR" -p "$JOB_TRAIN" -a "$DATA_DIR" -f "$META_PATH"
+if [[ "$PIPELINE_MODE" == "both" || "$PIPELINE_MODE" == "analysis" ]]; then
+    echo "-------------------------------------------------"
+    echo "STEP 2: CHAINING ANALYSIS PIPELINE"
+    $ANALYSIS_PIPELINE -t "$TRAIN_DIR" -p "$JOB_TRAIN" -a "$DATA_DIR" -f "$META_PATH"
+else
+    echo "-------------------------------------------------"
+    echo "STEP 2: SKIPPING ANALYSIS PIPELINE (mode: $PIPELINE_MODE)"
+fi
 
 # QUEUE STATUS
 echo "-------------------------------------------------"

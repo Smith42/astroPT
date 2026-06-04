@@ -30,7 +30,7 @@ fi
 
 # --- DEFAULTS ---
 DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_interpolated_tokenized"
-META_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.1.fits"
+META_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.1_FILTERED.fits"
 PARENT_JOB_ID="any"
 JOB_SUFFIX=""
 STEP_NAME="Post-Training Analysis"
@@ -102,10 +102,18 @@ echo " --> Launching Analysis Battery for: $STEP_NAME"
 echo "     Target Dir : $TRAIN_DIR"
 echo "     Parent Job : $PARENT_JOB_ID"
 echo "-------------------------------------------------"
+# Determine if we have a parent job dependency
+DEP_STR=""
+FORCE_FLAG=""
+if [[ "$PARENT_JOB_ID" != "any" && -n "$PARENT_JOB_ID" ]]; then
+    DEP_STR="--dependency=afterany:$PARENT_JOB_ID"
+else
+    FORCE_FLAG="-f"
+fi
 
 # Plotting Metrics
 J_MET=$(sbatch --parsable \
-            --dependency=afterany:$PARENT_JOB_ID \
+            $DEP_STR \
             --job-name="Plot_Metrics$JOB_SUFFIX" \
             "$PLOT_MET_SCRIPT" \
             -r "$REPO_ROOT" \
@@ -116,12 +124,13 @@ echo "    [Metric]  Job sent.       ID: $J_MET"
 
 # Workflow controller
 J_WOR=$(sbatch --parsable \
-            --dependency=afterany:$PARENT_JOB_ID \
+            $DEP_STR \
             --job-name="Workflow_Controller$JOB_SUFFIX" \
             "$WORKFLOW_SCRIPT" \
             -r "$REPO_ROOT" \
             -t "$TRAIN_DIR" \
-            -x "$JOB_SUFFIX")
+            -x "$JOB_SUFFIX" \
+            $FORCE_FLAG)
 echo "    [Work]    Job sent.       ID: $J_WOR"
 if [[ -z "$J_WOR" ]]; then
     echo "    [ERROR] Workflow controller submission failed. Stopping analysis chain."

@@ -23,10 +23,12 @@ else
     REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 fi
 #--- ARGUMENT PARSING (FLAGS) ---#
-while getopts ":r:t:x:" opt; do
+FORCE_ANALYSIS=false
+while getopts ":r:t:x:f" opt; do
   case $opt in
     t) TRAIN_DIR="$OPTARG" ;;
     x) SUFFIX="$OPTARG" ;;
+    f) FORCE_ANALYSIS=true ;;
     \?) echo "[ERROR] Invalid option -$OPTARG" >&2; exit 1 ;;
   esac
 done
@@ -42,7 +44,7 @@ echo "Workflow Controller Job $SLURM_JOB_ID - $NOW"
 echo "-----------------------------------------------"
 
 # Checking if .improved exists
-if [ ! -f "$TRAIN_DIR/.improved" ]; then
+if [ "$FORCE_ANALYSIS" = false ] && [ ! -f "$TRAIN_DIR/.improved" ]; then
     echo "[CRITICAL]: No detected improvements in $TRAIN_DIR"
     echo "[ACTION]: Cancelling dependent jobs for suffix: $SUFFIX"
 
