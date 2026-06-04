@@ -1,6 +1,6 @@
 import json
 import os
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict, field, fields
 from typing import Optional, List, Dict, Any
 
 @dataclass
@@ -188,18 +188,34 @@ class TrainingConfig:
         if self.attn_type == "prefix" and self.use_token_mixing:
             raise ValueError("Prefix attention is not compatible with token mixing. Set use_token_mixing = False.")
 
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        for k, v in self.__dict__.items():
+            if not k.startswith("_") and k not in d:
+                d[k] = v
+        return d
+
     def save_to_json(self, filepath: str):
         with open(filepath, 'w') as f:
-            json.dump(asdict(self), f, indent=4)
+            json.dump(self.to_dict(), f, indent=4)
 
     def save_to_yaml(self, filepath: str):
         import yaml
         with open(filepath, 'w') as f:
-            yaml.dump(asdict(self), f, default_flow_style=False)
+            yaml.dump(self.to_dict(), f, default_flow_style=False)
 
     @classmethod
     def load_from_yaml(cls, filepath: str):
         import yaml
         with open(filepath, 'r') as f:
             data = yaml.safe_load(f)
-        return cls(**data)
+        if data is None:
+            data = {}
+        valid_fields = {f.name for f in fields(cls)}
+        dataclass_data = {k: v for k, v in data.items() if k in valid_fields}
+        extra_data = {k: v for k, v in data.items() if k not in valid_fields}
+        
+        instance = cls(**dataclass_data)
+        for k, v in extra_data.items():
+            setattr(instance, k, v)
+        return instance

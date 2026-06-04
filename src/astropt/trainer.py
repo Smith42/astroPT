@@ -45,6 +45,30 @@ class Trainer:
         self.weights_dir = weights_dir
         self.logs_dir = logs_dir
         self.logger = logging.getLogger('AstroPT')
+
+    def get_branch_value(self, branch_name: str, suffix: str, default_val: float) -> float:
+        """Helper to dynamically resolve modality overrides and fallback config keys."""
+        # 1. Modality-specific override (e.g. EuclidImage_lr_mult)
+        for key in (f"{branch_name}_{suffix}", f"{suffix}_{branch_name}"):
+            if hasattr(self.config, key):
+                return float(getattr(self.config, key))
+        
+        # 2. General group fallbacks (e.g. lr_mult_images, lr_mult_spectra)
+        if branch_name == "backbone":
+            return float(getattr(self.config, f"{suffix}_backbone", default_val))
+        elif "Image" in branch_name:
+            return float(getattr(self.config, f"{suffix}_images", default_val))
+        elif "Spectrum" in branch_name or "Spectra" in branch_name:
+            return float(getattr(self.config, f"{suffix}_spectra", default_val))
+        else:
+            return float(getattr(self.config, f"{suffix}_backbone", default_val))
+
+    def get_lr_scale(self, branch_name: str) -> float:
+        return self.get_branch_value(branch_name, "lr_mult", 1.0)
+
+    def get_grad_clip(self, branch_name: str) -> float:
+        return self.get_branch_value(branch_name, "grad_clip", self.config.grad_clip)
+
     def _create_model(self, registry: ModalityRegistry) -> torch.nn.Module:
         """
         Instantiates the GPT model, moves it to the target device, compiles it,
@@ -154,11 +178,14 @@ class Trainer:
         # Filter parameters that require gradients
         param_dict = {pn: p for pn, p in model.named_parameters() if p.requires_grad}
 
-        # Keep legacy two-group optimizer layout unless branch multipliers are requested.
-        use_branch_lr = any(
-            abs(v - 1.0) > 1e-12
-            for v in (config.lr_mult_images, config.lr_mult_spectra, config.lr_mult_backbone)
-        )
+        # Check if any branch multiplier or custom multiplier is enabled
+        use_branch_lr = False
+        for attr in dir(config):
+            if (attr.startswith("lr_mult_") or attr.endswith("_lr_mult")) and not attr.startswith("__"):
+                val = getattr(config, attr)
+                if val is not None and abs(float(val) - 1.0) > 1e-12:
+                    use_branch_lr = True
+                    break
 
         if not use_branch_lr:
             decay_params = []
@@ -184,16 +211,6 @@ class Trainer:
                 {"params": nodecay_params, "weight_decay": 0.0, "lr_scale": 1.0, "group_name": "nodecay"},
             ]
         else:
-            def get_lr_scale(branch_name: str) -> float:
-                if branch_name == "backbone":
-                    return float(config.lr_mult_backbone)
-                elif "Image" in branch_name:
-                    return float(config.lr_mult_images)
-                elif "Spectrum" in branch_name or "Spectra" in branch_name:
-                    return float(config.lr_mult_spectra)
-                else:
-                    return float(config.lr_mult_backbone)
-
             grouped: Dict[Tuple[str, str], Dict[str, Any]] = {}
             for name, param in param_dict.items():
                 decay_key = "decay" if param.dim() >= 2 else "nodecay"
@@ -204,7 +221,7 @@ class Trainer:
                     grouped[key] = {
                         "params": [],
                         "weight_decay": config.weight_decay if decay_key == "decay" else 0.0,
-                        "lr_scale": get_lr_scale(branch),
+                        "lr_scale": self.get_lr_scale(branch),
                         "group_name": f"{branch}_{decay_key}",
                     }
                 grouped[key]["params"].append(param)
@@ -753,15 +770,45 @@ class Trainer:
                     grad_norm = 0.0
                     is_clipped = 0.0
 
-                    if config.grad_clip != 0.0:
+                    # Determine if any custom gradient clipping is enabled
+                    use_custom_grad_clip = False
+                    for attr in dir(config):
+                        if (attr.startswith("grad_clip_") or attr.endswith("_grad_clip")) and not attr.startswith("__") and attr != "grad_clip":
+                            val = getattr(config, attr)
+                            if val is not None:
+                                use_custom_grad_clip = True
+                                break
 
-                        # This fonction (finished in _) computes the gradient norm, 
-                        # returns it and compares with the gradient clipping value
-                        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
-
-                        # Logging if gradient is clipped
-                        if grad_norm > config.grad_clip:
-                            is_clipped = 1.0
+                    if use_custom_grad_clip:
+                        # 1. Compute total gradient norm (unclipped)
+                        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), float('inf'))
+                        
+                        # 2. Group parameters by branch
+                        from astropt.training_utils import _param_branch_name
+                        branch_params = {}
+                        for name, param in model.named_parameters():
+                            if param.grad is None:
+                                continue
+                            branch = _param_branch_name(name)
+                            if branch not in branch_params:
+                                branch_params[branch] = []
+                            branch_params[branch].append(param)
+                        
+                        # 3. Clip parameters per branch
+                        for branch, params in branch_params.items():
+                            clip_val = self.get_grad_clip(branch)
+                            if clip_val != 0.0 and clip_val != float('inf'):
+                                branch_norm = torch.nn.utils.clip_grad_norm_(params, clip_val)
+                                if branch_norm > clip_val:
+                                    is_clipped = 1.0
+                    else:
+                        if config.grad_clip != 0.0:
+                            # This fonction (finished in _) computes the gradient norm, 
+                            # returns it and compares with the gradient clipping value
+                            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+                            # Logging if gradient is clipped
+                            if grad_norm > config.grad_clip:
+                                is_clipped = 1.0
 
                     diagnostics_due = (
                         config.diagnostics_enabled
@@ -838,7 +885,7 @@ class Trainer:
                         current_session_seconds = time.time() - run_start_time
                         total_seconds = current_session_seconds + accumulated_time
 
-                        running_str = str(datetime.timedelta(seconds=int(total_seconds)))
+                        running_str = str(datetime.timedelta(seconds=int(total_seconds))).replace(',', '')
 
                         # Compute the ETA for finishing training
                         remaining_iters = config.max_iters - iter_num
@@ -846,7 +893,7 @@ class Trainer:
                         eta_str = str(datetime.timedelta(seconds=int(eta_seconds))).replace(',', '')
 
                         # Dynamic LR summary for the log
-                        lr_summary = "/".join([f"{m[:3]}:{lr * getattr(config, f'lr_mult_{m}', 1.0):.1e}" for m in registry.names()])
+                        lr_summary = "/".join([f"{m[:3]}:{lr * self.get_lr_scale(m):.1e}" for m in registry.names()])
 
                         logger.info(
                             f" --> Iter {iter_num}/{config.max_iters} ({train_prog:.2%}) | "
@@ -913,7 +960,7 @@ class Trainer:
                             }
                             # Add dynamic learning rates
                             for m in registry.names():
-                                mult = getattr(config, f"lr_mult_{m}", 1.0)
+                                mult = self.get_lr_scale(m)
                                 wandb_payload[f"train/lr_{m}"] = lr * mult
 
                             if diagnostics_due and config.diagnostics_enabled:
@@ -939,7 +986,7 @@ class Trainer:
                                     "clip_loss": f"{clip_loss_accum_for_log:.6f}", "recon_loss": f"{recon_loss_accum_for_log:.6f}",
                                     "grad_norm": f"{grad_norm:.4f}", "grad_backbone": f"{branch_grad_norms.get('backbone', float('nan')):.4f}", 
                                     "clipped": f"{is_clipped:.0f}", "dropped_modality": dropout_summary, 
-                                    "lr": f"{lr:.4e}", "lr_backbone": f"{lr * getattr(config, 'lr_mult_backbone', 1.0):.4e}",
+                                    "lr": f"{lr:.4e}", "lr_backbone": f"{lr * self.get_lr_scale('backbone'):.4e}",
                                     "mfu": f"{mfu_display*100:.2f}", "mem_gb": f"{mem_usage:.2f}", 
                                     "dt_ms": f"{avg_dt*1000:.2f}", "rt_hms": running_str, "eta_hms": eta_str
                                 }
@@ -947,7 +994,7 @@ class Trainer:
                                     row[f"loss_{mod}"] = f"{mod_diagnostics.get(mod, float('nan')):.6f}"
                                     row[f"cross_loss_{mod}"] = f"{cross_diagnostics.get(mod, float('nan')):.6f}"
                                     row[f"grad_{mod}"] = f"{branch_grad_norms.get(mod, float('nan')):.4f}"
-                                    row[f"lr_{mod}"] = f"{lr * getattr(config, f'lr_mult_{mod}', 1.0):.4e}"
+                                    row[f"lr_{mod}"] = f"{lr * self.get_lr_scale(mod):.4e}"
 
                                 f.write(",".join(str(row.get(h, "")) for h in csv_headers) + "\n")
 
@@ -963,12 +1010,12 @@ class Trainer:
                                         "dropout_mode": config.modality_dropout_mode, "dropout_applied": dropout_summary,
                                         "grad_total": f"{branch_grad_norms.get('total', float('nan')):.4f}",
                                         "grad_backbone": f"{branch_grad_norms.get('backbone', float('nan')):.4f}",
-                                        "lr_base": f"{lr:.4e}", "lr_backbone": f"{lr * getattr(config, 'lr_mult_backbone', 1.0):.4e}"
+                                        "lr_base": f"{lr:.4e}", "lr_backbone": f"{lr * self.get_lr_scale('backbone'):.4e}"
                                     }
                                     for mod in names:
                                         row[f"loss_{mod}"] = f"{mod_diagnostics.get(mod, float('nan')):.6f}"
                                         row[f"grad_{mod}"] = f"{branch_grad_norms.get(mod, float('nan')):.4f}"
-                                        row[f"lr_{mod}"] = f"{lr * getattr(config, f'lr_mult_{mod}', 1.0):.4e}"
+                                        row[f"lr_{mod}"] = f"{lr * self.get_lr_scale(mod):.4e}"
                                     
                                     f.write(",".join(str(row.get(h, "")) for h in diag_headers) + "\n")
                             except Exception as e:

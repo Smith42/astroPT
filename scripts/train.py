@@ -19,18 +19,24 @@ from astropt.training_utils import (
     logging_setup, 
     project_directories_setup, 
     validate_runtime_flags,
-    save_config_json
+    save_config_json,
+    extract_extra_cli_args
 )
 from astropt.trainer import Trainer
 
 def main():
-    # 1. Parse Command Line Arguments
+    # Get valid dataclass fields
+    from dataclasses import fields as dc_fields
+    valid_fields = {f.name for f in dc_fields(TrainingConfig)}
+    
+    # 1. Filter and parse Command Line Arguments
+    cleaned_argv, extra_cli_args = extract_extra_cli_args(valid_fields)
     parser = HfArgumentParser((TrainingConfig,))
     
     # Support for YAML/JSON config file + CLI overrides
-    if len(sys.argv) > 1 and (sys.argv[1].endswith(".json") or sys.argv[1].endswith(".yaml")):
-        config_path = os.path.abspath(sys.argv[1])
-        sys.argv.pop(1) # Remove the config file from args
+    if len(cleaned_argv) > 0 and (cleaned_argv[0].endswith(".json") or cleaned_argv[0].endswith(".yaml")):
+        config_path = os.path.abspath(cleaned_argv[0])
+        cleaned_argv.pop(0) # Remove the config file from args
         
         # Load the file into a dictionary first
         if config_path.endswith(".yaml"):
@@ -42,24 +48,34 @@ def main():
             with open(config_path, "r") as f:
                 config_dict = json.load(f)
         
-        # Now parse the CLI arguments. 
-        # To merge correctly, we use parse_dict with the file data, 
-        # then we manually update with whatever comes from the CLI.
-        config, = parser.parse_dict(config_dict, allow_extra_keys=True)
+        if config_dict is None:
+            config_dict = {}
+
+        # Remove extra keys before parsing to avoid HfArgumentParser failure/warnings
+        dataclass_config_dict = {k: v for k, v in config_dict.items() if k in valid_fields}
+        extra_config_dict = {k: v for k, v in config_dict.items() if k not in valid_fields}
         
-        # For the CLI overrides, we parse them into a separate object 
-        # and only update fields that were EXPLICITLY passed (not defaults)
-        # A simple way is to check sys.argv for the flags
-        cli_config, _ = parser.parse_args_into_dataclasses(args=sys.argv[1:], return_remaining_strings=True)
+        config, = parser.parse_dict(dataclass_config_dict, allow_extra_keys=True)
         
-        for arg in sys.argv[1:]:
+        # Apply extra config keys from file
+        for k, v in extra_config_dict.items():
+            setattr(config, k, v)
+        
+        # For the CLI overrides, we parse them into a separate object
+        cli_config, _ = parser.parse_args_into_dataclasses(args=cleaned_argv, return_remaining_strings=True)
+        
+        for arg in cleaned_argv:
             if arg.startswith("--"):
-                field_name = arg.split("=")[0].lstrip("-")
+                field_name = arg.split("=")[0].lstrip("-").replace("-", "_")
                 if hasattr(cli_config, field_name):
                     setattr(config, field_name, getattr(cli_config, field_name))
     else:
         # Standard parsing
-        config, _ = parser.parse_args_into_dataclasses(return_remaining_strings=True)
+        config, _ = parser.parse_args_into_dataclasses(args=cleaned_argv, return_remaining_strings=True)
+
+    # Set extra keys from CLI on the config object
+    for k, v in extra_cli_args.items():
+        setattr(config, k, v)
     
     # 2. Validate Custom Flags
     validate_runtime_flags(config)

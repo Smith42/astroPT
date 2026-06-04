@@ -128,6 +128,48 @@ def parse_time_to_seconds(time_str: str) -> float:
         return h * 3600 + m * 60 + s
     except ValueError:
         raise ValueError(f"Invalid time format: {time_str}. Expected HH:MM:SS")
+    
+def extract_extra_cli_args(valid_fields: set) -> Tuple[List[str], Dict[str, Any]]:
+    """
+    Filters sys.argv to separate valid dataclass fields from extra/dynamic CLI arguments.
+    
+    Returns:
+        cleaned_argv: List of standard sys.argv elements representing valid arguments.
+        extra_cli_args: Dict mapping dynamic/custom flag names to their parsed values.
+    """
+    cleaned_argv = []
+    extra_cli_args = {}
+    i = 1
+    while i < len(sys.argv):
+        arg = sys.argv[i]
+        if arg.startswith("--"):
+            parts = arg.split("=", 1)
+            flag = parts[0].lstrip("-")
+            flag_snake = flag.replace("-", "_")
+            if flag_snake in valid_fields:
+                cleaned_argv.append(arg)
+            else:
+                if len(parts) > 1:
+                    val_str = parts[1]
+                    try:
+                        val = float(val_str) if "." in val_str else int(val_str)
+                    except ValueError:
+                        val = val_str
+                    extra_cli_args[flag_snake] = val
+                elif i + 1 < len(sys.argv) and not sys.argv[i+1].startswith("--"):
+                    val_str = sys.argv[i+1]
+                    try:
+                        val = float(val_str) if "." in val_str else int(val_str)
+                    except ValueError:
+                        val = val_str
+                    extra_cli_args[flag_snake] = val
+                    i += 1
+                else:
+                    extra_cli_args[flag_snake] = True
+        else:
+            cleaned_argv.append(arg)
+        i += 1
+    return cleaned_argv, extra_cli_args
 
 
 def validate_runtime_flags(config: TrainingConfig) -> None:
@@ -143,10 +185,27 @@ def validate_runtime_flags(config: TrainingConfig) -> None:
     if config.diagnostics_interval < 1:
         raise ValueError("diagnostics_interval must be >= 1.")
 
-    for field_name in ("lr_mult_images", "lr_mult_spectra", "lr_mult_backbone"):
-        value = getattr(config, field_name)
-        if value <= 0.0:
-            raise ValueError(f"{field_name} must be > 0.")
+    # Validate learning rate multipliers
+    for attr in dir(config):
+        if (attr.startswith("lr_mult_") or attr.endswith("_lr_mult")) and not attr.startswith("__"):
+            value = getattr(config, attr)
+            if value is not None:
+                try:
+                    if float(value) <= 0.0:
+                        raise ValueError(f"{attr} must be > 0.")
+                except ValueError:
+                    pass
+
+    # Validate gradient clipping values
+    for attr in dir(config):
+        if (attr.startswith("grad_clip_") or attr.endswith("_grad_clip") or attr == "grad_clip") and not attr.startswith("__"):
+            value = getattr(config, attr)
+            if value is not None:
+                try:
+                    if float(value) < 0.0:
+                        raise ValueError(f"{attr} must be >= 0.")
+                except ValueError:
+                    pass
 
     # V4: Contrastive Alignment Validation
     if config.use_contrastive_alignment:
