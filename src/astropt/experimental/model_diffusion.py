@@ -503,6 +503,9 @@ class SpectrumUNet1D(nn.Module):
         # Input projection
         self.conv_in = nn.Conv1d(config.spectrum_channels, dims[0], kernel_size=3, padding=1)
 
+        # 1D Positional Embedding to break translation invariance
+        self.pos_emb = nn.Parameter(torch.randn(1, dims[0], self.padded_length) * 0.02)
+
         # Encoder (downsampling path)
         self.down_blocks = nn.ModuleList()
         ch_in = dims[0]
@@ -580,7 +583,7 @@ class SpectrumUNet1D(nn.Module):
             cond = torch.cat([t_emb, ctx], dim=-1)     # [B, cond_dim]
 
         # Encoder
-        h = self.conv_in(x)
+        h = self.conv_in(x) + self.pos_emb[..., :x.shape[-1]]
         skips = []
         for down_block in self.down_blocks:
             h, skip = down_block(h, cond)
@@ -666,6 +669,7 @@ class SpectrumDiffusionModel(nn.Module):
     @torch.no_grad()
     def sample(self, context: torch.Tensor,
                redshift: Optional[torch.Tensor] = None,
+               guidance_scale: float = 0.0,
                device: Optional[torch.device] = None,
                return_intermediates: bool = False) -> torch.Tensor:
         """
@@ -677,6 +681,7 @@ class SpectrumDiffusionModel(nn.Module):
         Args:
             context:              Image embeddings [B, context_dim].
             redshift:             Redshift tensor [B] or [B, 1] (optional).
+            guidance_scale:       Classifier-Free Guidance scale.
             device:               Target device (optional, defaults to context device).
             return_intermediates: If True, returns all intermediate xₜ as well.
 
@@ -696,7 +701,16 @@ class SpectrumDiffusionModel(nn.Module):
         # Reverse diffusion loop: T-1 → 0
         for t in reversed(range(self.config.num_timesteps)):
             t_tensor = torch.full((B,), t, device=device, dtype=torch.long)
-            noise_pred = self.unet(xt, t_tensor, context, redshift)
+            
+            # Predict noise
+            if guidance_scale > 0.0:
+                noise_pred_cond = self.unet(xt, t_tensor, context, redshift)
+                uncond_context = torch.zeros_like(context)
+                noise_pred_uncond = self.unet(xt, t_tensor, uncond_context, redshift)
+                noise_pred = (1.0 + guidance_scale) * noise_pred_cond - guidance_scale * noise_pred_uncond
+            else:
+                noise_pred = self.unet(xt, t_tensor, context, redshift)
+                
             xt = self.scheduler.sample_prev_timestep(xt, noise_pred, t)
 
             if return_intermediates and t % 100 == 0:
@@ -704,6 +718,71 @@ class SpectrumDiffusionModel(nn.Module):
 
         if return_intermediates:
             return xt, intermediates
+        return xt
+
+    @torch.no_grad()
+    def sample_ddim(self, context: torch.Tensor,
+                    redshift: Optional[torch.Tensor] = None,
+                    num_steps: int = 50,
+                    eta: float = 0.0,
+                    guidance_scale: float = 0.0,
+                    device: Optional[torch.device] = None) -> torch.Tensor:
+        """
+        Generate spectra via DDIM (Denoising Diffusion Implicit Models) sampling.
+        Allows generating high-quality samples in 10-20x fewer steps than DDPM.
+
+        Args:
+            context:        Image embeddings [B, context_dim].
+            redshift:       Redshift tensor [B] or [B, 1] (optional).
+            num_steps:      Number of steps to space evenly from T-1 to 0 (default: 50).
+            eta:            Stochasticity scale parameter. 0.0 for deterministic DDIM.
+            guidance_scale: Classifier-Free Guidance scale.
+            device:         Target device.
+        """
+        B = context.shape[0]
+        spectrum_length = self.config.spectrum_length
+        if device is None:
+            device = context.device
+
+        T = self.config.num_timesteps
+        steps = torch.linspace(T - 1, 0, num_steps, dtype=torch.long, device=device)
+        steps = list(steps.cpu().numpy())
+        steps_prev = steps[1:] + [-1]
+        
+        # Start from pure noise
+        xt = torch.randn(B, self.config.spectrum_channels, spectrum_length, device=device)
+        
+        alpha_cum = self.scheduler.alpha_cum
+
+        # Loop from step_i back to step_i_prev
+        for t, t_prev in zip(steps, steps_prev):
+            t_tensor = torch.full((B,), t, device=device, dtype=torch.long)
+            
+            # Predict noise
+            if guidance_scale > 0.0:
+                noise_pred_cond = self.unet(xt, t_tensor, context, redshift)
+                uncond_context = torch.zeros_like(context)
+                noise_pred_uncond = self.unet(xt, t_tensor, uncond_context, redshift)
+                noise_pred = (1.0 + guidance_scale) * noise_pred_cond - guidance_scale * noise_pred_uncond
+            else:
+                noise_pred = self.unet(xt, t_tensor, context, redshift)
+
+            ab_t = alpha_cum[t]
+            ab_prev = alpha_cum[t_prev] if t_prev >= 0 else torch.tensor(1.0, device=device)
+
+            # 1. Estimate predicted x0 (clean spectrum)
+            x0_pred = (xt - torch.sqrt(1.0 - ab_t) * noise_pred) / torch.sqrt(ab_t)
+            
+            # 2. Calculate standard deviation for stochastic sampling (eta > 0)
+            sig_t = eta * torch.sqrt((1.0 - ab_prev) / (1.0 - ab_t)) * torch.sqrt(1.0 - ab_t / ab_prev)
+            
+            # 3. Calculate direction pointing to xt
+            dir_xt = torch.sqrt(1.0 - ab_prev - sig_t**2) * noise_pred
+            
+            # 4. Compute xt_prev
+            z = torch.randn_like(xt) if t_prev > 0 else 0.0
+            xt = torch.sqrt(ab_prev) * x0_pred + dir_xt + sig_t * z
+
         return xt
 
     def get_num_params(self) -> int:

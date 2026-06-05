@@ -42,9 +42,9 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from transformers import HfArgumentParser
 
-from astropt.euclid_desi_arrow_dataloader import EuclidDESIDatasetArrow
+from astropt.legacy.euclid_desi_arrow_dataloader import EuclidDESIDatasetArrow
 from astropt.model import ModalityRegistry, ModalityConfig
-from astropt.model_diffusion import (
+from astropt.experimental.model_diffusion import (
     DiffusionModelConfig,
     SpectrumDiffusionModel,
 )
@@ -74,6 +74,7 @@ class DiffusionTrainingConfig:
     embeddings_path: str = ""                       # .npz with 'images' and 'targetid' keys
     embeddings_key: str = "images"                  # Key inside .npz for the image embeddings
     data_dir: str = "/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_interpolated"
+    metadata_path: str = ""                         # Optional path to .fits catalog for filtering targets
 
     # --- Model Architecture ---
     context_dim: int = 512                          # Image embedding dimension
@@ -119,6 +120,7 @@ class DiffusionTrainingConfig:
 
     # --- Sampling ---
     num_samples_at_end: int = 8                     # How many spectra to generate after training
+    cfg_dropout_prob: float = 0.15                  # Probability to randomly drop context embedding during training
 
     # --- System ---
     max_run_hours: Optional[str] = None             # Time limit "HH:MM:SS"
@@ -287,6 +289,7 @@ class PairedEmbeddingSpectraDataset(Dataset):
         scaler_mean: float = 0.0,
         scaler_std: float = 1.0,
         use_standard_scaling: bool = True,
+        allowed_ids: Optional[set[int]] = None,
     ):
         super().__init__()
         self.spectrum_length = spectrum_length
@@ -318,13 +321,16 @@ class PairedEmbeddingSpectraDataset(Dataset):
         # Match embeddings to spectra via TARGETID
         self.valid_pairs = []  # List of (emb_idx, arrow_idx)
         for emb_i, tid in enumerate(emb_ids):
-            if int(tid) in arrow_id_to_idx:
-                self.valid_pairs.append((emb_i, arrow_id_to_idx[int(tid)]))
+            tid_int = int(tid)
+            if allowed_ids is not None and tid_int not in allowed_ids:
+                continue
+            if tid_int in arrow_id_to_idx:
+                self.valid_pairs.append((emb_i, arrow_id_to_idx[tid_int]))
 
         if len(self.valid_pairs) == 0:
             raise RuntimeError(
                 f"No matching TARGETIDs found between embeddings ({len(emb_ids)}) "
-                f"and Arrow dataset ({len(arrow_id_to_idx)})."
+                f"and Arrow dataset ({len(arrow_id_to_idx)}) (allowed: {len(allowed_ids) if allowed_ids else 'all'})."
             )
 
     def __len__(self) -> int:
@@ -484,6 +490,25 @@ def main() -> None:
         except Exception as e:
             logger.warning(f"Failed to parse pre-trained config: {e}")
 
+    # Auto-detect embedding dimension directly from NPZ file to prevent shape mismatches
+    if config.embeddings_path and Path(config.embeddings_path).exists():
+        try:
+            npz_check = np.load(config.embeddings_path)
+            detected_key = config.embeddings_key
+            if detected_key not in npz_check:
+                for k in ["EuclidImage_phase2", "EuclidImage", "images"]:
+                    if k in npz_check:
+                        detected_key = k
+                        break
+            if detected_key in npz_check:
+                actual_dim = npz_check[detected_key].shape[1]
+                if config.context_dim != actual_dim:
+                    logger.info(f"Auto-detected embedding dimension from NPZ: {actual_dim}. Overriding context_dim (was {config.context_dim})")
+                    config.context_dim = actual_dim
+            del npz_check  # Free memory
+        except Exception as e:
+            logger.warning(f"Could not auto-detect embedding dimension from NPZ: {e}")
+
     save_config_json(config, weights_dir)
 
     # Parse channel dimensions from comma-separated string
@@ -572,6 +597,19 @@ def main() -> None:
             transform=val_tf,
         )
 
+    allowed_ids = None
+    if config.metadata_path:
+        logger.info(f"Loading metadata catalog for target filtering: {config.metadata_path}")
+        try:
+            from astropy.table import Table
+            catalog = Table.read(config.metadata_path)
+            target_col = 'TARGETID' if 'TARGETID' in catalog.colnames else 'targetid'
+            allowed_ids = set(int(x) for x in catalog[target_col])
+            logger.info(f"Successfully loaded {len(allowed_ids)} Target IDs from FITS catalog.")
+        except Exception as e:
+            logger.error(f"Failed to read metadata catalog from {config.metadata_path}: {e}")
+            sys.exit(1)
+
     logger.info("Building paired datasets (embedding ↔ spectrum)...")
 
     # --- StandardScaler: compute μ and σ from training spectra (post-asinh) ---
@@ -585,6 +623,7 @@ def main() -> None:
             arrow_dataset=base_ds_train,
             spectrum_length=config.spectrum_length,
             use_standard_scaling=False,  # Raw asinh values
+            allowed_ids=allowed_ids,
         )
         logger.info(
             f"Computing StandardScaler statistics from {config.scaler_num_samples} "
@@ -605,6 +644,7 @@ def main() -> None:
         scaler_mean=scaler_mean,
         scaler_std=scaler_std,
         use_standard_scaling=config.use_standard_scaling,
+        allowed_ids=allowed_ids,
     )
 
     val_dataset = PairedEmbeddingSpectraDataset(
@@ -615,6 +655,7 @@ def main() -> None:
         scaler_mean=scaler_mean,
         scaler_std=scaler_std,
         use_standard_scaling=config.use_standard_scaling,
+        allowed_ids=allowed_ids,
     )
 
     logger.info(f"Train pairs: {len(train_dataset)} | Val pairs: {len(val_dataset)}")
@@ -669,7 +710,7 @@ def main() -> None:
         if ckpt_path.exists():
             logger.info(f"Resuming from {ckpt_path}")
             checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
-            model.load_state_dict(checkpoint["model"])
+            model.load_state_dict(checkpoint["model"], strict=False)
             optimizer.load_state_dict(checkpoint["optimizer"])
             iter_num = checkpoint["iter_num"]
             best_val_loss = checkpoint.get("best_val_loss", float("inf"))
@@ -736,6 +777,11 @@ def main() -> None:
         embedding = embedding.to(device)
         spectrum = spectrum.to(device)
         redshift = redshift.to(device)
+
+        # Classifier-free guidance training: randomly mask embeddings (replace with zeros)
+        if config.cfg_dropout_prob > 0.0:
+            mask = (torch.rand(embedding.shape[0], 1, device=device) < config.cfg_dropout_prob)
+            embedding = embedding.masked_fill(mask, 0.0)
 
         # Forward pass
         optimizer.zero_grad(set_to_none=True)
@@ -896,7 +942,7 @@ def main() -> None:
 
     logger.info(f"Generating {num_samples} spectra via {config.num_timesteps}-step reverse process...")
     with ctx:
-        generated_spectra = model.sample(sample_embeddings, sample_redshifts, device)
+        generated_spectra = model.sample(sample_embeddings, sample_redshifts, device=device)
 
     generated_spectra = generated_spectra.cpu().numpy()
 

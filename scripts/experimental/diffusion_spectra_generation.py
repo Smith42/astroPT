@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any
 import os
 import glob
 
-from astropt.model_diffusion import DiffusionModelConfig, SpectrumDiffusionModel
+from astropt.experimental.model_diffusion import DiffusionModelConfig, SpectrumDiffusionModel
 
 def make_rgb_lupton(image_tensor: np.ndarray, Q: float = 12.0, stretch: float = 0.5, m: float = 0.0) -> np.ndarray:
     """Lupton et al. (2004) algorithm to combine multichannels into an RGB image."""
@@ -28,30 +28,39 @@ def make_rgb_lupton(image_tensor: np.ndarray, Q: float = 12.0, stretch: float = 
 def find_arrow_record(data_dir: Path, target_id: int) -> Optional[dict]:
     """Finds a record with the matching target_id in the Arrow files inside data_dir."""
     from datasets import load_from_disk, load_dataset
-    for split in ["val", "train"]:
-        pattern = os.path.join(data_dir, f"{split}_*")
-        folders = sorted(glob.glob(pattern))
-        for folder in folders:
-            try:
-                ds = load_from_disk(folder)
-            except Exception:
-                files = sorted(glob.glob(os.path.join(folder, "*.arrow")))
-                if not files:
-                    continue
-                ds = load_dataset("arrow", data_files=files, split="train")
-            
-            available_cols = ds.column_names
-            tid_col = "targetid" if "targetid" in available_cols else "target_id" if "target_id" in available_cols else None
-            if tid_col is None:
+    data_dir = Path(data_dir)
+    folders = sorted([str(p) for p in data_dir.iterdir() if p.is_dir()])
+    print(f"[DEBUG] Scanning {len(folders)} folders for target ID {target_id}: {folders}")
+    for folder in folders:
+        try:
+            ds = load_from_disk(folder)
+        except Exception:
+            files = sorted(glob.glob(os.path.join(folder, "*.arrow")))
+            if not files:
                 continue
-            
-            # Convert to numpy format for ultra-fast filtering
-            ds_np = ds.select_columns([tid_col])
-            target_ids = np.array(ds_np[tid_col])
-            matches = np.where(target_ids == target_id)[0]
-            if len(matches) > 0:
-                idx = int(matches[0])
-                return ds[idx]
+            ds = load_dataset("arrow", data_files=files, split="train")
+        
+        available_cols = ds.column_names
+        tid_col = "targetid" if "targetid" in available_cols else "target_id" if "target_id" in available_cols else None
+        if tid_col is None:
+            continue
+        
+        # Convert to numpy format for ultra-fast filtering
+        ds_np = ds.select_columns([tid_col])
+        target_ids = np.array(ds_np[tid_col])
+        
+        try:
+            matches = np.where(target_ids.astype(np.int64) == int(target_id))[0]
+        except Exception:
+            try:
+                matches = np.where(target_ids.astype(str) == str(target_id))[0]
+            except Exception:
+                matches = np.where(target_ids == target_id)[0]
+                
+        if len(matches) > 0:
+            idx = int(matches[0])
+            print(f"[DEBUG] Found match in folder: {folder} at index {idx}")
+            return ds[idx]
     return None
 
 # Plotting Global LaTeX Configuration (matching dash_internal_reconstruction_samples.py)
@@ -129,6 +138,100 @@ class AdaptiveMLP(torch.nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
+def get_morphological_meta_str(tid: int, metadata) -> str:
+    import pandas as pd
+    if metadata is not None and tid in metadata.index:
+        meta = metadata.loc[tid]
+        
+        # Coordinates
+        ra_val = meta.get('RA', None)
+        dec_val = meta.get('DEC', None)
+        coords_str = f"${ra_val:.6f}^\\circ, {dec_val:.6f}^\\circ$" if (ra_val is not None and not pd.isna(ra_val)) else "N/A"
+        
+        # Redshift
+        z_val = meta.get('Z', None)
+        z_str = f"{z_val:.4f}" if (z_val is not None and not pd.isna(z_val)) else "N/A"
+        
+        # Stellar Mass
+        logmstar_val = meta.get('LOGMSTAR', None)
+        mstar = f"$10^{{{logmstar_val:.2f}}} \\text{{ M}}_\\odot$" if (logmstar_val is not None and not pd.isna(logmstar_val)) else "N/A"
+        
+        # Star Formation Rate
+        logsfr_val = meta.get('LOGSFR', None)
+        sfr = f"${10**logsfr_val:.3f} \\text{{ M}}_\\odot/\\text{{yr}}$" if (logsfr_val is not None and not pd.isna(logsfr_val)) else "N/A"
+        
+        # Spectype
+        spectype = str(meta.get('SPECTYPE', 'N/A'))
+        
+        # Euclid Sersic Index
+        sersic_n_val = meta.get('sersic_sersic_vis_index', None)
+        n_str = f"{sersic_n_val:.2f}" if (sersic_n_val is not None and not pd.isna(sersic_n_val)) else "N/A"
+        
+        # Euclid Effective Radius
+        sersic_re_val = meta.get('sersic_sersic_vis_radius', None)
+        re_str = f"{sersic_re_val:.3f}''" if (sersic_re_val is not None and not pd.isna(sersic_re_val)) else "N/A"
+        
+        # Axis Ratio
+        ba_val = meta.get('sersic_sersic_vis_axis_ratio', None)
+        ba_str = f"{ba_val:.3f}" if (ba_val is not None and not pd.isna(ba_val)) else "N/A"
+        
+        # VIS Aperture Flux
+        vis_flux_val = meta.get('flux_vis_1fwhm_aper', None)
+        vis_flux_str = f"{vis_flux_val:.2f}" if (vis_flux_val is not None and not pd.isna(vis_flux_val)) else "N/A"
+        
+        meta_str = (
+            f"\\textbf{{Coords}}: {coords_str}\n"
+            f"\\textbf{{Z}}: {z_str}\n"
+            f"\\textbf{{$M_*$}}: {mstar}\n"
+            f"\\textbf{{SFR}}: {sfr}\n"
+            f"\\textbf{{Spectype}}: {spectype}\n"
+            f"\\textbf{{VIS Flux}}: {vis_flux_str}\n"
+            f"\\textbf{{Sersic n}}: {n_str}\n"
+            f"\\textbf{{Radius $R_{{eff}}$}}: {re_str}\n"
+            f"\\textbf{{Axis Ratio}}: {ba_str}"
+        )
+        return meta_str.replace("_", "\\_")
+    return f"\\textbf{{ID}}: {tid}\n(No metadata)"
+
+def get_spectroscopic_meta_str(tid: int, metadata) -> str:
+    import pandas as pd
+    if metadata is not None and tid in metadata.index:
+        meta = metadata.loc[tid]
+        
+        ha_f = meta.get('HALPHA_FLUX', None)
+        hb_f = meta.get('HBETA_FLUX', None)
+        oiii_f = meta.get('OIII_5007_FLUX', None)
+        oii_f = meta.get('OII_3726_FLUX', None)
+        
+        ha_ew = meta.get('HALPHA_EW', None)
+        hb_ew = meta.get('HBETA_EW', None)
+        oii_ew = meta.get('OII_3726_EW', None)
+        
+        ha_sig = meta.get('HALPHA_SIGMA', None)
+        snr_r = meta.get('SNR_SPEC_R', None)
+        snr_z = meta.get('SNR_SPEC_Z', None)
+        
+        def fmt_flux(v): return f"{v:.2f}" if (v is not None and not pd.isna(v)) else "N/A"
+        def fmt_ew(v): return f"{v:.2f} \\AA" if (v is not None and not pd.isna(v)) else "N/A"
+        def fmt_val(v, unit=""): return f"{v:.1f}{unit}" if (v is not None and not pd.isna(v)) else "N/A"
+        
+        stats_text = (
+            f"\\textbf{{Spectral Line Fluxes}}:\n"
+            f"  - H$\\alpha$ Flux: {fmt_flux(ha_f)}\n"
+            f"  - H$\\beta$ Flux: {fmt_flux(hb_f)}\n"
+            f"  - [O III] 5007 Flux: {fmt_flux(oiii_f)}\n"
+            f"  - [O II] 3726 Flux: {fmt_flux(oii_f)}\n\n"
+            f"\\textbf{{Equivalent Widths}}:\n"
+            f"  - H$\\alpha$ EW: {fmt_ew(ha_ew)}\n"
+            f"  - H$\\beta$ EW: {fmt_ew(hb_ew)}\n"
+            f"  - [O II] 3726 EW: {fmt_ew(oii_ew)}\n\n"
+            f"\\textbf{{Spectra Quality}}:\n"
+            f"  - H$\\alpha$ Width $\\sigma$: {fmt_val(ha_sig, ' km/s')}\n"
+            f"  - SNR Spec R: {fmt_val(snr_r)} | SNR Spec Z: {fmt_val(snr_z)}"
+        )
+        return stats_text.replace("_", "\\_")
+    return "\\textbf{Spectra data missing}"
+
 def parse_args():
     parser = argparse.ArgumentParser(description="User-Interactive Multi-Seed Zero-Label Spectrum Diffusion Synthesizer")
     parser.add_argument("--checkpoint_path", type=str, required=True, help="Path to DDPM model ckpt_best.pt")
@@ -140,9 +243,14 @@ def parse_args():
     parser.add_argument("--ensemble", action="store_true", help="Use the weighted average of all estimators for spectrum conditioning instead of the single best estimator")
     parser.add_argument("--best_by", type=str, default="balanced", choices=["r2", "bias", "nmad", "rmse", "outliers", "balanced"], help="Metric used to select the single best model or weight the ensemble (default: balanced combination of R2, Bias, and NMAD)")
     parser.add_argument("--output_path", type=str, default=None, help="Path to save visual multi-panel plot (default: ID_<galaxy_id>_diffusion.png)")
-    parser.add_argument("--layout", type=str, default="stacked", choices=["stacked", "dashboard"], help="Visual layout to use: 'stacked' for 7-row zoom-in details, 'dashboard' for Euclid RGB galaxy image + full spectrum comparison.")
+    parser.add_argument("--layout", type=str, default="dashboard", choices=["stacked", "dashboard"], help="Visual layout to use: 'stacked' for 7-row zoom-in details, 'dashboard' for Euclid RGB galaxy image + full spectrum comparison.")
     parser.add_argument("--plot_original", action="store_true", help="Plot the original galaxy image and ground-truth spectrum from the raw Arrow dataset")
     parser.add_argument("--data_dir", type=str, default="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_interpolated", help="Path to raw processed Arrow dataset root folder")
+    parser.add_argument("--sampler", type=str, default="ddim", choices=["ddpm", "ddim"], help="Sampling method to use: ddpm or ddim")
+    parser.add_argument("--num_steps", type=int, default=100, help="Number of steps for DDIM sampler (default: 100)")
+    parser.add_argument("--guidance_scale", type=float, default=1.5, help="Classifier-Free Guidance scale. 0.0 means no guidance. (default: 1.5)")
+    parser.add_argument("--embeddings_key", type=str, default=None, help="Key in NPZ file to use for embeddings (e.g. EuclidImage_phase2)")
+    parser.add_argument("--metadata_path", type=str, default=None, help="Path to FITS metadata catalog for physical properties display")
     return parser.parse_args()
 
 def load_redshift_prober(weights_path: Path, target_key: str, device: torch.device) -> tuple:
@@ -165,20 +273,61 @@ def load_redshift_prober(weights_path: Path, target_key: str, device: torch.devi
     
     return model, mean, scale, scaler_type, score, metrics
 
-def sample_with_seed(model: SpectrumDiffusionModel, cond_tensor: torch.Tensor, redshift_tensor: Optional[torch.Tensor], device: torch.device, seed_val: int) -> torch.Tensor:
-    """Samples from DDPM setting specific seed for exact reproducibility."""
+def sample_with_seed(
+    model: SpectrumDiffusionModel, 
+    cond_tensor: torch.Tensor, 
+    redshift_tensor: Optional[torch.Tensor], 
+    device: torch.device, 
+    seed_val: int,
+    sampler: str = "ddpm",
+    num_steps: int = 50,
+    guidance_scale: float = 1.0,
+) -> torch.Tensor:
+    """Samples from diffusion model setting specific seed for exact reproducibility."""
     torch.manual_seed(seed_val)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed_val)
     np.random.seed(seed_val)
     
     with torch.no_grad():
-        return model.sample(cond_tensor, redshift=redshift_tensor, device=device)
+        if sampler == "ddim":
+            return model.sample_ddim(
+                cond_tensor, 
+                redshift=redshift_tensor, 
+                num_steps=num_steps, 
+                guidance_scale=guidance_scale,
+                device=device
+            )
+        else:
+            return model.sample(
+                cond_tensor, 
+                redshift=redshift_tensor, 
+                guidance_scale=guidance_scale,
+                device=device
+            )
 
 def main():
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\n[INFO] Running on device: {device}")
+
+    # Load FITS metadata catalog if provided
+    metadata = None
+    if getattr(args, "metadata_path", None) is not None:
+        metadata_path = Path(args.metadata_path)
+        if metadata_path.exists():
+            try:
+                from astropy.table import Table
+                import pandas as pd
+                print(f"[INFO] Loading FITS metadata catalog from: {metadata_path}")
+                catalog = Table.read(metadata_path)
+                target_col = 'TARGETID' if 'TARGETID' in catalog.colnames else 'targetid'
+                df_meta = catalog.to_pandas()
+                df_meta.set_index(target_col, inplace=True)
+                metadata = df_meta
+                print(f"Successfully loaded metadata catalog for {len(metadata)} targets.")
+            except Exception as e:
+                print(f"[WARNING] Failed to load metadata catalog: {e}")
     
     # 1. Load diffusion model
     print(f"Loading Spectrum Diffusion Model from: {args.checkpoint_path}")
@@ -193,17 +342,38 @@ def main():
     diff_scaler_std = diff_ckpt.get("scaler_std", 1.0)
     print(f"Diffusion inverse scalers loaded (mean={diff_scaler_mean:.5f}, std={diff_scaler_std:.5f})")
     
+    # Load physical norm parameters (scaler, const) from training config.json if available
+    ckpt_dir = Path(args.checkpoint_path).parent
+    config_json_path = ckpt_dir / "config.json"
+    norm_scaler = 1.0
+    norm_const = 1.0
+    if config_json_path.exists():
+        try:
+            import json
+            with open(config_json_path, 'r') as f:
+                pt_cfg = json.load(f)
+                norm_scaler = pt_cfg.get("spectra_norm_scaler", 1.0)
+                norm_const = pt_cfg.get("spectra_norm_const", 1.0)
+                print(f"[INFO] Loaded normalisation parameters from config: scaler={norm_scaler}, const={norm_const}")
+        except Exception as e:
+            print(f"[WARNING] Could not read config.json for normalization parameters: {e}")
+    
     # 2. Load embeddings
     print(f"Loading embeddings from: {args.embeddings_path}")
     emb_data = np.load(args.embeddings_path)
     
     emb_key = None
-    for key in ['images', 'EuclidImage', 'best_img-mean']:
-        if key in emb_data:
-            emb_key = key
-            break
-    if emb_key is None:
-        raise KeyError(f"No valid image embedding key found. Available keys: {list(emb_data.keys())}")
+    if getattr(args, "embeddings_key", None) is not None:
+        emb_key = args.embeddings_key
+        if emb_key not in emb_data:
+            raise KeyError(f"Requested embeddings key '{emb_key}' not found in NPZ. Available keys: {list(emb_data.keys())}")
+    else:
+        for key in ['images', 'EuclidImage', 'best_img-mean']:
+            if key in emb_data:
+                emb_key = key
+                break
+        if emb_key is None:
+            raise KeyError(f"No valid image embedding key found. Available keys: {list(emb_data.keys())}")
         
     embeddings = emb_data[emb_key]
     ids = emb_data['ids'] if 'ids' in emb_data else emb_data['targetid'] if 'targetid' in emb_data else np.arange(len(embeddings))
@@ -365,27 +535,37 @@ def main():
         
         for s in seeds:
             print(f"Sampling spectrum with Seed {s:03d}...")
-            spec_tensor = sample_with_seed(diff_model, cond_tensor, z_tensor, device, s)
+            spec_tensor = sample_with_seed(
+                diff_model, 
+                cond_tensor, 
+                z_tensor, 
+                device, 
+                s,
+                sampler=args.sampler,
+                num_steps=args.num_steps,
+                guidance_scale=args.guidance_scale,
+            )
             spec_np = spec_tensor.cpu().numpy().squeeze()
-            # Inverse standard scale to physical flux scale
-            generated_spectra[s] = spec_np * diff_scaler_std + diff_scaler_mean
+            # Inverse standard scale to get the normalized asinh-flux
+            spec_norm = spec_np * diff_scaler_std + diff_scaler_mean
+            # Inverse asinh to get physical flux
+            generated_spectra[s] = norm_scaler * np.sinh(spec_norm * norm_const)
             
-        # Try to load Arrow record if plot_original is requested
+        # Try to load Arrow record if data_dir exists
         arrow_record = None
-        if args.plot_original:
-            data_dir = Path(args.data_dir)
-            if data_dir.exists():
-                print(f"Searching for Galaxy ID {galaxy_id} in Arrow files at {data_dir}...")
-                try:
-                    arrow_record = find_arrow_record(data_dir, galaxy_id)
-                    if arrow_record is not None:
-                        print(f"[SUCCESS] Arrow record found for Galaxy ID {galaxy_id}!")
-                    else:
-                        print(f"[WARNING] Galaxy ID {galaxy_id} was not found in the Arrow dataset.")
-                except Exception as e:
-                    print(f"[WARNING] Error searching Arrow dataset: {e}")
-            else:
-                print(f"[WARNING] data_dir does not exist at {data_dir}. Skipping original data plotting.")
+        data_dir = Path(args.data_dir)
+        if data_dir.exists():
+            print(f"Searching for Galaxy ID {galaxy_id} in Arrow files at {data_dir}...")
+            try:
+                arrow_record = find_arrow_record(data_dir, galaxy_id)
+                if arrow_record is not None:
+                    print(f"[SUCCESS] Arrow record found for Galaxy ID {galaxy_id}!")
+                else:
+                    print(f"[WARNING] Galaxy ID {galaxy_id} was not found in the Arrow dataset.")
+            except Exception as e:
+                print(f"[WARNING] Error searching Arrow dataset: {e}")
+        else:
+            print(f"[WARNING] data_dir does not exist at {data_dir}. Skipping original data plotting.")
 
         # Extract ground truth spectrum if present
         real_spec = None
@@ -417,15 +597,46 @@ def main():
         # Choose visual layout
         if args.layout == "dashboard":
             print("\nRendering publication-quality side-by-side dashboard...")
-            fig = plt.figure(figsize=(17, 7.5))
+            fig = plt.figure(figsize=(20, 14), dpi=150)
+            gs = gridspec.GridSpec(3, 3, height_ratios=[2, 1, 1], width_ratios=[1, 1.1, 0.9], hspace=0.4, wspace=0.3)
             
-            # Setup GridSpec
+            ax_meta = fig.add_subplot(gs[0, 0])
+            ax_img = fig.add_subplot(gs[0, 1])
+            ax_stats = fig.add_subplot(gs[0, 2])
+            ax_spec_blue = fig.add_subplot(gs[1, :])
+            ax_spec_red = fig.add_subplot(gs[2, :])
+            
+            # --- Load & Render Meta data ---
+            query_meta = get_morphological_meta_str(galaxy_id, metadata)
+            ax_meta.axis('off')
+            ax_meta.text(
+                0.5, 0.95, query_meta, 
+                transform=ax_meta.transAxes, 
+                fontsize=12,
+                linespacing=1.8,
+                horizontalalignment='center',
+                verticalalignment='top',
+                bbox=dict(boxstyle="round,pad=0.8", fc="ivory", alpha=0.95, ec="darkgrey", lw=1.0)
+            )
+            ax_meta.set_title(r"\textbf{Physical and Morphological properties}", fontsize=14, fontweight='bold', color='navy', pad=15)
+            
+            # --- Load & Render Spectroscopic stats ---
+            query_spec_meta = get_spectroscopic_meta_str(galaxy_id, metadata)
+            ax_stats.axis('off')
+            ax_stats.text(
+                0.5, 0.95, query_spec_meta, 
+                transform=ax_stats.transAxes, 
+                fontsize=12,
+                linespacing=1.6,
+                horizontalalignment='center',
+                verticalalignment='top',
+                bbox=dict(boxstyle="round,pad=0.8", fc="aliceblue", alpha=0.95, ec="steelblue", lw=1.0)
+            )
+            ax_stats.set_title(r"\textbf{Spectroscopic properties}", fontsize=14, fontweight='bold', color='steelblue', pad=15)
+            
+            # --- Reconstruct and plot image ---
+            rgb_img_plotted = False
             if arrow_record is not None:
-                gs = gridspec.GridSpec(1, 2, width_ratios=[1, 2.2], wspace=0.18)
-                ax_img = fig.add_subplot(gs[0])
-                ax_spec = fig.add_subplot(gs[1])
-                
-                # Reconstruct and plot image
                 try:
                     def get_band(k):
                         val = arrow_record.get(k)
@@ -461,43 +672,51 @@ def main():
                         rgb_input = np.stack([r, g, b], axis=0)
                         
                         rgb_img = make_rgb_lupton(rgb_input, Q=12.0, stretch=0.5)
-                        ax_img.imshow(rgb_img)
-                        ax_img.set_title(rf"\textbf{{Euclid RGB Image}}", fontsize=12, fontweight='bold', pad=8)
-                    else:
-                        ax_img.text(0.5, 0.5, "No Image Data Found", ha='center', va='center')
+                        ax_img.imshow(rgb_img, origin='lower')
+                        rgb_img_plotted = True
                 except Exception as e:
                     print(f"[WARNING] Error rendering galaxy image: {e}")
-                    ax_img.text(0.5, 0.5, f"Error rendering image:\n{e}", ha='center', va='center')
                     
-                ax_img.axis("off")
-            else:
-                ax_spec = fig.add_subplot(111)
-                
-            # Wavelength grid
+            if not rgb_img_plotted:
+                ax_img.text(0.5, 0.5, "EuclidImage missing", ha='center', va='center', fontsize=12)
+            ax_img.axis("off")
+            
+            # --- Plot generated and original spectra split in two channels ---
             x_wavelengths = 3600.0 + np.arange(7781) * 0.8
             start_wl, end_wl = 3600.0, 3600.0 + 7780 * 0.8
+            w_mid = (start_wl + end_wl) / 2
             
-            # Plot three generated seeds
-            ax_spec.plot(x_wavelengths, generated_spectra[61], color="#e74c3c", alpha=0.85, linewidth=1.4, label="DDPM Seed 61")
-            ax_spec.plot(x_wavelengths, generated_spectra[21], color="#3498db", alpha=0.85, linewidth=1.4, label="DDPM Seed 21")
-            ax_spec.plot(x_wavelengths, generated_spectra[278], color="#9b59b6", alpha=0.85, linewidth=1.4, label="DDPM Seed 278")
+            # Blue Channel Plot
+            ax_spec_blue.plot(x_wavelengths, generated_spectra[61], color="#e74c3c", alpha=0.85, linewidth=0.75, label="DDPM Seed 61")
+            ax_spec_blue.plot(x_wavelengths, generated_spectra[21], color="#3498db", alpha=0.85, linewidth=0.75, label="DDPM Seed 21")
+            ax_spec_blue.plot(x_wavelengths, generated_spectra[278], color="#9b59b6", alpha=0.85, linewidth=0.75, label="DDPM Seed 278")
             
-            # Plot ground truth
             if real_spec is not None:
-                ax_spec.plot(x_wavelengths, real_spec, color="#2c3e50", alpha=0.8, linewidth=1.5, label="Observed Spectrum (DESI)")
+                ax_spec_blue.plot(x_wavelengths, real_spec, color="#2c3e50", alpha=0.8, linewidth=1, label="Observed Spectrum (DESI)")
                 
-            ax_spec.set_title(rf"\textbf{{Physical Spectrum Comparison (Observed Frame)}}", fontsize=12, fontweight='bold', pad=8)
-            ax_spec.set_xlabel(r"\textbf{Observed Wavelength [\AA]}", fontsize=11)
-            ax_spec.set_ylabel(r"\textbf{Normalized Flux}", fontsize=11)
-            ax_spec.set_xlim(start_wl, end_wl)
-            ax_spec.grid(True, linestyle=':', alpha=0.5)
+            ax_spec_blue.set_xlim(start_wl, w_mid)
+            ax_spec_blue.set_title(r"\textbf{Spectrum (Blue Channel)}", fontsize=12, fontweight='bold', pad=8)
+            ax_spec_blue.set_ylabel(r"\textbf{Flux}", fontsize=11)
+            ax_spec_blue.grid(True, linestyle=':', alpha=0.5)
+            ax_spec_blue.legend(loc="upper right", frameon=True, facecolor='white', framealpha=0.9)
+            plot_spectral_lines(ax_spec_blue, start_wl, w_mid, pred_z)
             
-            # Overlay redshifted lines
-            plot_spectral_lines(ax_spec, start_wl, end_wl, pred_z)
+            # Red Channel Plot
+            ax_spec_red.plot(x_wavelengths, generated_spectra[61], color="#e74c3c", alpha=0.85, linewidth=0.75, label="DDPM Seed 61")
+            ax_spec_red.plot(x_wavelengths, generated_spectra[21], color="#3498db", alpha=0.85, linewidth=0.75, label="DDPM Seed 21")
+            ax_spec_red.plot(x_wavelengths, generated_spectra[278], color="#9b59b6", alpha=0.85, linewidth=0.75, label="DDPM Seed 278")
             
-            fig.suptitle(rf"\textbf{{Cross-Modal Synthesis Dashboard | Galaxy ID: {galaxy_id} | Modality: {modality_name} | Redshift }} $z = {pred_z:.5f}$", fontsize=13, fontweight='bold', y=0.98)
-            ax_spec.legend(loc="upper right", frameon=True, facecolor='white', framealpha=0.9)
-            plt.tight_layout()
+            if real_spec is not None:
+                ax_spec_red.plot(x_wavelengths, real_spec, color="#2c3e50", alpha=0.8, linewidth=0.75, label="Observed Spectrum (DESI)")
+                
+            ax_spec_red.set_xlim(w_mid, end_wl)
+            ax_spec_red.set_title(r"\textbf{Spectrum (Red Channel)}", fontsize=12, fontweight='bold', pad=8)
+            ax_spec_red.set_ylabel(r"\textbf{Flux}", fontsize=11)
+            ax_spec_red.set_xlabel(r"\textbf{Observed Wavelength [\AA]}", fontsize=11)
+            ax_spec_red.grid(True, linestyle=':', alpha=0.5)
+            plot_spectral_lines(ax_spec_red, w_mid, end_wl, pred_z)
+            
+            plt.suptitle(rf"\textbf{{Cross-Modal Synthesis Dashboard | Galaxy ID: {galaxy_id} | Modality: {modality_name} | Est. Redshift }} $z = {pred_z:.5f}$", fontsize=16, fontweight='bold', y=0.98)
             
         else:
             # Default stacked layout

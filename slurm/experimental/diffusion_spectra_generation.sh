@@ -34,17 +34,19 @@ fi
 PYTHON_SCRIPT="$REPO_ROOT/scripts/experimental/diffusion_spectra_generation.py"
 
 # Default fallbacks
-CHECKPOINT_PATH="$REPO_ROOT/logs/astropt_20260516_hybrid_cliploss/spectrum_diffusion/weights/ckpt_best.pt"
-EMBEDDINGS_PATH="$REPO_ROOT/logs/astropt_20260516_hybrid_cliploss/embeddings/best_img-mean_spec-rank_final_iso_j-mean/embeddings_all.npz"
+CHECKPOINT_PATH="$REPO_ROOT/logs/astropt_20260601_hybrid_optimized/diffusion/weights/ckpt_best.pt"
+EMBEDDINGS_PATH="$REPO_ROOT/logs/astropt_20260601_hybrid_optimized/embeddings/best_img-mean_spec-rank_final_iso_j-mean/embeddings_all.npz"
+EMBEDDINGS_KEY="EuclidImage_phase2"
 GALAXY_ID=""
 INDEX=""
 REDSHIFT=""
-REDSHIFT_PROBE_PATH="$REPO_ROOT/logs/astropt_20260516_hybrid_cliploss/embeddings/best_img-mean_spec-rank_final_iso_j-mean/downstream_tasks/probing_MLP.pt"
-OUTPUT_PATH="$REPO_ROOT/logs/astropt_20260516_hybrid_cliploss/spectrum_diffusion/"
+REDSHIFT_PROBE_PATH="$REPO_ROOT/logs/astropt_20260601_hybrid_optimized/embeddings/best_img-mean_spec-rank_final_iso_j-mean/downstream_tasks/probing_MLP.pt"
+OUTPUT_PATH="$REPO_ROOT/logs/astropt_20260601_hybrid_optimized/diffusion/samples/"
 DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_interpolated"
+METADATA_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.1_FILTERED.fits"
 PLOT_ORIGINAL=0
-LAYOUT="stacked"
-ENSEMBLE=0
+LAYOUT="dashboard"
+ENSEMBLE=1
 
 # If invoked as: sbatch script.sh -- -c <checkpoint> ...
 if [[ "${1:-}" == "--" ]]; then
@@ -52,17 +54,19 @@ if [[ "${1:-}" == "--" ]]; then
 fi
 
 #--- ARGUMENT PARSING (FLAGS) ---#
-while getopts ":r:c:e:g:i:z:p:o:d:xl:s" opt; do
+while getopts ":r:c:e:k:g:i:z:p:o:d:xl:sm:" opt; do
   case $opt in
     r) REPO_ROOT="$OPTARG" ;;
     c) CHECKPOINT_PATH="$OPTARG" ;;
     e) EMBEDDINGS_PATH="$OPTARG" ;;
+    k) EMBEDDINGS_KEY="$OPTARG" ;;
     g) GALAXY_ID="$OPTARG" ;;
     i) INDEX="$OPTARG" ;;
     z) REDSHIFT="$OPTARG" ;;
     p) REDSHIFT_PROBE_PATH="$OPTARG" ;;
     o) OUTPUT_PATH="$OPTARG" ;;
     d) DATA_DIR="$OPTARG" ;;
+    m) METADATA_PATH="$OPTARG" ;;
     x) PLOT_ORIGINAL=1 ;;
     l) LAYOUT="$OPTARG" ;;
     s) ENSEMBLE=1 ;;
@@ -121,6 +125,10 @@ if [[ -n "${DATA_DIR:-}" ]]; then
   DATA_DIR=$(readlink -f "$DATA_DIR")
 fi
 
+if [[ -n "${METADATA_PATH:-}" ]]; then
+  METADATA_PATH=$(readlink -f "$METADATA_PATH")
+fi
+
 #--- ENVIRONMENT SETUP ---#
 NOW=$(date "+[%Y-%m-%d - %H:%M:%S]")
 
@@ -155,6 +163,14 @@ if [[ -n "${INDEX:-}" ]]; then
 fi
 if [[ -n "${REDSHIFT:-}" ]]; then
   OPTIONAL_FLAGS="$OPTIONAL_FLAGS --redshift $REDSHIFT"
+fi
+
+if [[ -n "${EMBEDDINGS_KEY:-}" ]]; then
+  OPTIONAL_FLAGS="$OPTIONAL_FLAGS --embeddings_key $EMBEDDINGS_KEY"
+fi
+
+if [[ -n "${METADATA_PATH:-}" ]]; then
+  OPTIONAL_FLAGS="$OPTIONAL_FLAGS --metadata_path $METADATA_PATH"
 fi
 
 if [[ -n "${OUTPUT_PATH:-}" ]]; then
