@@ -172,11 +172,10 @@ def plot_spectrum_into_axes(ax_blue, ax_red, raw_record: dict, tid: int, z_val: 
         w_mid = (w_min + w_max) / 2
         
         # Blue Channel
-        ax_blue.plot(wave_ang, spec_gt, 'k-', lw=1, alpha=0.8, label=f"DESISpectrum ({tid})")
+        ax_blue.plot(wave_ang, spec_gt, 'k-', lw=1, alpha=0.8)
         ax_blue.set_xlim(w_min, w_mid)
         ax_blue.set_title(r"\textbf{Spectrum (Blue Channel)}", fontsize=11, fontweight='bold')
         ax_blue.set_ylabel(r"Flux", fontsize=9)
-        ax_blue.legend(loc="upper right", framealpha=0.8, fontsize=8)
         if z_val is not None:
             plot_spectral_lines(ax_blue, w_min, w_mid, z_val)
         
@@ -293,6 +292,107 @@ def main():
     target_id_col = 'TARGETID' if 'TARGETID' in fits_df.columns else 'targetid'
     fits_indexed = fits_df.drop_duplicates(subset=[target_id_col]).set_index(target_id_col)
     
+    def find_col_val(df_row, patterns):
+        for pat in patterns:
+            for col in df_row.index:
+                if pat.lower() in col.lower():
+                    val = df_row[col]
+                    if val is not None and not pd.isna(val):
+                        return float(val)
+        return None
+
+    def get_morphological_meta_str(tid):
+        if tid in fits_indexed.index:
+            meta = fits_indexed.loc[tid]
+            
+            # Coordinates
+            ra_val = meta.get('RA', None)
+            dec_val = meta.get('DEC', None)
+            coords_str = f"${ra_val:.6f}^\\circ, {dec_val:.6f}^\\circ$" if (ra_val is not None and not pd.isna(ra_val)) else "N/A"
+            
+            # Redshift
+            z_val = meta.get('Z', None)
+            z_str = f"{z_val:.4f}" if (z_val is not None and not pd.isna(z_val)) else "N/A"
+            
+            # Stellar Mass
+            logmstar_val = meta.get('LOGMSTAR', None)
+            mstar = f"$10^{{{logmstar_val:.2f}}} \\text{{ M}}_\\odot$" if (logmstar_val is not None and not pd.isna(logmstar_val)) else "N/A"
+            
+            # Star Formation Rate
+            logsfr_val = meta.get('LOGSFR', None)
+            sfr = f"${10**logsfr_val:.3f} \\text{{ M}}_\\odot/\\text{{yr}}$" if (logsfr_val is not None and not pd.isna(logsfr_val)) else "N/A"
+            
+            # Spectype
+            spectype = str(meta.get('SPECTYPE', 'N/A'))
+            
+            # Euclid Sersic Index
+            sersic_n_val = meta.get('sersic_sersic_vis_index', None)
+            n_str = f"{sersic_n_val:.2f}" if (sersic_n_val is not None and not pd.isna(sersic_n_val)) else "N/A"
+            
+            # Euclid Effective Radius
+            sersic_re_val = meta.get('sersic_sersic_vis_radius', None)
+            re_str = f"{sersic_re_val:.3f}''" if (sersic_re_val is not None and not pd.isna(sersic_re_val)) else "N/A"
+            
+            # Axis Ratio
+            ba_val = meta.get('sersic_sersic_vis_axis_ratio', None)
+            ba_str = f"{ba_val:.3f}" if (ba_val is not None and not pd.isna(ba_val)) else "N/A"
+            
+            # VIS Aperture Flux
+            vis_flux_val = meta.get('flux_vis_1fwhm_aper', None)
+            vis_flux_str = f"{vis_flux_val:.2f}" if (vis_flux_val is not None and not pd.isna(vis_flux_val)) else "N/A"
+            
+            meta_str = (
+                f"\\textbf{{Coords}}: {coords_str}\n"
+                f"\\textbf{{Z}}: {z_str}\n"
+                f"\\textbf{{$M_*$}}: {mstar}\n"
+                f"\\textbf{{SFR}}: {sfr}\n"
+                f"\\textbf{{Spectype}}: {spectype}\n"
+                f"\\textbf{{VIS Flux}}: {vis_flux_str}\n"
+                f"\\textbf{{Sersic n}}: {n_str}\n"
+                f"\\textbf{{Radius $R_{{eff}}$}}: {re_str}\n"
+                f"\\textbf{{Axis Ratio}}: {ba_str}"
+            )
+            return meta_str.replace("_", "\\_"), z_val
+        return f"\\textbf{{ID}}: {tid}\n(No metadata)", None
+
+    def get_spectroscopic_meta_str(tid):
+        if tid in fits_indexed.index:
+            meta = fits_indexed.loc[tid]
+            
+            ha_f = meta.get('HALPHA_FLUX', None)
+            hb_f = meta.get('HBETA_FLUX', None)
+            oiii_f = meta.get('OIII_5007_FLUX', None)
+            oii_f = meta.get('OII_3726_FLUX', None)
+            
+            ha_ew = meta.get('HALPHA_EW', None)
+            hb_ew = meta.get('HBETA_EW', None)
+            oii_ew = meta.get('OII_3726_EW', None)
+            
+            ha_sig = meta.get('HALPHA_SIGMA', None)
+            snr_r = meta.get('SNR_SPEC_R', None)
+            snr_z = meta.get('SNR_SPEC_Z', None)
+            
+            def fmt_flux(v): return f"{v:.2f}" if (v is not None and not pd.isna(v)) else "N/A"
+            def fmt_ew(v): return f"{v:.2f} \\AA" if (v is not None and not pd.isna(v)) else "N/A"
+            def fmt_val(v, unit=""): return f"{v:.1f}{unit}" if (v is not None and not pd.isna(v)) else "N/A"
+            
+            stats_text = (
+                f"\\textbf{{Spectral Line Fluxes}}:\n"
+                f"  - H$\\alpha$ Flux: {fmt_flux(ha_f)}\n"
+                f"  - H$\\beta$ Flux: {fmt_flux(hb_f)}\n"
+                f"  - [O III] 5007 Flux: {fmt_flux(oiii_f)}\n"
+                f"  - [O II] 3726 Flux: {fmt_flux(oii_f)}\n\n"
+                f"\\textbf{{Equivalent Widths}}:\n"
+                f"  - H$\\alpha$ EW: {fmt_ew(ha_ew)}\n"
+                f"  - H$\\beta$ EW: {fmt_ew(hb_ew)}\n"
+                f"  - [O II] 3726 EW: {fmt_ew(oii_ew)}\n\n"
+                f"\\textbf{{Spectra Quality}}:\n"
+                f"  - H$\\alpha$ Width $\\sigma$: {fmt_val(ha_sig, ' km/s')}\n"
+                f"  - SNR Spec R: {fmt_val(snr_r)} | SNR Spec Z: {fmt_val(snr_z)}"
+            )
+            return stats_text.replace("_", "\\_")
+        return "\\textbf{Spectra data missing}"
+
     # --- Helper to retrieve metadata block ---
     def get_meta_str(tid):
         if tid in fits_indexed.index:
@@ -300,9 +400,9 @@ def main():
             z_val = meta.get('Z', meta.get('z', None))
             z_str = f"{z_val:.4f}" if (z_val is not None and not pd.isna(z_val)) else "N/A"
             logmstar_val = meta.get('LOGMSTAR', meta.get('logmstar', None))
-            mstar = f"$10^{{{logmstar_val:.2f}}} \\text{{ M}}_\\odot$" if (logmstar_val is not None and not pd.isna(logmstar_val)) else "N/A"
+            mstar = f"$10^{{{logmstar_val:.2f}}} \\text{{ M}}_{{\\odot}}$" if (logmstar_val is not None and not pd.isna(logmstar_val)) else "N/A"
             logsfr_val = meta.get('LOGSFR', meta.get('logsfr', None))
-            sfr = f"${10**logsfr_val:.3f} \\text{{ M}}_\\odot/\\text{{yr}}$" if (logsfr_val is not None and not pd.isna(logsfr_val)) else "N/A"
+            sfr = f"${10**logsfr_val:.3f} \\text{{ M}}_{{\\odot}}/\\text{{yr}}$" if (logsfr_val is not None and not pd.isna(logsfr_val)) else "N/A"
             spectype = str(meta.get('SPECTYPE', meta.get('spectype', 'N/A')))
             
             meta_str = (
@@ -322,7 +422,8 @@ def main():
         sys.exit(1)
     query_record = ds.ds[int(query_matches[0])]
     query_rgb = extract_raw_rgb(query_record)
-    query_meta, query_z = get_meta_str(query_id)
+    query_meta, query_z = get_morphological_meta_str(query_id)
+    query_spec_meta = get_spectroscopic_meta_str(query_id)
     
     # ---------------------------------------------------------------------------
     # Plot Generation (Premium Dashboard PDF)
@@ -357,213 +458,350 @@ def main():
         # Meta
         ax_meta.axis('off')
         ax_meta.text(
-            0.05, 0.95, query_meta, 
+            0.5, 0.95, query_meta, 
             transform=ax_meta.transAxes, 
-            fontsize=12,
+            fontsize=14,
             linespacing=1.8,
+            horizontalalignment='center',
             verticalalignment='top',
-            bbox=dict(boxstyle="round,pad=0.7", fc="ivory", alpha=0.95, ec="darkgrey", lw=1.0)
+            bbox=dict(boxstyle="round,pad=0.8", fc="ivory", alpha=0.95, ec="darkgrey", lw=1.0)
         )
-        ax_meta.set_title(r"\textbf{Query Galaxy Physical Properties}", fontsize=14, fontweight='bold', color='navy', pad=10)
+        ax_meta.set_title(r"\textbf{Physical and Morphological properties}", fontsize=16, fontweight='bold', color='navy', pad=15)
         
         # Image
         if query_rgb is not None:
             ax_img.imshow(query_rgb, origin='lower')
-            ax_img.set_title(rf"\textbf{{Query Euclid VIS+NISP Color}} | ID: {query_id} (Z: {query_z if query_z else 'N/A'})", fontsize=11, fontweight='bold', color='darkred')
+            # Title is removed per user request
         else:
             ax_img.text(0.5, 0.5, "EuclidImage missing", ha='center', va='center')
         ax_img.axis('off')
         
-        # Stats info box
+        # Stats info box (Spectroscopic properties)
         ax_stats.axis('off')
-        stats_text = (
-            f"\\textbf{{TargetID}}: {query_id}\n"
-            f"\\textbf{{Dataset Index}}: {query_idx}\n"
-            f"\\textbf{{Modality Spaces Included}}:\n"
-            f"  - Euclid Image Space (AimEncoder)\n"
-            f"  - DESI Spectrum Space (AimEncoder)\n"
-            f"  - Joint Multimodal CLIP-latent Space\n\n"
-            f"\\textbf{{Neighbors Retrieved}}: K={args.k}\n\n"
-            f"\\textit{{This query acts as the scientific anchor"
-            f" for representation alignment diagnostics.}}"
-        )
         ax_stats.text(
-            0.05, 0.95, stats_text, 
+            0.5, 0.95, query_spec_meta, 
             transform=ax_stats.transAxes, 
-            fontsize=11.5,
+            fontsize=14,
             linespacing=1.6,
+            horizontalalignment='center',
             verticalalignment='top',
-            bbox=dict(boxstyle="round,pad=0.7", fc="aliceblue", alpha=0.95, ec="steelblue", lw=1.0)
+            bbox=dict(boxstyle="round,pad=0.8", fc="aliceblue", alpha=0.95, ec="steelblue", lw=1.0)
         )
-        ax_stats.set_title(r"\textbf{Search Anchor Diagnostic}", fontsize=14, fontweight='bold', color='steelblue', pad=10)
+        ax_stats.set_title(r"\textbf{Spectroscopic properties}", fontsize=16, fontweight='bold', color='steelblue', pad=15)
         
         # Spectrum
         plot_spectrum_into_axes(ax_spec_blue, ax_spec_red, query_record, query_id, query_z)
-        ax_spec_blue.set_title(rf"\textbf{{Query Spectrum (Blue Channel)}} | ID: {query_id} (Z: {query_z if query_z else 'N/A'})", fontsize=11, fontweight='bold')
+        ax_spec_blue.set_title(rf"\textbf{{Query Spectrum (Blue Channel)}}", fontsize=11, fontweight='bold')
         
-        plt.suptitle(r"\textbf{AstroPT Multimodal Representation Anchor Profile}", fontsize=22, fontweight='bold', y=0.98)
+        plt.suptitle(rf"\textbf{{AstroPT similarity search: ID: {query_id}}}", fontsize=22, fontweight='bold', y=0.98)
         pdf.savefig()
         plt.close()
         
         # ==========================================
-        # PAGE 2: IMAGE SPACE NEIGHBORS (MORPHOLOGICAL SEARCH)
+        # PAGE 2: EUCLID MORPHOLOGICAL NEIGHBORS (SUMMARY GRID)
         # ==========================================
         if "EuclidImage" in spaces:
-            logger.info("Plotting Image Space Neighbors...")
+            logger.info("Plotting Euclid Morphological Neighbors summary grid...")
             fig, axes = plt.subplots(2, 3, figsize=(20, 12), dpi=150)
             fig.subplots_adjust(hspace=0.3, wspace=0.2)
             
-            # Query Image
+            # Query Image (Top Left)
             ax_q = axes[0, 0]
             if query_rgb is not None:
                 ax_q.imshow(query_rgb, origin='lower')
-            ax_q.set_title(rf"\textbf{{QUERY GALAXY}} | ID: {query_id} (Z: {query_z if query_z else 'N/A'})", fontsize=10, fontweight='bold', color='navy')
+            # Title is completely removed per user request
             ax_q.axis('off')
             ax_q.patch.set_edgecolor('navy')
             ax_q.patch.set_linewidth(3)
             
-            for idx, (tid, sim) in enumerate(zip(spaces["EuclidImage"]["ids"], spaces["EuclidImage"]["sims"])):
+            for idx, (tid, sim) in enumerate(zip(spaces["EuclidImage"]["ids"][:5], spaces["EuclidImage"]["sims"][:5])):
                 row_ax = (idx + 1) // 3
                 col_ax = (idx + 1) % 3
                 ax_n = axes[row_ax, col_ax]
                 
                 n_matches = np.where(ds_ids == tid)[0]
                 n_rgb = None
-                n_z = None
                 if len(n_matches) > 0:
                     n_rec = ds.ds[int(n_matches[0])]
                     n_rgb = extract_raw_rgb(n_rec)
-                    _, n_z = get_meta_str(tid)
                     
                 if n_rgb is not None:
                     ax_n.imshow(n_rgb, origin='lower')
                 else:
                     ax_n.text(0.5, 0.5, f"Image not found | ID: {tid}", ha='center', va='center')
-                    
-                ax_n.set_title(rf"\textbf{{Rank \#{idx+1}}} ({sim:.2%}) | ID: {tid} (Z: {n_z if n_z else 'N/A'})", fontsize=9, fontweight='bold')
+                # Title is completely removed per user request
                 ax_n.axis('off')
                 
-            plt.suptitle(r"\textbf{EuclidImage Latent Space - Morphological Neighbors}", fontsize=20, fontweight='bold', y=0.98)
+            plt.suptitle(r"\textbf{Euclid Morphological Neighbors}", fontsize=22, fontweight='bold', y=0.98)
             pdf.savefig()
             plt.close()
             
+            # ==========================================
+            # PAGES 3-7: DETAILED PROFILE FOR EACH NEIGHBOR
+            # ==========================================
+            for idx, (tid, sim) in enumerate(zip(spaces["EuclidImage"]["ids"], spaces["EuclidImage"]["sims"])):
+                logger.info(f"Plotting detailed profile page for Euclid Morphological Rank #{idx+1} (ID: {tid})...")
+                
+                n_matches = np.where(ds_ids == tid)[0]
+                if len(n_matches) == 0:
+                    logger.warning(f"Neighbor TargetID {tid} not found in Arrow datasets, skipping detailed profile.")
+                    continue
+                    
+                n_rec = ds.ds[int(n_matches[0])]
+                n_rgb = extract_raw_rgb(n_rec)
+                n_meta, n_z = get_morphological_meta_str(tid)
+                n_spec_meta = get_spectroscopic_meta_str(tid)
+                
+                # Render Page
+                fig = plt.figure(figsize=(20, 14), dpi=150)
+                gs = gridspec.GridSpec(3, 3, height_ratios=[2, 1, 1], width_ratios=[1, 1.1, 0.9], hspace=0.4, wspace=0.3)
+                
+                ax_meta = fig.add_subplot(gs[0, 0])
+                ax_img = fig.add_subplot(gs[0, 1])
+                ax_stats = fig.add_subplot(gs[0, 2])
+                ax_spec_blue = fig.add_subplot(gs[1, :])
+                ax_spec_red = fig.add_subplot(gs[2, :])
+                
+                # Meta box
+                ax_meta.axis('off')
+                ax_meta.text(
+                    0.5, 0.95, n_meta, 
+                    transform=ax_meta.transAxes, 
+                    fontsize=14,
+                    linespacing=1.8,
+                    horizontalalignment='center',
+                    verticalalignment='top',
+                    bbox=dict(boxstyle="round,pad=0.8", fc="ivory", alpha=0.95, ec="darkgrey", lw=1.0)
+                )
+                ax_meta.set_title(r"\textbf{Physical and Morphological properties}", fontsize=16, fontweight='bold', color='navy', pad=15)
+                
+                # Image
+                if n_rgb is not None:
+                    ax_img.imshow(n_rgb, origin='lower')
+                    # No title above the neighbor image per user request
+                else:
+                    ax_img.text(0.5, 0.5, "EuclidImage missing", ha='center', va='center')
+                ax_img.axis('off')
+                
+                # Stats box (Spectroscopic properties)
+                ax_stats.axis('off')
+                ax_stats.text(
+                    0.5, 0.95, n_spec_meta, 
+                    transform=ax_stats.transAxes, 
+                    fontsize=14,
+                    linespacing=1.6,
+                    horizontalalignment='center',
+                    verticalalignment='top',
+                    bbox=dict(boxstyle="round,pad=0.8", fc="aliceblue", alpha=0.95, ec="steelblue", lw=1.0)
+                )
+                ax_stats.set_title(r"\textbf{Spectroscopic properties}", fontsize=16, fontweight='bold', color='steelblue', pad=15)
+                
+                # Spectrum
+                plot_spectrum_into_axes(ax_spec_blue, ax_spec_red, n_rec, tid, n_z)
+                ax_spec_blue.set_title(rf"\textbf{{Spectrum (Blue Channel)}}", fontsize=11, fontweight='bold')
+                
+                # Page super title
+                plt.suptitle(rf"\textbf{{Euclid Morphological Rank \#{idx+1} ({sim*100:.2f}\%): ID: {tid}}}", fontsize=22, fontweight='bold', y=0.98)
+                pdf.savefig()
+                plt.close()
+                
         # ==========================================
-        # PAGE 3: SPECTRAL SPACE NEIGHBORS (PHYSICAL SEARCH)
+        # PAGE 8: DESI SPECTROSCOPIC NEIGHBORS (SUMMARY GRID/STACK)
         # ==========================================
         if "DESISpectrum" in spaces:
-            logger.info("Plotting Spectrum Space Neighbors...")
-            fig = plt.figure(figsize=(22, 14), dpi=150)
-            gs = gridspec.GridSpec(6, 2, height_ratios=[1, 1, 1, 1, 1, 1], hspace=0.5, wspace=0.15)
+            logger.info("Plotting DESI Spectroscopic Neighbors summary grid...")
+            fig, axes = plt.subplots(6, 1, figsize=(20, 16), dpi=150, sharex=True)
+            fig.subplots_adjust(hspace=0.55, left=0.08, right=0.95, top=0.92, bottom=0.06)
             
-            # Plot Query
-            ax_q_blue = fig.add_subplot(gs[0, 0])
-            ax_q_red = fig.add_subplot(gs[0, 1])
-            plot_spectrum_into_axes(ax_q_blue, ax_q_red, query_record, query_id, query_z)
-            ax_q_blue.set_title(rf"\textbf{{QUERY GALAXY}} | ID: {query_id} (Z: {query_z if query_z else 'N/A'})", fontsize=11, color='navy')
+            # Subplot 0: Query Spectrum
+            ax_q = axes[0]
+            if query_record.get('spectrum_flux') is not None:
+                spec_gt = np.array(query_record['spectrum_flux']).flatten()
+                wave_ang = np.array(query_record['spectrum_wave']).flatten()
+                ax_q.plot(wave_ang, spec_gt, 'r-', lw=1, alpha=0.8)
+                ax_q.set_xlim(wave_ang.min(), wave_ang.max())
+                ax_q.set_title(rf"\textbf{{Query (ID: {query_id})}}", fontsize=11, fontweight='bold')
+                if query_z is not None:
+                    for name, rest_wave in MAIN_LINES.items():
+                        obs_wave = rest_wave * (1 + query_z)
+                        if wave_ang.min() < obs_wave < wave_ang.max():
+                            ax_q.axvline(obs_wave, color='royalblue', linestyle='--', alpha=0.3, lw=0.7)
+            else:
+                ax_q.text(0.5, 0.5, "Query Spectrum not found", ha='center', va='center', fontsize=12)
             
-            for idx, (tid, sim) in enumerate(zip(spaces["DESISpectrum"]["ids"], spaces["DESISpectrum"]["sims"])):
+            ax_q.set_ylabel(r"Flux", fontsize=9)
+            
+            # Subplots 1-5: Spectroscopic Neighbors
+            for idx, (tid, sim) in enumerate(zip(spaces["DESISpectrum"]["ids"][:5], spaces["DESISpectrum"]["sims"][:5])):
+                ax_n = axes[idx + 1]
                 n_matches = np.where(ds_ids == tid)[0]
+                
+                n_rec = None
+                n_z = None
                 if len(n_matches) > 0:
                     n_rec = ds.ds[int(n_matches[0])]
-                    _, n_z = get_meta_str(tid)
-                    
-                    ax_n_blue = fig.add_subplot(gs[idx+1, 0])
-                    ax_n_red = fig.add_subplot(gs[idx+1, 1])
-                    
-                    plot_spectrum_into_axes(ax_n_blue, ax_n_red, n_rec, tid, n_z)
-                    ax_n_blue.set_title(rf"\textbf{{Rank \#{idx+1}}} ({sim:.2%}) | ID: {tid} (Z: {n_z if n_z else 'N/A'})", fontsize=11)
+                    if tid in fits_indexed.index:
+                        n_z = fits_indexed.loc[tid].get('Z', None)
+                
+                if n_rec is not None and n_rec.get('spectrum_flux') is not None:
+                    spec_gt = np.array(n_rec['spectrum_flux']).flatten()
+                    wave_ang = np.array(n_rec['spectrum_wave']).flatten()
+                    ax_n.plot(wave_ang, spec_gt, 'k-', lw=1, alpha=0.8)
+                    ax_n.set_xlim(wave_ang.min(), wave_ang.max())
+                    ax_n.set_title(rf"\textbf{{Rank \#{idx+1} ({sim*100:.2f}\%) | ID: {tid}}}", fontsize=11, fontweight='bold')
+                    if n_z is not None and not pd.isna(n_z):
+                        for name, rest_wave in MAIN_LINES.items():
+                            obs_wave = rest_wave * (1 + n_z)
+                            if wave_ang.min() < obs_wave < wave_ang.max():
+                                ax_n.axvline(obs_wave, color='royalblue', linestyle='--', alpha=0.3, lw=0.7)
+                else:
+                    ax_n.text(0.5, 0.5, f"Spectrum not found | ID: {tid}", ha='center', va='center', fontsize=12)
+                
+                ax_n.set_ylabel(r"Flux", fontsize=9)
             
-            plt.suptitle(r"\textbf{DESISpectrum Latent Space - Spectral Neighbors}", fontsize=20, fontweight='bold', y=0.98)
+            axes[-1].set_xlabel(r"Observed Wavelength [\AA]", fontsize=12, fontweight='bold')
+            
+            plt.suptitle(r"\textbf{DESI Spectroscopic Neighbors}", fontsize=22, fontweight='bold', y=0.98)
             pdf.savefig()
             plt.close()
             
+            # ==========================================
+            # PAGES 9-13: DETAILED PROFILE FOR EACH SPECTROSCOPIC NEIGHBOR
+            # ==========================================
+            for idx, (tid, sim) in enumerate(zip(spaces["DESISpectrum"]["ids"], spaces["DESISpectrum"]["sims"])):
+                logger.info(f"Plotting detailed profile page for DESI Spectroscopic Rank #{idx+1} (ID: {tid})...")
+                
+                n_matches = np.where(ds_ids == tid)[0]
+                if len(n_matches) == 0:
+                    logger.warning(f"Neighbor TargetID {tid} not found in Arrow datasets, skipping detailed profile.")
+                    continue
+                    
+                n_rec = ds.ds[int(n_matches[0])]
+                n_rgb = extract_raw_rgb(n_rec)
+                n_meta, n_z = get_morphological_meta_str(tid)
+                n_spec_meta = get_spectroscopic_meta_str(tid)
+                
+                # Render Page
+                fig = plt.figure(figsize=(20, 14), dpi=150)
+                gs = gridspec.GridSpec(3, 3, height_ratios=[2, 1, 1], width_ratios=[1, 1.1, 0.9], hspace=0.4, wspace=0.3)
+                
+                ax_meta = fig.add_subplot(gs[0, 0])
+                ax_img = fig.add_subplot(gs[0, 1])
+                ax_stats = fig.add_subplot(gs[0, 2])
+                ax_spec_blue = fig.add_subplot(gs[1, :])
+                ax_spec_red = fig.add_subplot(gs[2, :])
+                
+                # Meta box
+                ax_meta.axis('off')
+                ax_meta.text(
+                    0.5, 0.95, n_meta, 
+                    transform=ax_meta.transAxes, 
+                    fontsize=14,
+                    linespacing=1.8,
+                    horizontalalignment='center',
+                    verticalalignment='top',
+                    bbox=dict(boxstyle="round,pad=0.8", fc="ivory", alpha=0.95, ec="darkgrey", lw=1.0)
+                )
+                ax_meta.set_title(r"\textbf{Physical and Morphological properties}", fontsize=16, fontweight='bold', color='navy', pad=15)
+                
+                # Image
+                if n_rgb is not None:
+                    ax_img.imshow(n_rgb, origin='lower')
+                else:
+                    ax_img.text(0.5, 0.5, "EuclidImage missing", ha='center', va='center')
+                ax_img.axis('off')
+                
+                # Stats box (Spectroscopic properties)
+                ax_stats.axis('off')
+                ax_stats.text(
+                    0.5, 0.95, n_spec_meta, 
+                    transform=ax_stats.transAxes, 
+                    fontsize=14,
+                    linespacing=1.6,
+                    horizontalalignment='center',
+                    verticalalignment='top',
+                    bbox=dict(boxstyle="round,pad=0.8", fc="aliceblue", alpha=0.95, ec="steelblue", lw=1.0)
+                )
+                ax_stats.set_title(r"\textbf{Spectroscopic properties}", fontsize=16, fontweight='bold', color='steelblue', pad=15)
+                
+                # Spectrum
+                plot_spectrum_into_axes(ax_spec_blue, ax_spec_red, n_rec, tid, n_z)
+                ax_spec_blue.set_title(rf"\textbf{{Spectrum (Blue Channel)}}", fontsize=11, fontweight='bold')
+                
+                # Page super title
+                plt.suptitle(rf"\textbf{{DESI Spectroscopic Rank \#{idx+1} ({sim*100:.2f}\%): ID: {tid}}}", fontsize=22, fontweight='bold', y=0.98)
+                pdf.savefig()
+                plt.close()
+                
         # ==========================================
-        # PAGE 4 & 5: JOINT MULTIMODAL NEIGHBORS (MORPHO-SPECTROSCOPIC SEARCH)
+        # PAGES 14-18: DETAILED PROFILE FOR EACH JOINT NEIGHBOR
         # ==========================================
         if "joint" in spaces:
-            logger.info("Plotting Joint Space Neighbors...")
-            # We show Top 3 Joint neighbors on Page 4 and Rank 4-5 on Page 5 to give them beautiful layout space
-            
-            # --- Page 4: Top 3 Joint Neighbors ---
-            fig = plt.figure(figsize=(24, 16), dpi=150)
-            # Layout: 4 rows (1 query + 3 neighbors)
-            # 3 columns: Image | Spectrum Blue | Spectrum Red
-            gs = gridspec.GridSpec(4, 3, width_ratios=[1, 1, 1], hspace=0.5, wspace=0.2)
-            
-            # Row 0: Query
-            ax_q_img = fig.add_subplot(gs[0, 0])
-            ax_q_blue = fig.add_subplot(gs[0, 1])
-            ax_q_red = fig.add_subplot(gs[0, 2])
-            
-            if query_rgb is not None:
-                ax_q_img.imshow(query_rgb, origin='lower')
-            ax_q_img.set_title(rf"\textbf{{QUERY GALAXY}} | ID: {query_id} (Z: {query_z if query_z else 'N/A'})", fontsize=11, color='navy')
-            ax_q_img.axis('off')
-            plot_spectrum_into_axes(ax_q_blue, ax_q_red, query_record, query_id, query_z)
-            ax_q_blue.set_title(rf"\textbf{{Query Spectrum (Blue Channel)}} | ID: {query_id} (Z: {query_z if query_z else 'N/A'})", fontsize=11, fontweight='bold')
-            
-            # Top 3 Joint
-            for idx in range(3):
-                if idx >= len(spaces["joint"]["ids"]): break
-                tid = spaces["joint"]["ids"][idx]
-                sim = spaces["joint"]["sims"][idx]
+            for idx, (tid, sim) in enumerate(zip(spaces["joint"]["ids"], spaces["joint"]["sims"])):
+                logger.info(f"Plotting detailed profile page for Joint Rank #{idx+1} (ID: {tid})...")
                 
                 n_matches = np.where(ds_ids == tid)[0]
-                if len(n_matches) > 0:
-                    n_rec = ds.ds[int(n_matches[0])]
-                    n_rgb = extract_raw_rgb(n_rec)
-                    _, n_z = get_meta_str(tid)
+                if len(n_matches) == 0:
+                    logger.warning(f"Neighbor TargetID {tid} not found in Arrow datasets, skipping detailed profile.")
+                    continue
                     
-                    ax_n_img = fig.add_subplot(gs[idx+1, 0])
-                    ax_n_blue = fig.add_subplot(gs[idx+1, 1])
-                    ax_n_red = fig.add_subplot(gs[idx+1, 2])
-                    
-                    if n_rgb is not None:
-                        ax_n_img.imshow(n_rgb, origin='lower')
-                    ax_n_img.set_title(rf"\textbf{{Rank \#{idx+1}}} ({sim:.2%}) | ID: {tid} (Z: {n_z if n_z else 'N/A'})", fontsize=11)
-                    ax_n_img.axis('off')
-                    
-                    plot_spectrum_into_axes(ax_n_blue, ax_n_red, n_rec, tid, n_z)
-                    ax_n_blue.set_title(rf"\textbf{{Rank \#{idx+1}}} ({sim:.2%}) Spectrum (Blue Channel) | ID: {tid} (Z: {n_z if n_z else 'N/A'})", fontsize=11, fontweight='bold')
-            
-            plt.suptitle(r"\textbf{Joint Latent Space - Morpho-Spectroscopic Neighbors (Part 1)}", fontsize=22, fontweight='bold', y=0.98)
-            pdf.savefig()
-            plt.close()
-            
-            # --- Page 5: Neighbors 4-5 Joint ---
-            fig = plt.figure(figsize=(24, 12), dpi=150)
-            # Layout: 2 rows (Neighbors 4 and 5)
-            # 3 columns: Image | Spectrum Blue | Spectrum Red
-            gs = gridspec.GridSpec(2, 3, width_ratios=[1, 1, 1], hspace=0.5, wspace=0.2)
-            
-            for idx in range(3, 5):
-                if idx >= len(spaces["joint"]["ids"]): break
-                tid = spaces["joint"]["ids"][idx]
-                sim = spaces["joint"]["sims"][idx]
+                n_rec = ds.ds[int(n_matches[0])]
+                n_rgb = extract_raw_rgb(n_rec)
+                n_meta, n_z = get_morphological_meta_str(tid)
+                n_spec_meta = get_spectroscopic_meta_str(tid)
                 
-                n_matches = np.where(ds_ids == tid)[0]
-                if len(n_matches) > 0:
-                    n_rec = ds.ds[int(n_matches[0])]
-                    n_rgb = extract_raw_rgb(n_rec)
-                    _, n_z = get_meta_str(tid)
-                    
-                    grid_row = idx - 3
-                    ax_n_img = fig.add_subplot(gs[grid_row, 0])
-                    ax_n_blue = fig.add_subplot(gs[grid_row, 1])
-                    ax_n_red = fig.add_subplot(gs[grid_row, 2])
-                    
-                    if n_rgb is not None:
-                        ax_n_img.imshow(n_rgb, origin='lower')
-                    ax_n_img.set_title(rf"\textbf{{Rank \#{idx+1}}} ({sim:.2%}) | ID: {tid} (Z: {n_z if n_z else 'N/A'})", fontsize=11)
-                    ax_n_img.axis('off')
-                    
-                    plot_spectrum_into_axes(ax_n_blue, ax_n_red, n_rec, tid, n_z)
-                    ax_n_blue.set_title(rf"\textbf{{Rank \#{idx+1}}} ({sim:.2%}) Spectrum (Blue Channel) | ID: {tid} (Z: {n_z if n_z else 'N/A'})", fontsize=11, fontweight='bold')
-            
-            plt.suptitle(r"\textbf{Joint Latent Space - Morpho-Spectroscopic Neighbors (Part 2)}", fontsize=22, fontweight='bold', y=0.98)
-            pdf.savefig()
-            plt.close()
-            
+                # Render Page
+                fig = plt.figure(figsize=(20, 14), dpi=150)
+                gs = gridspec.GridSpec(3, 3, height_ratios=[2, 1, 1], width_ratios=[1, 1.1, 0.9], hspace=0.4, wspace=0.3)
+                
+                ax_meta = fig.add_subplot(gs[0, 0])
+                ax_img = fig.add_subplot(gs[0, 1])
+                ax_stats = fig.add_subplot(gs[0, 2])
+                ax_spec_blue = fig.add_subplot(gs[1, :])
+                ax_spec_red = fig.add_subplot(gs[2, :])
+                
+                # Meta box
+                ax_meta.axis('off')
+                ax_meta.text(
+                    0.5, 0.95, n_meta, 
+                    transform=ax_meta.transAxes, 
+                    fontsize=14,
+                    linespacing=1.8,
+                    horizontalalignment='center',
+                    verticalalignment='top',
+                    bbox=dict(boxstyle="round,pad=0.8", fc="ivory", alpha=0.95, ec="darkgrey", lw=1.0)
+                )
+                ax_meta.set_title(r"\textbf{Physical and Morphological properties}", fontsize=16, fontweight='bold', color='navy', pad=15)
+                
+                # Image
+                if n_rgb is not None:
+                    ax_img.imshow(n_rgb, origin='lower')
+                else:
+                    ax_img.text(0.5, 0.5, "EuclidImage missing", ha='center', va='center')
+                ax_img.axis('off')
+                
+                # Stats box (Spectroscopic properties)
+                ax_stats.axis('off')
+                ax_stats.text(
+                    0.5, 0.95, n_spec_meta, 
+                    transform=ax_stats.transAxes, 
+                    fontsize=14,
+                    linespacing=1.6,
+                    horizontalalignment='center',
+                    verticalalignment='top',
+                    bbox=dict(boxstyle="round,pad=0.8", fc="aliceblue", alpha=0.95, ec="steelblue", lw=1.0)
+                )
+                ax_stats.set_title(r"\textbf{Spectroscopic properties}", fontsize=16, fontweight='bold', color='steelblue', pad=15)
+                
+                # Spectrum
+                plot_spectrum_into_axes(ax_spec_blue, ax_spec_red, n_rec, tid, n_z)
+                ax_spec_blue.set_title(rf"\textbf{{Spectrum (Blue Channel)}}", fontsize=11, fontweight='bold')
+                
+                # Page super title
+                plt.suptitle(rf"\textbf{{Joint Rank \#{idx+1} ({sim*100:.2f}\%): ID: {tid}}}", fontsize=22, fontweight='bold', y=0.98)
+                pdf.savefig()
+                plt.close()
+                
     logger.info(f"Done. Multimodal similarity search complete. Saved dashboard PDF to {pdf_path}")
 
 

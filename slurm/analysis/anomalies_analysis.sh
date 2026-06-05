@@ -34,7 +34,7 @@ PYTHON_SCRIPT="$REPO_ROOT/scripts/analysis/anomalies/anomalies_analysis.py"
 DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow"
 META_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.1_FILTERED.fits"
 N_ANOMALIES=10
-BASE_MODALITY="joint"
+BASE_MODALITY=""
 
 #--- ARGUMENT PARSING (FLAGS) ---#
 while getopts ":r:w:s:e:f:a:n:m:" opt; do
@@ -151,7 +151,6 @@ python3 "$PYTHON_SCRIPT" \
     --data_dir "$DATA_DIR" \
     --metadata_path "$META_PATH" \
     --n_anomalies "$N_ANOMALIES" \
-    --base_modality "$BASE_MODALITY" \
     $OUTPUT_ARG \
     --plot_projection
 

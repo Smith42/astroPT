@@ -91,9 +91,8 @@ def parse_args() -> argparse.Namespace:
     
     parser.add_argument("--methods", nargs="+", default=["gap", "iforest", "lof", "svdd", "mahalanobis", "autoencoder", "knn"],
                         help="Anomaly detection methods to include")
-    parser.add_argument("--base_modality", type=str, default="joint", 
-                        choices=["joint", "cls", "EuclidImage", "DESISpectrum"],
-                        help="Base embedding modality for general outlier detectors")
+    parser.add_argument("--base_modality", type=str, default="all", 
+                        help="Base embedding modality for general outlier detectors, or 'all' to run on all available modalities dynamically.")
     parser.add_argument("--plot_projection", action="store_true", default=True,
                         help="Generate a 2D t-SNE plot highlighting anomaly locations")
     
@@ -515,7 +514,7 @@ def generate_tSNE_plot(
     # Label top 5 anomalies
     for i, idx in enumerate(top_plot_idx[:5]):
         ax.annotate(
-            f"Rank #{i+1}", 
+            f"Rank \\#{i+1}", 
             (X_embedded[idx, 0], X_embedded[idx, 1]),
             textcoords="offset points", 
             xytext=(10, 10), 
@@ -594,6 +593,98 @@ def generate_anomaly_report_dashboard(
     # Prepare FITS catalogs index for quick metadata search
     target_id_col = 'TARGETID' if 'TARGETID' in fits_catalog.columns else 'targetid'
     fits_indexed = fits_catalog.drop_duplicates(subset=[target_id_col]).set_index(target_id_col)
+
+    def get_morphological_meta_str(tid):
+        if tid in fits_indexed.index:
+            meta = fits_indexed.loc[tid]
+            
+            # Coordinates
+            ra_val = meta.get('RA', None)
+            dec_val = meta.get('DEC', None)
+            coords_str = f"${ra_val:.6f}^\\circ, {dec_val:.6f}^\\circ$" if (ra_val is not None and not pd.isna(ra_val)) else "N/A"
+            
+            # Redshift
+            z_val = meta.get('Z', None)
+            z_str = f"{z_val:.4f}" if (z_val is not None and not pd.isna(z_val)) else "N/A"
+            
+            # Stellar Mass
+            logmstar_val = meta.get('LOGMSTAR', None)
+            mstar = f"$10^{{{logmstar_val:.2f}}} \\text{{ M}}_\\odot$" if (logmstar_val is not None and not pd.isna(logmstar_val)) else "N/A"
+            
+            # Star Formation Rate
+            logsfr_val = meta.get('LOGSFR', None)
+            sfr = f"${10**logsfr_val:.3f} \\text{{ M}}_\\odot/\\text{{yr}}$" if (logsfr_val is not None and not pd.isna(logsfr_val)) else "N/A"
+            
+            # Spectype
+            spectype = str(meta.get('SPECTYPE', 'N/A'))
+            
+            # Euclid Sersic Index
+            sersic_n_val = meta.get('sersic_sersic_vis_index', None)
+            n_str = f"{sersic_n_val:.2f}" if (sersic_n_val is not None and not pd.isna(sersic_n_val)) else "N/A"
+            
+            # Euclid Effective Radius
+            sersic_re_val = meta.get('sersic_sersic_vis_radius', None)
+            re_str = f"{sersic_re_val:.3f}''" if (sersic_re_val is not None and not pd.isna(sersic_re_val)) else "N/A"
+            
+            # Axis Ratio
+            ba_val = meta.get('sersic_sersic_vis_axis_ratio', None)
+            ba_str = f"{ba_val:.3f}" if (ba_val is not None and not pd.isna(ba_val)) else "N/A"
+            
+            # VIS Aperture Flux
+            vis_flux_val = meta.get('flux_vis_1fwhm_aper', None)
+            vis_flux_str = f"{vis_flux_val:.2f}" if (vis_flux_val is not None and not pd.isna(vis_flux_val)) else "N/A"
+            
+            meta_str = (
+                f"\\textbf{{Coords}}: {coords_str}\n"
+                f"\\textbf{{Z}}: {z_str}\n"
+                f"\\textbf{{$M_*$}}: {mstar}\n"
+                f"\\textbf{{SFR}}: {sfr}\n"
+                f"\\textbf{{Spectype}}: {spectype}\n"
+                f"\\textbf{{VIS Flux}}: {vis_flux_str}\n"
+                f"\\textbf{{Sersic n}}: {n_str}\n"
+                f"\\textbf{{Radius $R_{{eff}}$}}: {re_str}\n"
+                f"\\textbf{{Axis Ratio}}: {ba_str}"
+            )
+            return meta_str.replace("_", "\\_"), z_val
+        return f"\\textbf{{ID}}: {tid}\n(No metadata)", None
+
+    def get_spectroscopic_meta_str(tid):
+        if tid in fits_indexed.index:
+            meta = fits_indexed.loc[tid]
+            
+            ha_f = meta.get('HALPHA_FLUX', None)
+            hb_f = meta.get('HBETA_FLUX', None)
+            oiii_f = meta.get('OIII_5007_FLUX', None)
+            oii_f = meta.get('OII_3726_FLUX', None)
+            
+            ha_ew = meta.get('HALPHA_EW', None)
+            hb_ew = meta.get('HBETA_EW', None)
+            oii_ew = meta.get('OII_3726_EW', None)
+            
+            ha_sig = meta.get('HALPHA_SIGMA', None)
+            snr_r = meta.get('SNR_SPEC_R', None)
+            snr_z = meta.get('SNR_SPEC_Z', None)
+            
+            def fmt_flux(v): return f"{v:.2f}" if (v is not None and not pd.isna(v)) else "N/A"
+            def fmt_ew(v): return f"{v:.2f} \\AA" if (v is not None and not pd.isna(v)) else "N/A"
+            def fmt_val(v, unit=""): return f"{v:.1f}{unit}" if (v is not None and not pd.isna(v)) else "N/A"
+            
+            stats_text = (
+                f"\\textbf{{Spectral Line Fluxes}}:\n"
+                f"  - H$\\alpha$ Flux: {fmt_flux(ha_f)}\n"
+                f"  - H$\\beta$ Flux: {fmt_flux(hb_f)}\n"
+                f"  - [O III] 5007 Flux: {fmt_flux(oiii_f)}\n"
+                f"  - [O II] 3726 Flux: {fmt_flux(oii_f)}\n\n"
+                f"\\textbf{{Equivalent Widths}}:\n"
+                f"  - H$\\alpha$ EW: {fmt_ew(ha_ew)}\n"
+                f"  - H$\\beta$ EW: {fmt_ew(hb_ew)}\n"
+                f"  - [O II] 3726 EW: {fmt_ew(oii_ew)}\n\n"
+                f"\\textbf{{Spectra Quality}}:\n"
+                f"  - H$\\alpha$ Width $\\sigma$: {fmt_val(ha_sig, ' km/s')}\n"
+                f"  - SNR Spec R: {fmt_val(snr_r)} | SNR Spec Z: {fmt_val(snr_z)}"
+            )
+            return stats_text.replace("_", "\\_")
+        return "\\textbf{Spectra data missing}"
     
     import matplotlib
     matplotlib.use('Agg')
@@ -614,53 +705,9 @@ def generate_anomaly_report_dashboard(
                 
             sample = ds[int(matches[0])]
             
-            # Fetch FITS metadata
-            meta_str = ""
-            if tid in fits_indexed.index:
-                meta = fits_indexed.loc[tid]
-                
-                # Redshift
-                z_val = meta.get('Z', meta.get('z', None))
-                z_str = f"{z_val:.4f}" if (z_val is not None and not pd.isna(z_val)) else "N/A"
-                
-                # Stellar Mass
-                logmstar_val = meta.get('LOGMSTAR', meta.get('logmstar', None))
-                mstar = f"$10^{{{logmstar_val:.2f}}} \\text{{ M}}_\\odot$" if (logmstar_val is not None and not pd.isna(logmstar_val)) else "N/A"
-                
-                # SFR
-                logsfr_val = meta.get('LOGSFR', meta.get('logsfr', None))
-                sfr = f"${10**logsfr_val:.3f} \\text{{ M}}_\\odot/\\text{{yr}}$" if (logsfr_val is not None and not pd.isna(logsfr_val)) else "N/A"
-                
-                # Sersic Radius
-                sersic_r_val = meta.get('sersic_sersic_vis_radius', None)
-                sersic_r = f"{sersic_r_val:.3f} arcsec" if (sersic_r_val is not None and not pd.isna(sersic_r_val)) else "N/A"
-                
-                # Sersic Index
-                sersic_n_val = meta.get('sersic_sersic_vis_index', None)
-                sersic_n = f"{sersic_n_val:.3f}" if (sersic_n_val is not None and not pd.isna(sersic_n_val)) else "N/A"
-                
-                # Gini
-                gini_val = meta.get('gini', meta.get('GINI', None))
-                gini = f"{gini_val:.3f}" if (gini_val is not None and not pd.isna(gini_val)) else "N/A"
-                
-                # Spectype & Release
-                spectype = str(meta.get('SPECTYPE', meta.get('spectype', 'N/A')))
-                release = str(meta.get('data_set_release', meta.get('release', 'N/A')))
-                
-                meta_str = (
-                    f"\\textbf{{Spectroscopic Redshift (Z)}}: {z_str}\n"
-                    f"\\textbf{{Stellar Mass ($M_*$)}}: {mstar}\n"
-                    f"\\textbf{{Star Formation Rate (SFR)}}: {sfr}\n"
-                    f"\\textbf{{Sersic VIS Radius}}: {sersic_r}\n"
-                    f"\\textbf{{Sersic VIS Index}}: {sersic_n}\n"
-                    f"\\textbf{{Gini Coefficient}}: {gini}\n"
-                    f"\\textbf{{Galaxy Spectype}}: {spectype}\n"
-                    f"\\textbf{{Survey Catalog Release}}: {release}"
-                )
-                # Escape underscores for LaTeX safety
-                meta_str = meta_str.replace("_", "\\_")
-            else:
-                meta_str = f"\\textbf{{TargetID}}: {tid} (No metadata in catalog)"
+            # Fetch FITS metadata using the same template/helpers as similarity_search.py
+            meta_str, z_val = get_morphological_meta_str(tid)
+            spec_meta_str = get_spectroscopic_meta_str(tid)
                 
             # Create a 4-panel figure for this anomaly with metadata, image, scores, and spectrum
             fig = plt.figure(figsize=(22, 14), dpi=150)
@@ -685,7 +732,7 @@ def generate_anomaly_report_dashboard(
                     val = raw_record[k]
                     return np.array(val if val is not None else [], dtype=np.float32)
                 except (KeyError, TypeError):
-                    return np.array([], dtype=np.float32)
+                     return np.array([], dtype=np.float32)
             
             try:
                 vis = get_raw('image_vis')
@@ -725,7 +772,7 @@ def generate_anomaly_report_dashboard(
                     rgb_gt = make_rgb_lupton(rgb_input, Q=12.0, stretch=0.5)
                     
                     ax_img.imshow(rgb_gt, origin='lower')
-                    ax_img.set_title(f"Euclid VIS+NISP False Color (Rank \\#{rank+1})", fontsize=15, fontweight='bold', color='darkred')
+                    # Title is removed per user request
                     has_image = True
                 else:
                     ax_img.text(0.5, 0.5, "EuclidImage not in raw database", ha='center', va='center', fontsize=12)
@@ -735,39 +782,33 @@ def generate_anomaly_report_dashboard(
                 ax_img.text(0.5, 0.5, "EuclidImage rendering failed", ha='center', va='center', fontsize=12)
             ax_img.axis('off')
             
-            # 2. Anomaly Scores Profile Bar
-            percentiles = {}
-            for col in df_top.columns:
-                if col.startswith("percentile_"):
-                    method_name = col.replace("percentile_", "").upper()
-                    percentiles[method_name] = getattr(row, col) * 100.0 # Convert to percent
-                    
-            y_pos = np.arange(len(percentiles))
-            colors = plt.cm.plasma(np.array(list(percentiles.values())) / 100.0)
+            # 2. Spectroscopic properties card (replacing old horizontal bar chart)
+            ax_stats.axis('off')
+            ax_stats.text(
+                0.5, 0.95, spec_meta_str, 
+                transform=ax_stats.transAxes, 
+                fontsize=14,
+                linespacing=1.6,
+                horizontalalignment='center',
+                verticalalignment='top',
+                bbox=dict(boxstyle="round,pad=0.8", fc="aliceblue", alpha=0.95, ec="steelblue", lw=1.0)
+            )
+            ax_stats.set_title(r"\textbf{Spectroscopic properties}", fontsize=16, fontweight='bold', color='steelblue', pad=15)
             
-            ax_stats.barh(y_pos, list(percentiles.values()), align='center', color=colors, edgecolor='black', height=0.6)
-            ax_stats.set_yticks(y_pos)
-            ax_stats.set_yticklabels(list(percentiles.keys()), fontsize=10, fontweight='bold')
-            ax_stats.invert_yaxis()  # top-down
-            ax_stats.set_xlabel('Anomaly Score Percentile (%)', fontsize=11, fontweight='bold')
-            ax_stats.set_xlim(0, 100)
-            ax_stats.axvline(99.0, color='red', linestyle='--', alpha=0.7, label='Top 1% Threshold')
-            ax_stats.set_title(f"UWI: {uwi:.4f} (Consensus Outlier Profile)", fontsize=13, fontweight='bold')
-            ax_stats.grid(True, alpha=0.2)
-            
-            # Print metadata inside the dedicated ax_meta panel
+            # 3. Morphological and Physical properties card in ax_meta
             ax_meta.axis('off')
             ax_meta.text(
-                0.05, 0.95, meta_str, 
+                0.5, 0.95, meta_str, 
                 transform=ax_meta.transAxes, 
-                fontsize=11.5,
-                linespacing=1.6,
+                fontsize=14,
+                linespacing=1.8,
+                horizontalalignment='center',
                 verticalalignment='top',
-                bbox=dict(boxstyle="round,pad=0.6", fc="ivory", alpha=0.95, ec="darkgrey", lw=1.0)
+                bbox=dict(boxstyle="round,pad=0.8", fc="ivory", alpha=0.95, ec="darkgrey", lw=1.0)
             )
-            ax_meta.set_title(r"\textbf{Galaxy Physical Properties}", fontsize=14, fontweight='bold', color='navy', pad=10)
+            ax_meta.set_title(r"\textbf{Physical and Morphological properties}", fontsize=16, fontweight='bold', color='navy', pad=15)
             
-            # 3. DESI Spectrum divided into Blue and Red Channels
+            # 4. DESI Spectrum divided into Blue and Red Channels
             has_spectra = False
             try:
                 if raw_record.get('spectrum_flux') is not None:
@@ -778,17 +819,16 @@ def generate_anomaly_report_dashboard(
                     w_mid = (w_min + w_max) / 2
                     
                     # Plot Blue Channel
-                    ax_spec_blue.plot(wave_ang, spec_gt, 'k-', lw=1, alpha=0.8, label=f"DESISpectrum (TargetID: {tid})")
+                    ax_spec_blue.plot(wave_ang, spec_gt, 'k-', lw=1, alpha=0.8)
                     ax_spec_blue.set_xlim(w_min, w_mid)
-                    ax_spec_blue.set_title(r"\textbf{Spectrum (Blue Channel)}", fontsize=14, fontweight='bold')
+                    ax_spec_blue.set_title(r"\textbf{Spectrum (Blue Channel)}", fontsize=11, fontweight='bold')
                     ax_spec_blue.set_ylabel(r"Flux", fontsize=12)
-                    ax_spec_blue.legend(loc="upper right", framealpha=0.9)
                     plot_spectral_lines(ax_spec_blue, w_min, w_mid, z_val)
                     
                     # Plot Red Channel
                     ax_spec_red.plot(wave_ang, spec_gt, 'k-', lw=1, alpha=0.8)
                     ax_spec_red.set_xlim(w_mid, w_max)
-                    ax_spec_red.set_title(r"\textbf{Spectrum (Red Channel)}", fontsize=14, fontweight='bold')
+                    ax_spec_red.set_title(r"\textbf{Spectrum (Red Channel)}", fontsize=11, fontweight='bold')
                     ax_spec_red.set_ylabel(r"Flux", fontsize=12)
                     ax_spec_red.set_xlabel(r"Observed Wavelength [\AA]", fontsize=13, fontweight='bold')
                     plot_spectral_lines(ax_spec_red, w_mid, w_max, z_val)
@@ -802,7 +842,7 @@ def generate_anomaly_report_dashboard(
                 ax_spec_blue.text(0.5, 0.5, "DESISpectrum rendering failed", ha='center', va='center', fontsize=12)
                 ax_spec_red.axis('off')
                 
-            plt.suptitle(r"\textbf{AstroPT Multimodal Outlier Profiler Dashboard}", fontsize=22, fontweight='bold', y=0.98)
+            plt.suptitle(rf"\textbf{{Anomaly UWI {uwi:.4f}: ID {tid}}}", fontsize=22, fontweight='bold', y=0.98)
             pdf.savefig()
             plt.close()
             
@@ -827,6 +867,7 @@ def main():
     
     # Reconstruct data dataloader parameters
     raw_config_dict['data_dir'] = args.data_dir
+    raw_config_dict['metadata_path'] = args.metadata_path
     raw_config_dict['batch_size'] = args.batch_size
     
     valid_keys = {f.name for f in fields(TrainingConfig)}
@@ -856,51 +897,77 @@ def main():
     else:
         logger.info("No applied filters found in model configuration. Analyzing full dataset.")
         
-    # 4. Calculate scores across the 7 methods
-    df_scores, feature_matrices = calculate_anomaly_scores(
-        embeddings_dir=embeddings_dir,
-        methods=args.methods,
-        base_modality=args.base_modality,
-        contamination=args.contamination,
-        knn_neighbors=args.knn_neighbors,
-        ae_epochs=args.ae_epochs,
-        ae_latent_dim=args.ae_latent_dim,
-        allowed_ids_filter=allowed_ids
-    )
+    # --- Dynamic Modality Detection ---
+    # Find all available .npy files in the embeddings directory (excluding ids.npy)
+    all_npy_files = list(embeddings_dir.glob("*.npy"))
+    discovered_modalities = [f.stem for f in all_npy_files if f.stem != "ids"]
     
-    # Save the consolidated CSV catalog of anomaly rankings
-    csv_path = save_dir / "consolidated_anomalies.csv"
-    df_scores.to_csv(csv_path, index=False)
-    logger.info(f"Saved complete anomaly scores catalog to {csv_path}")
-    
-    # Extract top N anomalies for deep report profiling
-    df_top = df_scores.head(args.n_anomalies)
-    
-    # 5. Generate Reports and Plots
-    if args.plot_projection:
-        X_base = feature_matrices[args.base_modality]
-        # Match Top anomalies IDs back to their index in the active ids array
-        all_ids = df_scores.TargetID.values
-        top_tids = df_top.TargetID.values
-        top_indices = np.array([np.where(all_ids == tid)[0][0] for tid in top_tids])
+    if not discovered_modalities:
+        raise FileNotFoundError(f"No .npy embedding files found in {embeddings_dir}")
         
-        tsne_path = save_dir / f"latent_tsne_{args.base_modality}.png"
-        generate_tSNE_plot(
-            X_base, 
-            top_indices=top_indices, 
-            uwi_scores=df_top.Unified_Weirdness_Index.values, 
-            save_path=tsne_path
+    # Determine which modalities to process
+    if args.base_modality.lower() == "all":
+        modalities_to_process = discovered_modalities
+        logger.info(f"Dynamic scan: Detected all available modalities for analysis: {modalities_to_process}")
+    else:
+        # Fallback to the specified modality, verifying it exists
+        if args.base_modality not in discovered_modalities:
+            raise KeyError(f"Selected base modality '{args.base_modality}' not found in available embeddings {discovered_modalities}")
+        modalities_to_process = [args.base_modality]
+        logger.info(f"Processing single specified base modality: {modalities_to_process}")
+        
+    # 4. Loop over and process each modality
+    for modality in modalities_to_process:
+        logger.info(f"\n==================================================")
+        logger.info(f"=== RUNNING ANOMALY HUNTER ON MODALITY: {modality} ===")
+        logger.info(f"==================================================")
+        
+        df_scores, feature_matrices = calculate_anomaly_scores(
+            embeddings_dir=embeddings_dir,
+            methods=args.methods,
+            base_modality=modality,
+            contamination=args.contamination,
+            knn_neighbors=args.knn_neighbors,
+            ae_epochs=args.ae_epochs,
+            ae_latent_dim=args.ae_latent_dim,
+            allowed_ids_filter=allowed_ids
         )
         
-    dashboard_pdf_path = save_dir / f"anomaly_hunter_report_{args.base_modality}.pdf"
-    generate_anomaly_report_dashboard(
-        ds=ds,
-        df_top=df_top,
-        fits_catalog=fits_df,
-        save_path=dashboard_pdf_path
-    )
-    
-    logger.info("Done. Anomaly hunter completes successfully.")
+        # Save the consolidated CSV catalog of anomaly rankings for this modality
+        csv_path = save_dir / f"consolidated_anomalies_{modality}.csv"
+        df_scores.to_csv(csv_path, index=False)
+        logger.info(f"Saved anomaly scores catalog for {modality} to {csv_path}")
+        
+        # Extract top N anomalies for deep report profiling
+        df_top = df_scores.head(args.n_anomalies)
+        
+        # 5. Generate Reports and Plots for this modality
+        if args.plot_projection:
+            X_base = feature_matrices[modality]
+            # Match Top anomalies IDs back to their index in the active ids array
+            all_ids = df_scores.TargetID.values
+            top_tids = df_top.TargetID.values
+            top_indices = np.array([np.where(all_ids == tid)[0][0] for tid in top_tids])
+            
+            tsne_path = save_dir / f"latent_tsne_{modality}.png"
+            generate_tSNE_plot(
+                X_base, 
+                top_indices=top_indices, 
+                uwi_scores=df_top.Unified_Weirdness_Index.values, 
+                save_path=tsne_path
+            )
+            
+        dashboard_pdf_path = save_dir / f"anomaly_hunter_report_{modality}.pdf"
+        generate_anomaly_report_dashboard(
+            ds=ds,
+            df_top=df_top,
+            fits_catalog=fits_df,
+            save_path=dashboard_pdf_path
+        )
+        
+    logger.info("\n==================================================")
+    logger.info("Done. All anomaly hunter processing completes successfully.")
+    logger.info("==================================================")
 
 if __name__ == "__main__":
     main()
