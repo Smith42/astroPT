@@ -475,6 +475,8 @@ def main():
     # Detected modalities from the first sample
     temp_batch = ds[0]
     active_modalities = get_active_modalities(temp_batch)
+    # Filter active_modalities to only include sequence-level modalities in the model
+    active_modalities = [m for m in active_modalities if m in model.mod_names]
     # Sort active_modalities according to model.mod_names to avoid modality order mismatch
     active_modalities = sorted(active_modalities, key=lambda m: model.mod_names.index(m) if m in model.mod_names else 999)
     N = len(active_modalities)
@@ -510,7 +512,9 @@ def main():
             total_patches = sum(batch[m].shape[1] if torch.is_tensor(batch[m]) else len(batch[m][0]) for m in active_modalities)
             patch_interleaved = patch_interleaved[:total_patches]
             
-            n_experts = len(active_modalities)
+            # Reconstruct suffix indices based on model type (V4 has expert tokens, V3 does not)
+            is_v4 = hasattr(model.embedding_layer, "expert_tokens")
+            n_experts = len(active_modalities) if is_v4 else 0
             suffix_indices = torch.arange(total_patches, total_patches + n_experts + (1 if has_cls else 0), device=patch_interleaved.device, dtype=torch.long)
             full_interleaved = torch.cat([patch_interleaved, suffix_indices])
             

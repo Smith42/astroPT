@@ -102,7 +102,16 @@ def main():
     print(f"Loading metrics from {csv_path}...")
     
     # Load as a Pandas Dataframe
-    df = pd.read_csv(csv_path)
+    import io
+    import re
+    try:
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            csv_content = f.read()
+        cleaned_content = re.sub(r'(\b\d+ days?),\s*(\d+:\d{2}:\d{2})', r'\1 \2', csv_content)
+        df = pd.read_csv(io.StringIO(cleaned_content))
+    except Exception as e:
+        print(f"Warning: Cleaned CSV loading failed ({e}). Attempting raw fallback...")
+        df = pd.read_csv(csv_path)
 
     # Separate Train and Val rows
     val_df = df.dropna(subset=['val_loss'])

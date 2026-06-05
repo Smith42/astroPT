@@ -33,7 +33,10 @@ import torch
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
-from astropt.euclid_desi_arrow_dataloader import EuclidDESIDatasetArrow
+from astropt.dataloader_multimodal import MultimodalDatasetArrow
+from astropt.config import TrainingConfig
+from astropt.training_utils import create_dataloaders
+import dataclasses
 from astropt.model_utils import load_local_model
 
 import os
@@ -837,20 +840,15 @@ def main():
     norm_scaler_spec = raw_config_dict.get('spectra_norm_scaler', 1.0)
     norm_const_spec = raw_config_dict.get('spectra_norm_const', 1.0)
 
-    # Actualizamos el transform para que el dataloader use la misma escala
-    data_tf = EuclidDESIDatasetArrow.data_transforms(
-        norm_type_img=norm_type_img, norm_scaler_img=norm_scaler_img, norm_const_img=norm_const_img,
-        norm_type_spec=norm_type_spec, norm_scaler_spec=norm_scaler_spec, norm_const_spec=norm_const_spec,
-    )
-
-    ds = EuclidDESIDatasetArrow(
-        arrow_folder_root=data_dir, 
-        split=args.split, 
-        modality_registry=registry,
-        spiral=raw_config_dict.get('spiral', True), 
-        transform=data_tf,
-        spectra_inverse=inverse_spec,
-    )
+    # Instantiate dataset using config fields via create_dataloaders
+    valid_keys = {f.name for f in dataclasses.fields(TrainingConfig)}
+    filtered_config = {k: v for k, v in raw_config_dict.items() if k in valid_keys}
+    config_obj = TrainingConfig(**filtered_config)
+    config_obj.data_dir = str(data_dir)
+    config_obj.batch_size = 1
+    
+    train_loader, val_loader, _ = create_dataloaders(config_obj, ddp=False)
+    ds = train_loader.dataset if args.split == "train" else val_loader.dataset
     
     # Sample Selection
     indices_to_plot = []
@@ -899,7 +897,7 @@ def main():
         
         logger.info(f"Processing Target ID {target_id} ({batch_idx+1}/{len(indices_to_plot)})")
         
-        X = EuclidDESIDatasetArrow.prepare_batch(batch, registry, device)
+        X = MultimodalDatasetArrow.prepare_batch(batch, registry, device)
         
         if device.type == 'cpu':
             for k, v in X.items():
