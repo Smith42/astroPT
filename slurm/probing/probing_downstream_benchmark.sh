@@ -155,7 +155,6 @@ echo "    LR:             $LEARNING_RATE"
 
 # Run Python Script
 python3 "$PYTHON_SCRIPT" \
-    --metadata_path "$META_PATH" \
     --weights_dir "$WEIGHTS_DIR" \
     --emb_dir "$DETECTED_EMB" \
     $SAVE_ARG \

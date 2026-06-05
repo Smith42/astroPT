@@ -95,7 +95,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="AstroPT Downstream Prober (LP & MLP)")
     
     # Data Paths
-    parser.add_argument("--metadata_path", type=str, required=True, help="Path to .fits catalog")
+    parser.add_argument("--metadata_path", type=str, required=False, default=None, help="Path to .fits catalog")
     parser.add_argument("--weights_dir", type=str, required=True, help="Directory containing training weights")
     parser.add_argument("--emb_dir", type=str, required=True, help="Directory containing .npy embedding files")
     parser.add_argument("--save_dir", type=str, default=None, help="Plot Saving Directory")
@@ -784,7 +784,30 @@ def main():
     # Required paths
     weights_dir = Path(args.weights_dir)
     emb_dir = Path(args.emb_dir)
-    metadata_path = Path(args.metadata_path)
+    
+    metadata_path_str = args.metadata_path
+    
+    # Try to identify original training config
+    config_path = weights_dir / "config.json"
+    if config_path.exists():
+        try:
+            with open(config_path, "r") as f:
+                config_data = json.load(f)
+            if "metadata_path" in config_data:
+                config_metadata_path = config_data["metadata_path"]
+                logger.info(f"Automatically identified metadata path from original training config: {config_metadata_path}")
+                if Path(config_metadata_path).exists():
+                    metadata_path_str = config_metadata_path
+                else:
+                    logger.warning(f"Metadata path from training config does not exist on filesystem: {config_metadata_path}")
+        except Exception as e:
+            logger.warning(f"Could not load or parse original training config from {config_path}: {e}")
+            
+    if not metadata_path_str:
+        logger.error("Metadata path was not specified via --metadata_path and could not be detected from training config.")
+        sys.exit(1)
+        
+    metadata_path = Path(metadata_path_str)
     
     save_dir = Path(args.save_dir) / "downstream_tasks" if args.save_dir else emb_dir / "downstream_tasks"
     save_dir.mkdir(parents=True, exist_ok=True)

@@ -18,11 +18,11 @@ fi
 LAUNCH_SCRIPT="$REPO_ROOT/slurm/trainers/launch_pipeline.sh"
 
 # --- CONFIGURATION --- #
-TARGET_DATE="2026-05-20 23:30:00"
-CONFIG_FILE="$REPO_ROOT/config/20260519_Hibyd_filtered.yaml"
+TARGET_DATE="2026-06-04 10:45:00"
+CONFIG_FILE="$REPO_ROOT/config/20260531_Hybrid_Optimized.yaml"
 
 # IMPORTANT: Point to the same directory and set init_from to resume
-TRAIN_DIR="/mnt/data_proj/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_20260519_hybrid_filter"
+TRAIN_DIR="/mnt/data_proj/iac18_mhuertas_shared/valonso/astroPT/logs/astropt_20260601_hybrid_optimized"
 
 # RESUMING ARGUMENTS
 EXTRA_ARGS="--init_from resume"
