@@ -1,0 +1,32 @@
+# AstroPT V4 Master Training Configuration (100M - Grand Final Model)
+# Optimized for the ultra-clean 137,661 galaxy flux-filtered catalog
+# All parameters are explicit to avoid relying on config.py defaults.
+
+#--- Training Metadata ---#
+train_name: "Original"
+train_description: "Training with the original configuration"
+#--- I/O & Paths ---#
+# CRITICAL: Point to the FILTERED catalog, not the raw one.
+data_dir: "/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_interpolated"
+metadata_path: "/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.1_FILTERED.fits"
+
+#--- Data Loading ---#
+applied_filters:
+  - "TARGETID > 0"     # Forces dynamic FITS catalog matching to load ONLY the 137k clean galaxies
+
+
+#--- Modality Orchestration ---#
+modalities:
+  - "EuclidImage"
+  - "DESISpectrum"
+
+# EuclidImage specific
+EuclidImage_channels: 4
+EuclidImage_filters:
+  - "VIS"
+  - "Y"
+  - "J"
+  - "H"
+
+# DESISpectrum specific
+DESISpectrum_size: 7781

@@ -1,0 +1,114 @@
+# AstroPT V4 Master Training Configuration (100M - Grand Final Model)
+# Optimized for the ultra-clean 137,661 galaxy flux-filtered catalog
+# All parameters are explicit to avoid relying on config.py defaults.
+
+#--- Training Metadata ---#
+train_name: "Filter + Unimodal + Spectra"
+train_description: "Training on only DESISpectrum modality with no cross-reconstruction or token mixing. Using filtered catalog and 100M model."
+
+#--- I/O & Paths ---#
+# CRITICAL: Point to the FILTERED catalog, not the raw one.
+data_dir: "/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_interpolated"
+metadata_path: "/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.1_FILTERED.fits"
+
+#--- Model Architecture (100M Parameters) ---#
+n_layer: 12             # Depth of the Transformer (Scaled up from 8)
+n_head: 12              # Number of attention heads (Scaled up from 8)
+n_embd: 768             # Embedding dimension (Scaled up from 512)
+block_size: 2048        # Context length (must accommodate full image+spectra sequence)
+dropout: 0.1            # Light regularization; non-zero since dataset is finite (~137k)
+bias: False             # No learnable bias (modern/faster, consistent with pretraining norms)
+attn_type: "causal"     # Causal attention (required for autoregressive generation)
+backbone: "native"      # Native AstroPT backbone
+loss_type: "mae"        # Robust L1/MAE loss for reconstruction (less sensitive to flux outliers)
+
+#--- Data Loading ---#
+batch_size: 16          # Micro-batch size per GPU
+num_workers: 8          # CPU workers for data loading (Teide HPC)
+persistent_workers: True
+prefetch_factor: 2
+pin_memory: True
+spiral: True            # Spiral readout for galaxy images (spatial continuity)
+init_from: "scratch"    # Training from scratch
+use_aug: True           # Rotation augmentation (rotational invariance for galaxy morphology)
+use_pretokenized: False
+applied_filters:
+  - "TARGETID > 0"     # Forces dynamic FITS catalog matching to load ONLY the 137k clean galaxies
+
+
+#--- Modality Orchestration ---#
+modalities:
+  - "DESISpectrum"
+
+#--- Multimodality Mixing Parameters ---#
+use_token_mixing: False                        # Enable cross-modal token interleaving
+shuffle_modality_train: False                  # Shuffle modality order (breaks order bias)
+shuffle_modality_val: False                   # Keep validation deterministic
+cross_reconstruction_loss_use: False           # Activate cross-modal reconstruction targets
+spectral_modality_key: "DESISpectrum"         # Primary spectral modality identifier
+
+#--- Dual Modality Identity ---#
+use_cls_token: True                   # Shared [CLS] token (holistic embedding)
+cls_position: "last"                  # [CLS] at end of sequence (causal: sees everything)
+use_modality_embeddings: True         # Distinct positional-style embeddings per modality
+
+#--- CLIP: Contrastive Alignment (Hybrid Architecture) ---#
+use_contrastive_alignment: False       # Activates V4 dual-encoder + CLIP head
+
+#--- Images ---#
+images_train: False
+
+#--- Spectra ---#
+spectra_train: True
+spectra_inverse: False        # Standard blue-to-red reading
+spectra_norm_type: "asinh"    # asinh: same dynamic range preservation as images
+spectra_mask: True            # Masked Autoencoding active
+spectra_mask_prob: 0.15       # [TUNED] Down from 0.20: give spectral decoder more signal
+                              # to build stronger gradients in early training
+spectra_loss_weight: 1.4      # [KEY] Increased from 1.0: amplifies spectral gradient contribution
+spectra_embed_pos: True       # Learnable positional embeddings for spectral patches
+
+# DESISpectrum specific
+DESISpectrum_size: 7781
+
+#--- Optimization ---#
+max_iters: 75000              # Full convergence budget
+weight_decay: 0.1             # Strong regularization (finite dataset)
+beta1: 0.9                    # AdamW momentum
+beta2: 0.98                   # [TUNED] Up from 0.95: AdamW second moment more stable
+                              # for small, sporadic spectral gradients
+grad_clip: 2.0                # [KEY] Relaxed from 1.0: prevents image norm from
+                              # saturating clip and starving the spectral branch
+gradient_accumulation_steps: 40  # Effective batch = 16 * 40 = 640 galaxies
+
+#--- Learning Rate Schedule ---#
+learning_rate: 0.0003         # Peak LR
+lr_min: 0.00003               # Floor LR (10% of peak, cosine decay)
+lr_mult_images: 0.8           # [KEY] Slightly slow down image branch updates
+lr_mult_spectra: 1.35         # [KEY] Accelerate spectral branch updates
+lr_mult_backbone: 1.0         # Neutral backbone
+lr_decay: True
+lr_warmup_iters: 5000         # Longer warmup for larger 100M model
+lr_decay_iters: 70000         # Decay ends at iter 70k (5k tail at min LR)
+
+#--- Logging & Checkpointing ---#
+eval_interval: 1000           # Validate every 1000 iters
+eval_batches: 200             # [TUNED] Up from 100: more stable validation estimates
+                              # (200 * 16 = 3200 galaxies per validation)
+log_interval: 200             # Console log frequency
+checkpoint_interval: 1000     # Checkpoint save frequency
+checkpoint_save_type: "both"  # Save best + last checkpoints
+early_stopping_patience: 15   # Stop if no new best after 15 consecutive evals
+early_stopping_min_iters: 50000  # Do not trigger patience before 50k iters
+
+#--- System & Backend ---#
+device: "cuda"
+dtype: "bfloat16"             # Best precision/speed for A100 GPUs
+backend: "nccl"               # NCCL for multi-GPU DDP communication
+
+#--- Diagnostics ---#
+diagnostics_enabled: True
+diagnostics_interval: 200
+diagnostics_track_losses: True
+diagnostics_track_grads: True
+diagnostics_file_name: "training_diagnostics.csv"
