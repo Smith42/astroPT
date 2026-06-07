@@ -173,14 +173,18 @@ class GalaxyImageDataset(Dataset):
         X = {}
         Y = {}
         for ii, mode in enumerate(modes):
+            raw_flag = x.get(f"{mode}_is_raw", False)
+
             X[mode] = x_on_device[mode]
             X[f"{mode}_positions"] = x_on_device[f"{mode}_positions"]
             Y[mode] = x_on_device[mode]
-            if ii == 0:
-                Y[mode] = Y[mode][:, 1:]
-            if len(modes) == 1:
-                X[mode] = X[mode][:, :-1]
-                X[f"{mode}_positions"] = X[f"{mode}_positions"][:, :-1]
+
+            if not raw_flag:
+                if ii == 0:
+                    Y[mode] = Y[mode][:, 1:]
+                if len(modes) == 1:
+                    X[mode] = X[mode][:, :-1]
+                    X[f"{mode}_positions"] = X[f"{mode}_positions"][:, :-1]
 
         return {"X": X, "Y": Y}
 

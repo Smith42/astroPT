@@ -184,4 +184,21 @@ __pycache__/
 
 src/astropt/_version.py
 
+# checkpoints
+*.pt
 wandb/
+
+# --- Sogol paper-release additions ---
+.claude/
+.hf_cache/
+embeddings_arrow/
+nohup.out
+*.stackdump
+paper_images_idx_*/
+paper_images_idx_*.zip
+presentation_astropt_jetformer_*/
+presentation_astropt_jetformer_*.zip
+scripts/jetformer/jetformer_logs*/
+figures/
+paper_section_*.tex
+paper_section_*.md

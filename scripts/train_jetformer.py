@@ -1,19 +1,14 @@
 """
-This training script can be run both on a single gpu in debug mode,
-and also in a larger training run with distributed data parallel (ddp).
+Training script for AstroPT with Jetformer tokenization.
 
-To run on a single GPU, example:
-$ python train.py --batch_size=32 --compile=False
+This script extends the standard AstroPT training to support Jetformer's
+continuous tokenization approach using normalizing flows and GMM outputs.
 
-To run with DDP on 4 gpus on 1 node, example:
-$ torchrun --standalone --nproc_per_node=4 train.py
+To run on a single GPU:
+$ python train_jetformer.py --batch_size=32 --compile=False
 
-To run with DDP on 4 gpus across 2 nodes, example:
-- Run on the first (master) node with example IP 123.456.123.456:
-$ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=0 --master_addr=123.456.123.456 --master_port=1234 train.py
-- Run on the worker node:
-$ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=1 --master_addr=123.456.123.456 --master_port=1234 train.py
-(If your cluster does not have Infiniband interconnect prepend NCCL_IB_DISABLE=1)
+To run with DDP on 4 gpus on 1 node:
+$ torchrun --standalone --nproc_per_node=4 scripts/train_jetformer.py
 """
 
 import math
@@ -47,8 +42,43 @@ from astropt.local_datasets import GalaxyImageDataset
 from astropt.model import GPT, GPTConfig, ModalityConfig, ModalityRegistry
 
 
+def prepare_batch_for_jetformer(batch, tokeniser):
+    """Prepare batch for Jetformer: use raw images instead of patches.
+    
+    For Jetformer, replaces 'images' (patches) with 'images_raw' (raw images [B,C,H,W])
+    and adjusts positions accordingly.
+    
+    Args:
+        batch: Dictionary with 'images' (patches) and optionally 'images_raw' (raw images)
+        tokeniser: Tokeniser type ('jetformer' or other)
+    
+    Returns:
+        Modified batch with 'images' replaced by raw images for Jetformer
+    """
+    if tokeniser != "jetformer":
+        return batch
+    
+    if "images_raw" not in batch:
+        raise ValueError(
+            "Jetformer requires raw images. For HF datasets, this is handled automatically. "
+            "For local datasets, you need to modify GalaxyImageDataset to return raw images."
+        )
+    
+    # Replace patches with raw images
+    raw_images = batch["images_raw"]  # [B, C, H, W] from dataset
+    B, C, H, W = raw_images.shape
+    patch_size = 16  # Should match modality config
+    T = (H // patch_size) * (W // patch_size)
+    
+    batch["images"] = raw_images  # Replace patches with raw images
+    batch["images_positions"] = torch.arange(T, dtype=torch.long).unsqueeze(0).expand(B, T)
+    batch["images_is_raw"] = True
+    
+    return batch
+
+
 def normalise(x, use_hf=False):
-    # HF is in numpy format. Need to change that here if so:
+    """Normalize images to zero mean, unit variance."""
     if use_hf:
         x = torch.from_numpy(x).to(torch.float32)
     std, mean = torch.std_mean(x, dim=1, keepdim=True)
@@ -57,7 +87,7 @@ def normalise(x, use_hf=False):
 
 
 def data_transforms(use_hf):
-
+    """Data transformation pipeline."""
     norm = partial(normalise, use_hf=use_hf)
     transform = transforms.Compose(
         [
@@ -68,39 +98,57 @@ def data_transforms(use_hf):
     return transform
 
 
-def process_galaxy_wrapper(galdict, func):
-    """Wrapper for processing galaxy images from HF dataset."""
-    patch_galaxy = func(np.array(galdict["image"]).swapaxes(0, 2))
-    return {
+def process_galaxy_wrapper(galdict, func, return_raw=False):
+    """Wrapper for processing galaxy images from HF dataset.
+    
+    Args:
+        galdict: Dictionary with "image" key containing image data
+        func: Function to process galaxy (process_galaxy)
+        return_raw: If True, also return raw image [C, H, W] for Jetformer
+    
+    Returns:
+        Dictionary with "images" (patches) and optionally "images_raw" (raw image)
+    """
+    raw_image = np.array(galdict["image"]).swapaxes(0, 2)  # [C, H, W]
+    patch_galaxy = func(raw_image)
+    result = {
         "images": patch_galaxy.to(torch.float),
         "images_positions": torch.arange(0, len(patch_galaxy), dtype=torch.long),
     }
+    if return_raw:
+        # Convert to [C, H, W] tensor and normalize to [0,1] if needed
+        raw_tensor = torch.from_numpy(raw_image).to(torch.float)
+        if raw_tensor.max() > 1.0:
+            raw_tensor = raw_tensor / 255.0
+        result["images_raw"] = raw_tensor
+    return result
 
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
-    # default config values designed to test run a 100M parameter model on DESI galaxy imagery
-    # look at `config/astropt*.py` for a prod run example
-    out_dir = "logs/AFFINE"
+    # Configuration for Jetformer Training
+    # -----------------------------------------------------------------------------
+    tokeniser = "jetformer"
+    out_dir = "logs/astropt_jetformer_5epochs_resume"
     eval_interval = 1000
     log_interval = 100
     checkpoint_interval = 5000
     assert checkpoint_interval % eval_interval == 0
     eval_iters = 100
-    eval_only = False  # if True, script exits right after the first eval
-    always_save_checkpoint = (
-        False  # if True, always save a checkpoint at each checkpoint_interval
-    )
+    eval_only = False
+    always_save_checkpoint = False
     init_from = "scratch"  # 'scratch' or 'resume'
     use_hf = True  # use the huggingface dataset version of our galz
     stream_hf_dataset = True  # stream the galaxies from huggingface
     # data
     gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
-    batch_size = 16  # if gradient_accumulation_steps > 1, this is the micro-batch size
-    spiral = True  # do we want to process the galaxy patches in spiral order?
+    batch_size = 32  # if gradient_accumulation_steps > 1, this is the micro-batch size
+    spiral = False  # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     image_size = 256
-    num_workers = 32  # 64
+    num_workers = 32
+    num_epochs = 5  # number of epochs to train (None = use max_iters instead)
+    dataset_size = None  # dataset size for epoch calculation (None = try to get automatically, required for streaming)
     # astroPT model
     n_layer = 12
     n_head = 12
@@ -113,7 +161,7 @@ if __name__ == "__main__":
     modalities = [
         ModalityConfig(
             name="images",
-            input_size=16 * 16 * n_chan,
+            input_size=16 * 16 * n_chan,  # Will be overridden by Jetformer
             patch_size=16,
             loss_weight=1.0,
             embed_pos=True,
@@ -122,13 +170,15 @@ if __name__ == "__main__":
     ]
     # Create modality registry
     modality_registry = ModalityRegistry(modalities)
-    # Choose tokenisers from "affine" and "aim"
-    tokeniser = "affine"
-    # adamw optimizer
-    # we follow the same schedule here as Chinchilla
+    # Jetformer-specific hyperparameters
+    jetformer_flow_steps = 4  # Number of coupling layers in normalizing flow
+    jetformer_gmm_K = 4  # Number of Gaussian components in mixture
+    jetformer_noise_max = 0.1  # Maximum noise for curriculum
+    jetformer_noise_min = 0.0  # Minimum noise for curriculum
+    # Optimiser configuration
     learning_rate = 6e-4  # max learning rate
     max_iters = (
-        1_000_000  # total number of training iterations for one pass over our dataset
+        1_000_000  # total number of training iterations (overridden if num_epochs is set)
     )
     weight_decay = 1e-1
     beta1 = 0.9
@@ -152,8 +202,7 @@ if __name__ == "__main__":
     wandb_project = None
     # -----------------------------------------------------------------------------
     config_keys = [
-        k
-        for k, v in globals().items()
+        k for k, v in globals().items()
         if not k.startswith("_") and isinstance(v, (int, float, bool, str))
     ]
     exec(
@@ -170,7 +219,7 @@ if __name__ == "__main__":
         ddp_local_rank = int(os.environ["LOCAL_RANK"])
         ddp_world_size = int(os.environ["WORLD_SIZE"])
         device = f"cuda:{ddp_local_rank}"
-        torch.cuda.set_device(device)
+        torch.cuda.set_device(ddp_local_rank)
         master_process = (
             ddp_rank == 0
         )  # this process will do logging, checkpointing etc.
@@ -182,6 +231,8 @@ if __name__ == "__main__":
         master_process = True
         seed_offset = 0
         ddp_world_size = 1
+        ddp_rank = 0
+        ddp_local_rank = 0
     tokens_per_iter = (
         gradient_accumulation_steps
         * ddp_world_size
@@ -191,7 +242,7 @@ if __name__ == "__main__":
     )
     if master_process:
         if log_via_wandb:
-            print("wandb detected, gonna log to that")
+            print("Logging to wandb enabled")
         if log_emissions:
             print("codecarbon detected, will log emissions")
         print(f"tokens per iteration will be: {tokens_per_iter:,}")
@@ -216,9 +267,9 @@ if __name__ == "__main__":
         else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
     )
 
-    # dataset init
     transforms = {"images": data_transforms(use_hf)}
-    # training dataset and dataloader
+    
+    # Training dataset
     tpaths = None if use_hf else "./data/train.txt"
     tds = GalaxyImageDataset(
         paths={"images": tpaths},
@@ -244,12 +295,14 @@ if __name__ == "__main__":
             split="train",
             streaming=(True if stream_hf_dataset else False),
         )
+        # For Jetformer, we need raw images, not just patches
+        return_raw = tokeniser == "jetformer"
         tds_hf = (
             tds_hf
             .select_columns("image_crop")
             .rename_column("image_crop", "image")
             .map(
-                partial(process_galaxy_wrapper, func=tds.process_galaxy)
+                partial(process_galaxy_wrapper, func=tds.process_galaxy, return_raw=return_raw)
             )
         )
         tds_hf = tds_hf.remove_columns("image")
@@ -260,36 +313,138 @@ if __name__ == "__main__":
             split="test",
             streaming=(True if stream_hf_dataset else False),
         )
+        # For Jetformer, we need raw images, not just patches
+        return_raw = tokeniser == "jetformer"
         vds_hf = (
             vds_hf
             .select_columns("image_crop")
             .rename_column("image_crop", "image")
             .map(
-                partial(process_galaxy_wrapper, func=tds.process_galaxy)
+                partial(process_galaxy_wrapper, func=tds.process_galaxy, return_raw=return_raw)
             )
         )
         vds_hf = vds_hf.remove_columns("image")
 
-    tdl = iter(
-        DataLoader(
-            tds_hf if use_hf else tds,
-            batch_size=batch_size,
-            num_workers=num_workers,
-            pin_memory=True,
-        )
+    # Create infinite dataloader wrapper for streaming datasets
+    def infinite_dataloader(dataloader):
+        """Wrap a DataLoader to cycle infinitely, enabling multiple epochs with streaming datasets."""
+        while True:
+            yield from dataloader
+
+    # Create base dataloaders
+    train_loader = DataLoader(
+        tds_hf if use_hf else tds,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=True if num_workers > 0 and stream_hf_dataset else False,
     )
-    vdl = iter(
-        DataLoader(
-            vds_hf if use_hf else vds,
-            batch_size=batch_size,
-            num_workers=num_workers,
-            pin_memory=True,
-        )
+    val_loader = DataLoader(
+        vds_hf if use_hf else vds,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=True if num_workers > 0 and stream_hf_dataset else False,
     )
+    
+    # Wrap with infinite iterator if streaming, otherwise use regular iterator
+    if stream_hf_dataset and use_hf:
+        tdl = infinite_dataloader(train_loader)
+        vdl = infinite_dataloader(val_loader)
+    else:
+        tdl = iter(train_loader)
+        vdl = iter(val_loader)
+
+    # Calculate dataset size and max_iters from num_epochs if specified
+    if num_epochs is not None:
+        # Try to get dataset size automatically if not provided
+        if dataset_size is None:
+            if use_hf and not stream_hf_dataset:
+                # Can get size from non-streaming HF dataset
+                try:
+                    dataset_size = len(tds_hf)
+                    if master_process:
+                        print(f"Dataset size (auto-detected): {dataset_size:,} samples")
+                except (TypeError, AttributeError):
+                    dataset_size = None
+            elif use_hf and stream_hf_dataset:
+                # For streaming datasets, get size from dataset info without loading data
+                try:
+                    from datasets import load_dataset_builder
+                    if master_process:
+                        print("Getting dataset size from info (not loading data)...")
+                    builder = load_dataset_builder(
+                        "/scratch02/public/sao/msmith/data/galaxies/",
+                        revision="v2.0",
+                    )
+                    # Access the split info directly without loading data
+                    if hasattr(builder.info, 'splits') and 'train' in builder.info.splits:
+                        dataset_size = builder.info.splits['train'].num_examples
+                        if master_process:
+                            print(f"Dataset size (auto-detected from info): {dataset_size:,} samples")
+                    else:
+                        dataset_size = None
+                        if master_process:
+                            print("Warning: Could not get dataset size from info splits")
+                except (TypeError, AttributeError, Exception) as e:
+                    if master_process:
+                        print(f"Warning: Could not get dataset size from info: {e}")
+                        print("Falling back to loading dataset (this may take a moment)...")
+                    # Fallback: load the dataset if info API doesn't work
+                    try:
+                        from datasets import load_dataset
+                        tds_info = load_dataset(
+                            "/scratch02/public/sao/msmith/data/galaxies/",
+                            revision="v2.0",
+                            split="train",
+                            streaming=False,
+                        )
+                        dataset_size = len(tds_info)
+                        if master_process:
+                            print(f"Dataset size (auto-detected): {dataset_size:,} samples")
+                        del tds_info  # Free memory
+                    except Exception as e2:
+                        if master_process:
+                            print(f"Error: Could not auto-detect dataset size: {e2}")
+                        dataset_size = None
+            else:
+                # Local dataset
+                try:
+                    dataset_size = len(tds)
+                    if master_process:
+                        print(f"Dataset size (auto-detected): {dataset_size:,} samples")
+                except (TypeError, AttributeError):
+                    dataset_size = None
+        
+        # If still None, require user to specify
+        if dataset_size is None:
+            raise ValueError(
+                "num_epochs is set but dataset_size cannot be determined automatically. "
+                "Please set dataset_size parameter."
+            )
+        
+        # Calculate iterations per epoch
+        effective_batch_size = batch_size * gradient_accumulation_steps * ddp_world_size
+        iterations_per_epoch = (dataset_size + effective_batch_size - 1) // effective_batch_size  # ceiling division
+        max_iters = num_epochs * iterations_per_epoch
+        
+        if master_process:
+            print(f"Training for {num_epochs} epochs:")
+            print(f"  Dataset size: {dataset_size:,} samples")
+            print(f"  Effective batch size: {effective_batch_size:,}")
+            print(f"  Iterations per epoch: {iterations_per_epoch:,}")
+            print(f"  Total iterations: {max_iters:,}")
+        
+        # Set training start point when starting from scratch
+        if init_from == "scratch":
+            training_start_samples = 0
 
     # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
     iter_num = 0
     best_val_loss = 1e9
+    current_epoch = 0
+    samples_seen = 0
+    training_start_samples = 0  # Track where current training run started (for relative epoch calculation)
 
     # model init
     model_args = dict(
@@ -302,12 +457,17 @@ if __name__ == "__main__":
         modalities=modalities,
         attn_type=attn_type,
         tokeniser=tokeniser,
+        jetformer_flow_steps=jetformer_flow_steps,
+        jetformer_gmm_K=jetformer_gmm_K,
+        jetformer_noise_max=jetformer_noise_max,
+        jetformer_noise_min=jetformer_noise_min,
+        img_size=image_size,  # Image size for Jetformer image-space flow
     )
 
     if init_from == "scratch":
         # init a new model from scratch
         if master_process:
-            print("initializing a new model from scratch")
+            print("initializing a new model from scratch with Jetformer tokenization")
         gptconf = GPTConfig(**model_args)
         model = GPT(gptconf, modality_registry, master_process=master_process)
     if init_from == "resume":
@@ -335,13 +495,28 @@ if __name__ == "__main__":
         model.load_state_dict(state_dict)
         iter_num = checkpoint["iter_num"]
         best_val_loss = checkpoint["best_val_loss"]
+        # Restore epoch tracking if available
+        current_epoch = checkpoint.get("current_epoch", 0)
+        samples_seen = checkpoint.get("samples_seen", 0)
+        # Restore training start point, or set to current samples_seen if old checkpoint
+        training_start_samples = checkpoint.get("training_start_samples", samples_seen)
+        if master_process:
+            if "current_epoch" in checkpoint:
+                # Calculate relative epoch for current training run
+                if num_epochs is not None and dataset_size is not None:
+                    relative_epoch = int((samples_seen - training_start_samples) // dataset_size)
+                    print(f"Resuming from epoch {relative_epoch}/{num_epochs}, iteration {iter_num}")
+                else:
+                    print(f"Resuming from epoch {current_epoch}, iteration {iter_num}")
+            else:
+                print(f"Resuming from iteration {iter_num} (epoch tracking not available in checkpoint)")
 
     # logging via wandb if available
     # this is here so we can get the number of params from model()
     if log_via_wandb and master_process:
         if wandb_project is None:
             wandb.init(
-                project=f"AstroPT-{model.get_num_params() / 1e6:06.1f}M",
+                project=f"AstroPT-Jetformer-{model.get_num_params() / 1e6:06.1f}M",
                 config=config,
             )
         else:
@@ -351,7 +526,7 @@ if __name__ == "__main__":
             )
     # write config and important information to log file
     with open(f"{out_dir}/hparams.txt", "w") as fi:
-        fi.write(f"AstroPT-{model.get_num_params() / 1e6:06.1f}M\n")
+        fi.write(f"AstroPT-Jetformer-{model.get_num_params() / 1e6:06.1f}M\n")
         fi.write(f"time: {int(time.time())}\n")
         for k, v in config.items():
             fi.write(f"{k}: {v}\n")
@@ -392,7 +567,8 @@ if __name__ == "__main__":
         # 2.6.0.dev20241126+cu124
         torch._dynamo.config.optimize_ddp = False
         # if we have only one modality all params are used in a forward pass:
-        if len(modalities) == 1:
+        # BUT: Jetformer decoder isn't used in loss, so need find_unused_parameters=True
+        if len(modalities) == 1 and tokeniser != "jetformer":
             model = DDP(model, device_ids=[ddp_local_rank])
         else:
             model = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=True)
@@ -409,7 +585,9 @@ if __name__ == "__main__":
             out[split] = {}
             losses = torch.zeros(eval_iters)
             for k in range(eval_iters):
-                B = tds.process_modes(next(dl), modality_registry, device)
+                batch_raw = next(dl)
+                batch_raw = prepare_batch_for_jetformer(batch_raw, tokeniser)
+                B = tds.process_modes(batch_raw, modality_registry, device)
                 with ctx:
                     logits, loss = model(B["X"], targets=B["Y"])
                 losses[k] = loss.item()
@@ -420,38 +598,61 @@ if __name__ == "__main__":
     @torch.no_grad()
     def validate(iter_num, out_dir):
         model.eval()
+        raw_model = model.module if ddp else model
         for dl, split in zip([tdl, vdl], ["train", "val"]):
             f, axs = plt.subplots(8, 2, figsize=(3, 12), constrained_layout=True)
-            B = vds.process_modes(next(vdl), modality_registry, device)
+            batch_raw = next(vdl)
+            batch_raw = prepare_batch_for_jetformer(batch_raw, tokeniser)
+            B = vds.process_modes(batch_raw, modality_registry, device)
             with ctx:
                 P, loss = model(B["X"], B["Y"])
                 if "images" in modality_registry.names():
-                    Yim = B["Y"]["images"].to(device)
-                    b, t, c = Yim.size()
-                    zero_block = torch.zeros((b, 1, c)).to(device)
-                    Yim = torch.cat((zero_block, Yim), dim=1)
-                    if spiral:
-                        Yim = torch.stack([vds.antispiralise(yy) for yy in Yim])
+                    # For Jetformer, B["Y"]["images"] is raw images [B,C,H,W]
+                    # For non-Jetformer, B["Y"]["images"] is patches [B,T,D]
                     im_patch = modality_registry.get_config("images").patch_size
-                    Yim = einops.rearrange(
-                        Yim,
-                        "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
-                        p1=im_patch,
-                        p2=im_patch,
-                        h=image_size // im_patch,
-                        w=image_size // im_patch,
+                    is_jetformer = (
+                        isinstance(raw_model, GPT)
+                        and raw_model.config.tokeniser == "jetformer"
                     )
-                    Pim = torch.cat((zero_block, P["images"]), dim=1)
-                    if spiral:
-                        Pim = torch.stack([vds.antispiralise(pp) for pp in Pim])
-                    Pim = einops.rearrange(
-                        Pim,
-                        "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
-                        p1=im_patch,
-                        p2=im_patch,
-                        h=image_size // im_patch,
-                        w=image_size // im_patch,
-                    )
+                    
+                    if is_jetformer:
+                        # Raw images [B,C,H,W] - convert directly to image format for visualization
+                        Yim_raw = B["Y"]["images"].to(device)  # [B,C,H,W]
+                        # Permute to [B,H,W,C] for visualization
+                        Yim = Yim_raw.permute(0, 2, 3, 1)  # [B,H,W,C]
+                        
+                        # Reconstruct images
+                        x_recon = raw_model.jetformer_reconstruct_images(B["Y"]["images"])
+                        # Permute to [B,H,W,C] for visualization
+                        Pim = x_recon.permute(0, 2, 3, 1)  # [B,H,W,C]
+                    else:
+                        # Non-Jetformer: patches already [B,T,D]
+                        Yim = B["Y"]["images"].to(device)
+                        b, t, c = Yim.size()
+                        zero_block = torch.zeros((b, 1, c)).to(device)
+                        Yim = torch.cat((zero_block, Yim), dim=1)
+                        if spiral:
+                            Yim = torch.stack([vds.antispiralise(yy) for yy in Yim])
+                        Yim = einops.rearrange(
+                            Yim,
+                            "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
+                            p1=im_patch,
+                            p2=im_patch,
+                            h=image_size // im_patch,
+                            w=image_size // im_patch,
+                        )
+                        
+                        Pim = torch.cat((zero_block, P["images"]), dim=1)
+                        if spiral:
+                            Pim = torch.stack([vds.antispiralise(pp) for pp in Pim])
+                        Pim = einops.rearrange(
+                            Pim,
+                            "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
+                            p1=im_patch,
+                            p2=im_patch,
+                            h=image_size // im_patch,
+                            w=image_size // im_patch,
+                        )
 
                     for ax, p, y in zip(
                         axs, Pim.to(float).cpu().numpy(), Yim.to(float).cpu().numpy()
@@ -494,9 +695,9 @@ if __name__ == "__main__":
     # training loop
     if master_process:
         print("starting training...")
-    B = tds.process_modes(
-        next(tdl), modality_registry, device
-    )  # fetch the very first batch
+    batch_raw = next(tdl)
+    batch_raw = prepare_batch_for_jetformer(batch_raw, tokeniser)
+    B = tds.process_modes(batch_raw, modality_registry, device)  # fetch the very first batch
     t0 = time.time()
     dts = []
     local_iter_num = 0  # number of iterations in the lifetime of this process
@@ -515,6 +716,11 @@ if __name__ == "__main__":
         lr = get_lr(iter_num) if decay_lr else learning_rate
         for param_group in optimizer.param_groups:
             param_group["lr"] = lr
+
+        # update Jetformer noise schedule if applicable
+        raw_model = model.module if ddp else model
+        if isinstance(raw_model, GPT) and raw_model.config.tokeniser == "jetformer":
+            raw_model.set_jetformer_schedule(iter_num, max_iters)
 
         # evaluate the loss on train/val sets and write checkpoints
         if iter_num % eval_interval == 0 and master_process:
@@ -571,32 +777,53 @@ if __name__ == "__main__":
                     ax.set_title(train_loss)
                     ax.plot(loss_df["iter_num"], loss_df[train_loss], label="train")
                     ax.plot(loss_df["iter_num"], loss_df[valid_loss], label="valid")
-                [ax.set_yscale("log") for ax in axs.ravel()]
+                # [ax.set_yscale("log") for ax in axs.ravel()]
                 [ax.legend() for ax in axs.ravel()]
                 f.savefig(os.path.join(out_dir, "loss.png"))
                 plt.close(f)
 
-            if val_loss < best_val_loss or always_save_checkpoint:
+            # Save checkpoint if validation improved or always_save_checkpoint is True
+            save_checkpoint_now = False
+            if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                if iter_num > 0:
-                    model_state = raw_model.state_dict()
-                    checkpoint = {
-                        "model": model_state,
-                        "optimizer": optimizer.state_dict(),
-                        "model_args": model_args,
-                        "iter_num": iter_num,
-                        "best_val_loss": best_val_loss,
-                        "config": config,
-                        "modality_registry": modality_registry,
-                    }
-                    if master_process:
-                        print(f"saving checkpoint to {out_dir}")
-                    if always_save_checkpoint:
-                        torch.save(
-                            checkpoint, os.path.join(out_dir, f"{iter_num:06d}_ckpt.pt")
-                        )
-                    else:
-                        torch.save(checkpoint, os.path.join(out_dir, "ckpt.pt"))
+                save_checkpoint_now = True
+                if master_process:
+                    print(f"Validation loss improved, saving checkpoint...")
+            elif always_save_checkpoint:
+                save_checkpoint_now = True
+                if master_process:
+                    print(f"Saving checkpoint (always_save_checkpoint=True)...")
+            
+            # Also save periodic checkpoints regardless of validation loss
+            # This ensures we can resume even if validation didn't improve
+            if iter_num > 0 and iter_num % checkpoint_interval == 0:
+                save_checkpoint_now = True
+                if master_process:
+                    print(f"Periodic checkpoint at iteration {iter_num}...")
+            
+            if save_checkpoint_now and iter_num > 0:
+                model_state = raw_model.state_dict()
+                checkpoint = {
+                    "model": model_state,
+                    "optimizer": optimizer.state_dict(),
+                    "model_args": model_args,
+                    "iter_num": iter_num,
+                    "best_val_loss": best_val_loss,
+                    "config": config,
+                    "modality_registry": modality_registry,
+                    "current_epoch": current_epoch,
+                    "samples_seen": samples_seen,
+                    "training_start_samples": training_start_samples,
+                }
+                if master_process:
+                    print(f"saving checkpoint to {out_dir}")
+                # Always save the latest checkpoint (for resume)
+                torch.save(checkpoint, os.path.join(out_dir, "ckpt.pt"))
+                # Also save numbered checkpoint if always_save_checkpoint or at checkpoint_interval
+                if always_save_checkpoint or (iter_num % checkpoint_interval == 0):
+                    torch.save(
+                        checkpoint, os.path.join(out_dir, f"{iter_num:06d}_ckpt.pt")
+                    )
         if iter_num == 0 and eval_only:
             break
 
@@ -615,11 +842,24 @@ if __name__ == "__main__":
             with ctx:
                 logits, loss = model(B["X"], targets=B["Y"])
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
-            B = tds.process_modes(
-                next(tdl), modality_registry, device
-            )  # fetch the very first batch
+            batch_raw = next(tdl)
+            batch_raw = prepare_batch_for_jetformer(batch_raw, tokeniser)
+            B = tds.process_modes(batch_raw, modality_registry, device)  # fetch the very first batch
+            
             # backward pass, with gradient scaling if training in fp16
             scaler.scale(loss).backward()
+
+        # Track samples seen for epoch calculation (only once per iteration, after all micro steps)
+        if num_epochs is not None and dataset_size is not None:
+            batch_size_actual = B["X"]["images"].shape[0] if "images" in B["X"] else batch_size
+            # Count samples once per iteration: batch_size * gradient_accumulation_steps
+            samples_seen += batch_size_actual * gradient_accumulation_steps
+            # Calculate epoch relative to current training run start
+            new_epoch = int((samples_seen - training_start_samples) // dataset_size)
+            if new_epoch > current_epoch:
+                current_epoch = new_epoch
+                if master_process:
+                    print(f"Completed epoch {current_epoch}/{num_epochs} (samples seen: {samples_seen:,}/{dataset_size * num_epochs:,})")
 
         # clip the gradient
         if grad_clip != 0.0:
@@ -648,15 +888,19 @@ if __name__ == "__main__":
                     mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
                 )
             if log_via_wandb:
-                wandb.log({"loss": lossf, "time": dt}, step=iter_num)
+                log_dict = {"loss": lossf, "time": dt}
+                if num_epochs is not None:
+                    log_dict["epoch"] = current_epoch
+                wandb.log(log_dict, step=iter_num)
+            epoch_str = f", epoch {current_epoch}/{num_epochs}" if num_epochs is not None else ""
             if log_emissions:
                 emissions: float = tracker.flush()
                 print(
-                    f"iter {iter_num}: loss {lossf:.6f}, time {np.mean(dts) * 1000:.2f}ms, mfu {running_mfu * 100:.2f}%, tot co2 {emissions:.1f}kg"
+                    f"iter {iter_num}{epoch_str}: loss {lossf:.6f}, time {np.mean(dts) * 1000:.2f}ms, mfu {running_mfu * 100:.2f}%, tot co2 {emissions:.1f}kg"
                 )
             else:
                 print(
-                    f"iter {iter_num}: loss {lossf:.6f}, time {np.mean(dts) * 1000:.2f}ms, mfu {running_mfu * 100:.2f}%"
+                    f"iter {iter_num}{epoch_str}: loss {lossf:.6f}, time {np.mean(dts) * 1000:.2f}ms, mfu {running_mfu * 100:.2f}%"
                 )
             dts = []
 
@@ -671,7 +915,13 @@ if __name__ == "__main__":
                     print(emissions)
             break
 
+    # Cleanup: destroy process group before exiting
     if ddp:
-        destroy_process_group()
+        try:
+            destroy_process_group()
+        except Exception as e:
+            # HeartbeatMonitor may already be shutting down - this is harmless
+            if master_process:
+                print(f"Note: Process group cleanup warning (harmless): {e}")
     if log_via_wandb:
         wandb.finish()
