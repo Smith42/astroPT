@@ -32,8 +32,8 @@ fi
 
 PYTHON_SCRIPT="$REPO_ROOT/scripts/baselines/train_supervised_baseline_images.py"
 DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_interpolated"
-METADATA_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.1.fits"
-SAVE_DIR="$REPO_ROOT/logs/resnet18_images_supervised"
+METADATA_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.1_FILTERED.fits"
+SAVE_DIR="$REPO_ROOT/logs/supervised_baseline_images_FILTERED"
 
 # Targets List
 TARGETS=(
