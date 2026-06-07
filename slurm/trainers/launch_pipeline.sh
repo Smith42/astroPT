@@ -22,7 +22,7 @@ ANALYSIS_PIPELINE="$REPO_ROOT/slurm/analysis/pipeline.sh"
 # --- USER CONFIGURATION ---
 # Change these paths to match your cluster environment
 DATA_DIR="/home/valonso/iac18_aasensio_shared/euclid_dr1/processed_data_arrow_interpolated_tokenized"
-META_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.1.fits"
+META_PATH="/home/valonso/iac18_aasensio_shared/euclid_dr1/catalog/catalog_MER_DR1_DESI_DR1_combined_wide_deep_v1.1_FILTERED.fits"
 # --------------------------
 
 # ARGUMENTS DEFAULT VALUES

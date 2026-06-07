@@ -82,12 +82,29 @@ if [ -z "$TRAIN_DIR" ]; then
     exit 1
 fi
 
+# If we are doing direct analysis (no training parent job dependency)
+# the target training directory must exist!
+if [[ "$PARENT_JOB_ID" == "any" || -z "$PARENT_JOB_ID" ]]; then
+    if [ ! -d "$TRAIN_DIR" ]; then
+        echo "[ERROR] Target training directory does not exist: $TRAIN_DIR"
+        exit 1
+    fi
+fi
+
 # Absolute output paths
 TRAIN_DIR=$(readlink -f "$TRAIN_DIR")
 WEIGHTS_DIR="$TRAIN_DIR/weights"
 LOGS_DIR="$TRAIN_DIR/logs"
 PLOTS_DIR="$TRAIN_DIR/plots"
 EMB_DIR="$TRAIN_DIR/embeddings"
+
+# If we are doing direct analysis, also check the weights folder exists
+if [[ "$PARENT_JOB_ID" == "any" || -z "$PARENT_JOB_ID" ]]; then
+    if [ ! -d "$WEIGHTS_DIR" ]; then
+        echo "[ERROR] Weights directory does not exist inside training directory: $WEIGHTS_DIR"
+        exit 1
+    fi
+fi
 
 EM_STAGE_TAG="${JOB_SUFFIX#_}"
 ATTN_SAVE_DIR="$PLOTS_DIR/attention_maps$JOB_SUFFIX"
@@ -172,7 +189,7 @@ echo "    [CrossRec] Job sent.      ID: $J_CROSS"
 
 # Extract Embeddings 
 J_EMB=$(sbatch --parsable \
-            --dependency=afterany:$J_CROSS \
+            --dependency=afterok:$J_WOR \
             --job-name="Extract_Embed$JOB_SUFFIX" \
             "$EXT_EMBD_SCRIPT" \
             -r "$REPO_ROOT" \
