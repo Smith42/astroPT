@@ -124,6 +124,23 @@ def generate_prefix_lm_mask(prefix_length):
     return prefix_lm_causal_mask
 
 
+def random_token_mask(batch, seq_len, mask_ratio, device):
+    """Per-sample boolean mask for BERT-style masked autoencoding.
+
+    Returns a ``(batch, seq_len)`` bool tensor with ~``mask_ratio`` of positions
+    set True. True positions are replaced by the mask token in the encoder input
+    and reconstructed by the loss. At least one position per sample is masked so
+    the loss is always defined.
+    """
+    mask = torch.rand(batch, seq_len, device=device) < mask_ratio
+    empty = ~mask.any(dim=1)
+    if empty.any():
+        rows = empty.nonzero(as_tuple=True)[0]
+        cols = torch.randint(seq_len, (rows.numel(),), device=device)
+        mask[rows, cols] = True
+    return mask
+
+
 class SelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -374,6 +391,18 @@ class GPT(nn.Module):
         self.modality_registry = modality_registry
         self.backbone = config.backbone
 
+        if config.objective == "mae":
+            if config.backbone != "native":
+                raise ValueError("MAE objective is only supported with the native backbone")
+            if config.attn_type == "causal":
+                raise ValueError(
+                    "MAE needs bidirectional attention; set attn_type='full' (not 'causal')"
+                )
+            if len(self.modality_registry.names()) != 1:
+                raise NotImplementedError(
+                    "MAE objective currently supports a single modality only"
+                )
+
         if self.backbone == "native":
             self._init_native_backbone(config)
         elif self.backbone == "llm":
@@ -446,6 +475,13 @@ class GPT(nn.Module):
         self.encoders = nn.ModuleDict(encoders)
         self.decoders = nn.ModuleDict(decoders)
         self.embedders = nn.ModuleDict(embedders)
+
+        if config.objective == "mae":
+            # learnable token that replaces masked patches in the encoder input
+            # (BERT-style). The per-modality Decoder doubles as the reconstruction
+            # head, so no separate decoder transformer is needed.
+            self.mask_token = nn.Parameter(torch.zeros(1, 1, config.n_embd))
+            torch.nn.init.normal_(self.mask_token, std=0.02)
 
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
