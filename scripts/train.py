@@ -98,6 +98,9 @@ if __name__ == "__main__":
     # data
     gradient_accumulation_steps = 5 * 8  # used to simulate larger batch sizes
     batch_size = 16  # if gradient_accumulation_steps > 1, this is the micro-batch size
+    # if > 0, gradient_accumulation_steps is auto-derived to hit this effective
+    # batch size (sequences per optimizer step), regardless of the GPU count
+    target_batch_size = 0
     spiral = True  # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     image_size = 256
@@ -176,13 +179,33 @@ if __name__ == "__main__":
             ddp_rank == 0
         )  # this process will do logging, checkpointing etc.
         seed_offset = ddp_rank  # each process gets a different seed
-        assert gradient_accumulation_steps % torch.cuda.device_count() == 0
-        gradient_accumulation_steps //= torch.cuda.device_count()
     else:
         # if not ddp, we are running on a single gpu, and one process
         master_process = True
         seed_offset = 0
         ddp_world_size = 1
+
+    # Resolve gradient accumulation. If target_batch_size is set we derive the
+    # number of accumulation steps so the effective batch size (sequences per
+    # optimizer step) is held fixed regardless of the micro batch_size or the
+    # number of GPUs. Otherwise gradient_accumulation_steps is treated as a
+    # global count and split evenly across ranks (the original behaviour).
+    if target_batch_size:
+        gradient_accumulation_steps = max(
+            1, round(target_batch_size / (batch_size * ddp_world_size))
+        )
+        if master_process:
+            eff = batch_size * gradient_accumulation_steps * ddp_world_size
+            print(
+                f"auto gradient_accumulation_steps={gradient_accumulation_steps} "
+                f"(target_batch_size={target_batch_size} -> effective {eff} "
+                f"sequences/step across {ddp_world_size} rank(s))"
+            )
+    elif ddp:
+        assert gradient_accumulation_steps % ddp_world_size == 0, (
+            "gradient_accumulation_steps must be divisible by the number of ranks"
+        )
+        gradient_accumulation_steps //= ddp_world_size
     tokens_per_iter = (
         gradient_accumulation_steps
         * ddp_world_size
