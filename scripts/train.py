@@ -260,6 +260,19 @@ if __name__ == "__main__":
         )
         vds_hf = vds_hf.remove_columns("image")
 
+        # Shard the stream across DDP ranks so each GPU sees disjoint data.
+        # Without this every rank iterates the identical stream, so e.g. 8 GPUs
+        # would all train on the same galaxies (no data-throughput scaling).
+        if ddp:
+            from datasets.distributed import split_dataset_by_node
+
+            tds_hf = split_dataset_by_node(
+                tds_hf, rank=ddp_rank, world_size=ddp_world_size
+            )
+            vds_hf = split_dataset_by_node(
+                vds_hf, rank=ddp_rank, world_size=ddp_world_size
+            )
+
     tdl = iter(
         DataLoader(
             tds_hf if use_hf else tds,
