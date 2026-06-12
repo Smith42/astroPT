@@ -160,9 +160,15 @@ class GalaxyImageDataset(Dataset):
         return patch_spectra, patch_wl
 
     @staticmethod
-    def process_modes(x, modality_registry, device, shuf=False):
+    def process_modes(x, modality_registry, device, shuf=False, objective="ar"):
         """Move all tensor values in dictionary x to the specified device.
-        And split into X and Y according to the modality registry."""
+        And split into X and Y according to the modality registry.
+
+        For the autoregressive objective ("ar") the target is the input shifted
+        by one patch (next-patch prediction). For the masked autoencoder
+        objective ("mae") the model masks patches internally, so X and Y are
+        both the full, unshifted patch sequence.
+        """
         modes = modality_registry.generate_sequence(shuf=shuf)
 
         # Move all tensors to device first
@@ -176,6 +182,9 @@ class GalaxyImageDataset(Dataset):
             X[mode] = x_on_device[mode]
             X[f"{mode}_positions"] = x_on_device[f"{mode}_positions"]
             Y[mode] = x_on_device[mode]
+            if objective == "mae":
+                # MAE reconstructs masked patches in place: full sequence, no shift
+                continue
             if ii == 0:
                 Y[mode] = Y[mode][:, 1:]
             if len(modes) == 1:
