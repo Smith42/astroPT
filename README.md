@@ -109,6 +109,16 @@ results in these papers, and `scripts/train.py` for an example boilerplate
 script for pre-training your own AstroPT. `config` contains example user
 configurations for pre-training.
 
+AstroPT trains for roughly one epoch, so `train.py` can save intermediate
+checkpoints by step count: set `num_checkpoints=N` to save `N` snapshots across
+`[0, max_iters]` (always including the first/random-init and last/final step),
+with `checkpoint_schedule` one of `"log"` (default; geometric, dense early —
+good for probing how representations emerge over training), `"even"` (uniform),
+or `"manual"` (use the explicit `checkpoint_steps` list, e.g.
+`--checkpoint_steps=[0,512,4096,30000]`). This is independent of the best-val
+`ckpt.pt`; each checkpoint also stores optimizer state, so budget disk
+accordingly.
+
 `scripts/linear_probe.py` has an example script for inferring embeddings from a 
 pre-trained model and  running a finetuning routine on them 🌝.
 
