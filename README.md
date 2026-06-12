@@ -92,6 +92,15 @@ GPU:
 With both set you only specify the effective batch you want; the scripts pick
 the micro-batch and accumulation steps to match the hardware.
 
+## Checkpointing
+
+AstroPT trains for roughly one epoch, so the scripts can save intermediate
+snapshots by step count rather than by epoch. Set `num_checkpoints=N` to save
+`N` checkpoints evenly spaced over `[0, max_iters]`, always including the first
+(random-init) and last (final) step — handy for probing how representations
+evolve over training. This is independent of the existing best-val `ckpt.pt`.
+Each checkpoint also stores optimizer state, so budget disk accordingly.
+
 # I just want to run it! 🗣️
 
 Okay I hear you! First you need to install the model:
