@@ -94,6 +94,7 @@ if __name__ == "__main__":
     init_from = "scratch"  # 'scratch' or 'resume'
     use_hf = True  # use the huggingface dataset version of our galz
     stream_hf_dataset = True  # stream the galaxies from huggingface
+    shuffle_buffer_size = 1000  # buffered shuffle size for the streaming train set
     # data
     gradient_accumulation_steps = 5 * 8  # used to simulate larger batch sizes
     batch_size = 16  # if gradient_accumulation_steps > 1, this is the micro-batch size
@@ -271,6 +272,11 @@ if __name__ == "__main__":
             )
             vds_hf = split_dataset_by_node(
                 vds_hf, rank=ddp_rank, world_size=ddp_world_size
+            )
+        # Buffered shuffle of the (otherwise in-order) streaming training set.
+        if stream_hf_dataset:
+            tds_hf = tds_hf.shuffle(
+                seed=1337 + seed_offset, buffer_size=shuffle_buffer_size
             )
 
     tdl = iter(
