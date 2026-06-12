@@ -124,6 +124,44 @@ def generate_prefix_lm_mask(prefix_length):
     return prefix_lm_causal_mask
 
 
+def random_masking(x, mask_ratio):
+    """
+    Per-sample random masking for MAE (He et al. 2021, arXiv:2111.06377).
+
+    Shuffles the patch sequence, keeps the first ``len_keep`` patches as the
+    visible set passed to the encoder, and returns the bookkeeping needed to
+    restore the original order in the decoder.
+
+    Args:
+        x: token embeddings, shape (B, L, D)
+        mask_ratio: fraction of patches to hide from the encoder
+
+    Returns:
+        x_kept: visible tokens, shape (B, len_keep, D)
+        mask: (B, L) binary mask, 1 where a patch was hidden (to reconstruct),
+            0 where it was kept visible
+        ids_restore: (B, L) indices that un-shuffle the full sequence back to
+            its original order
+    """
+    B, L, D = x.shape
+    len_keep = max(1, int(round(L * (1.0 - mask_ratio))))
+
+    noise = torch.rand(B, L, device=x.device)  # noise in [0, 1)
+    # ascending sort: small noise is kept, large noise is masked
+    ids_shuffle = torch.argsort(noise, dim=1)
+    ids_restore = torch.argsort(ids_shuffle, dim=1)
+
+    ids_keep = ids_shuffle[:, :len_keep]
+    x_kept = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).expand(-1, -1, D))
+
+    # build the binary mask: 0 is keep, 1 is remove, then un-shuffle to original order
+    mask = torch.ones(B, L, device=x.device)
+    mask[:, :len_keep] = 0
+    mask = torch.gather(mask, dim=1, index=ids_restore)
+
+    return x_kept, mask, ids_restore
+
+
 class SelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -376,6 +414,18 @@ class GPT(nn.Module):
         self.modality_registry = modality_registry
         self.backbone = config.backbone
 
+        if config.objective == "mae":
+            if config.backbone != "native":
+                raise ValueError("MAE objective is only supported with the native backbone")
+            if config.attn_type == "causal":
+                raise ValueError(
+                    "MAE needs bidirectional attention; set attn_type='full' (not 'causal')"
+                )
+            if len(self.modality_registry.names()) != 1:
+                raise NotImplementedError(
+                    "MAE objective currently supports a single modality only"
+                )
+
         if self.backbone == "native":
             self._init_native_backbone(config)
         elif self.backbone == "llm":
@@ -448,6 +498,19 @@ class GPT(nn.Module):
         self.encoders = nn.ModuleDict(encoders)
         self.decoders = nn.ModuleDict(decoders)
         self.embedders = nn.ModuleDict(embedders)
+
+        if config.objective == "mae":
+            # Lightweight MAE decoder: a shared learnable mask token stands in
+            # for every hidden patch, then a small transformer stack refines the
+            # full sequence before the per-modality Decoder projects back to
+            # pixel space. For simplicity the decoder runs at n_embd width and
+            # reuses the per-modality position embedders (self.embedders).
+            self.mask_token = nn.Parameter(torch.zeros(1, 1, config.n_embd))
+            torch.nn.init.normal_(self.mask_token, std=0.02)
+            self.mae_decoder = nn.ModuleList(
+                [Block(config) for _ in range(config.mae_decoder_n_layer)]
+            )
+            self.mae_decoder_norm = LayerNorm(config.n_embd, bias=config.bias)
 
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
