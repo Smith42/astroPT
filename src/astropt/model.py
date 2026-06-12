@@ -593,6 +593,8 @@ class GPT(nn.Module):
         attention_mask=None,
     ):
         if self.backbone == "native":
+            if self.config.objective == "mae":
+                return self._forward_mae(inputs, targets)
             return self._forward_native(
                 inputs, targets, prefix_len, target_modality, attention_mask
             )
@@ -602,6 +604,55 @@ class GPT(nn.Module):
             )
         else:
             raise ValueError(f"Unknown backbone type: {self.backbone}")
+
+    def _forward_mae(self, inputs, targets=None):
+        """BERT-style masked-autoencoder forward pass.
+
+        A fraction of patches is replaced by the learnable mask token in the
+        encoder input; the full sequence is processed bidirectionally (with
+        learned positions kept on every token, masked or not), and the masked
+        patches are reconstructed by the per-modality Decoder head. The loss is
+        the reconstruction error over the masked patches only.
+
+        Returns ``(outputs, loss)`` where ``outputs[mod]`` is the full
+        reconstruction and ``outputs[mod + "_mask"]`` is the binary mask
+        (1 = patch was masked) so callers can composite/visualise.
+        """
+        mod = self.modality_registry.names()[0]  # single modality (enforced in __init__)
+        x_patches = inputs[mod]  # (B, N, P)
+        pos = inputs[mod + "_positions"]  # (B, N)
+        B, N, _ = x_patches.shape
+        assert N <= self.config.block_size, (
+            f"Cannot forward sequence of length {N}, block size is only {self.config.block_size}"
+        )
+
+        tok = self.encoders[mod](x_patches)  # (B, N, C)
+        mask = random_token_mask(B, N, self.config.mae_mask_ratio, x_patches.device)
+        # replace masked patch embeddings with the shared mask token
+        tok = torch.where(mask.unsqueeze(-1), self.mask_token.to(tok.dtype), tok)
+
+        x = self.transformer.drop(tok + self.embedders[mod](pos))
+        for block in self.transformer.h:
+            x = block(x)
+        x = self.transformer.ln_f(x)
+        pred = self.decoders[mod](x)  # (B, N, P)
+
+        outputs = {mod: pred, mod + "_mask": mask}
+
+        if targets is not None:
+            target = targets[mod]
+            if self.config.norm_pix_loss:
+                mean = target.mean(dim=-1, keepdim=True)
+                var = target.var(dim=-1, keepdim=True)
+                target = (target - mean) / (var + 1e-6).sqrt()
+            # per-patch reconstruction error, averaged over the masked patches only
+            per_patch = F.huber_loss(pred, target, reduction="none").mean(dim=-1)  # (B, N)
+            loss = (per_patch * mask).sum() / mask.sum()
+            loss = loss * self.modality_registry.get_config(mod).loss_weight
+        else:
+            loss = None
+
+        return outputs, loss
 
     def _forward_native(
         self,
