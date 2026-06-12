@@ -341,8 +341,16 @@ class GPTConfig:
     n_chan: int = 1
     dropout: float = 0.0
     bias: bool = False  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-    attn_type: str = "causal"  # causal or prefix
+    attn_type: str = "causal"  # causal, full, or prefix
     tokeniser: str = "aim" # one of "aim" or "affine"
+    # objective: "ar" = autoregressive next-patch prediction (default), "mae" =
+    # BERT-style masked autoencoder (mask tokens flow through a full
+    # bidirectional encoder; masked patches are reconstructed).
+    objective: str = "ar"
+    mae_mask_ratio: float = 0.15  # fraction of patches replaced by the mask token
+    # normalise each target patch before the reconstruction loss (MAE paper).
+    # Defaults False as the image pipeline already per-patch normalises.
+    norm_pix_loss: bool = False
     # LoRA params
     lora_r: int = 0  # rank, 0 disables LoRA
     lora_alpha: float = 2.0
