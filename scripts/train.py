@@ -91,6 +91,13 @@ if __name__ == "__main__":
     always_save_checkpoint = (
         False  # if True, always save a checkpoint at each checkpoint_interval
     )
+    # save num_checkpoints checkpoints across the run (0 disables), always
+    # including the first (step 0) and last (max_iters) step. checkpoint_schedule
+    # is "log" (geometric, dense early), "even" (uniform), or "manual" (use the
+    # explicit checkpoint_steps list).
+    num_checkpoints = 0
+    checkpoint_schedule = "log"
+    checkpoint_steps = []  # explicit iters, used when checkpoint_schedule == "manual"
     init_from = "scratch"  # 'scratch' or 'resume'
     use_hf = True  # use the huggingface dataset version of our galz
     stream_hf_dataset = True  # stream the galaxies from huggingface
@@ -505,6 +512,29 @@ if __name__ == "__main__":
         torch.save(checkpoint, os.path.join(out_dir, filename))
         if master_process:
             print(f"saving checkpoint to {os.path.join(out_dir, filename)}")
+
+    # step-based checkpoint schedule -> the set of iters to snapshot at. Always
+    # includes the first (random init) and last (final) step. Independent of
+    # eval_interval and the best-val checkpoint.
+    if checkpoint_schedule == "manual" and checkpoint_steps:
+        checkpoint_iters = {int(s) for s in checkpoint_steps}
+    elif num_checkpoints >= 2:
+        if checkpoint_schedule == "even":
+            checkpoint_iters = {
+                int(round(x)) for x in np.linspace(0, max_iters, num_checkpoints)
+            }
+        else:  # "log" (default): geometric spacing, dense early, plus step 0
+            geo = np.geomspace(1, max_iters, num_checkpoints - 1)
+            checkpoint_iters = {0} | {int(round(x)) for x in geo}
+    elif num_checkpoints == 1:
+        checkpoint_iters = {max_iters}
+    else:
+        checkpoint_iters = set()
+    if master_process and checkpoint_iters:
+        print(
+            f"will save {len(checkpoint_iters)} checkpoints at iters "
+            f"{sorted(checkpoint_iters)}"
+        )
     if log_emissions and master_process:
         tracker = EmissionsTracker(
             output_dir=out_dir,
@@ -588,6 +618,10 @@ if __name__ == "__main__":
                         save_checkpoint("ckpt.pt")
         if iter_num == 0 and eval_only:
             break
+
+        # save the scheduled, step-based checkpoints
+        if master_process and iter_num in checkpoint_iters:
+            save_checkpoint(f"{iter_num:06d}_ckpt.pt")
 
         # forward backward update, with optional gradient accumulation to simulate larger batch size
         # and using the GradScaler if data type is float16
