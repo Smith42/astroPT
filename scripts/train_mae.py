@@ -92,6 +92,7 @@ if __name__ == "__main__":
     init_from = "scratch"  # 'scratch' or 'resume'
     use_hf = True  # use the huggingface dataset version of our galz
     stream_hf_dataset = True  # stream the galaxies from huggingface
+    shuffle_buffer_size = 1000  # buffered shuffle size for the streaming train set
     # data
     gradient_accumulation_steps = 5 * 8  # used to simulate larger batch sizes
     batch_size = 16  # if gradient_accumulation_steps > 1, this is the micro-batch size
@@ -277,6 +278,24 @@ if __name__ == "__main__":
         )
         vds_hf = vds_hf.remove_columns("image")
 
+        # Shard the stream across DDP ranks so each GPU sees disjoint data.
+        # Without this every rank iterates the identical stream, so e.g. 8 GPUs
+        # would all train on the same galaxies (no data-throughput scaling).
+        if ddp:
+            from datasets.distributed import split_dataset_by_node
+
+            tds_hf = split_dataset_by_node(
+                tds_hf, rank=ddp_rank, world_size=ddp_world_size
+            )
+            vds_hf = split_dataset_by_node(
+                vds_hf, rank=ddp_rank, world_size=ddp_world_size
+            )
+        # Buffered shuffle of the (otherwise in-order) streaming training set.
+        if stream_hf_dataset:
+            tds_hf = tds_hf.shuffle(
+                seed=1337 + seed_offset, buffer_size=shuffle_buffer_size
+            )
+
     tdl = iter(
         DataLoader(
             tds_hf if use_hf else tds,
@@ -396,9 +415,10 @@ if __name__ == "__main__":
         if master_process:
             print("Wrapping in DDP")
         torch._dynamo.config.optimize_ddp = False
-        # MAE has parameters (e.g. the mask token) that only some forward passes
-        # touch, so allow unused parameters to be safe.
-        model = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=True)
+        # MAE is single-modality and every parameter (incl. the mask token) is
+        # used on every forward pass, so find_unused_parameters is not needed
+        # and only adds overhead.
+        model = DDP(model, device_ids=[ddp_local_rank])
 
     # helps estimate an arbitrarily accurate loss over either split using many batches
     @torch.no_grad()
