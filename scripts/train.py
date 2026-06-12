@@ -491,6 +491,20 @@ if __name__ == "__main__":
     local_iter_num = 0  # number of iterations in the lifetime of this process
     raw_model = model.module if ddp else model  # unwrap DDP container if needed
     running_mfu = -1.0
+
+    def save_checkpoint(filename):
+        checkpoint = {
+            "model": raw_model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "model_args": model_args,
+            "iter_num": iter_num,
+            "best_val_loss": best_val_loss,
+            "config": config,
+            "modality_registry": modality_registry,
+        }
+        torch.save(checkpoint, os.path.join(out_dir, filename))
+        if master_process:
+            print(f"saving checkpoint to {os.path.join(out_dir, filename)}")
     if log_emissions and master_process:
         tracker = EmissionsTracker(
             output_dir=out_dir,
@@ -568,24 +582,10 @@ if __name__ == "__main__":
             if val_loss < best_val_loss or always_save_checkpoint:
                 best_val_loss = val_loss
                 if iter_num > 0:
-                    model_state = raw_model.state_dict()
-                    checkpoint = {
-                        "model": model_state,
-                        "optimizer": optimizer.state_dict(),
-                        "model_args": model_args,
-                        "iter_num": iter_num,
-                        "best_val_loss": best_val_loss,
-                        "config": config,
-                        "modality_registry": modality_registry,
-                    }
-                    if master_process:
-                        print(f"saving checkpoint to {out_dir}")
                     if always_save_checkpoint:
-                        torch.save(
-                            checkpoint, os.path.join(out_dir, f"{iter_num:06d}_ckpt.pt")
-                        )
+                        save_checkpoint(f"{iter_num:06d}_ckpt.pt")
                     else:
-                        torch.save(checkpoint, os.path.join(out_dir, "ckpt.pt"))
+                        save_checkpoint("ckpt.pt")
         if iter_num == 0 and eval_only:
             break
 
