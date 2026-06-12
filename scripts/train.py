@@ -92,6 +92,9 @@ if __name__ == "__main__":
     always_save_checkpoint = (
         False  # if True, always save a checkpoint at each checkpoint_interval
     )
+    # save num_checkpoints evenly spaced checkpoints across the whole run,
+    # always including the first (step 0) and last (max_iters) step. 0 disables.
+    num_checkpoints = 0
     init_from = "scratch"  # 'scratch' or 'resume'
     use_hf = True  # use the huggingface dataset version of our galz
     stream_hf_dataset = True  # stream the galaxies from huggingface
@@ -570,6 +573,37 @@ if __name__ == "__main__":
     local_iter_num = 0  # number of iterations in the lifetime of this process
     raw_model = model.module if ddp else model  # unwrap DDP container if needed
     running_mfu = -1.0
+
+    def save_checkpoint(filename):
+        checkpoint = {
+            "model": raw_model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "model_args": model_args,
+            "iter_num": iter_num,
+            "best_val_loss": best_val_loss,
+            "config": config,
+            "modality_registry": modality_registry,
+        }
+        torch.save(checkpoint, os.path.join(out_dir, filename))
+        if master_process:
+            print(f"saving checkpoint to {os.path.join(out_dir, filename)}")
+
+    # step-based checkpoint schedule: num_checkpoints iters evenly spaced over
+    # [0, max_iters] inclusive, so the first (random init) and last (final) steps
+    # are always captured. Independent of eval_interval / best-val checkpointing.
+    if num_checkpoints >= 2:
+        checkpoint_iters = {
+            int(round(x)) for x in np.linspace(0, max_iters, num_checkpoints)
+        }
+    elif num_checkpoints == 1:
+        checkpoint_iters = {max_iters}
+    else:
+        checkpoint_iters = set()
+    if master_process and checkpoint_iters:
+        print(
+            f"will save {len(checkpoint_iters)} checkpoints at iters "
+            f"{sorted(checkpoint_iters)}"
+        )
     if log_emissions and master_process:
         tracker = EmissionsTracker(
             output_dir=out_dir,
@@ -647,26 +681,16 @@ if __name__ == "__main__":
             if val_loss < best_val_loss or always_save_checkpoint:
                 best_val_loss = val_loss
                 if iter_num > 0:
-                    model_state = raw_model.state_dict()
-                    checkpoint = {
-                        "model": model_state,
-                        "optimizer": optimizer.state_dict(),
-                        "model_args": model_args,
-                        "iter_num": iter_num,
-                        "best_val_loss": best_val_loss,
-                        "config": config,
-                        "modality_registry": modality_registry,
-                    }
-                    if master_process:
-                        print(f"saving checkpoint to {out_dir}")
                     if always_save_checkpoint:
-                        torch.save(
-                            checkpoint, os.path.join(out_dir, f"{iter_num:06d}_ckpt.pt")
-                        )
+                        save_checkpoint(f"{iter_num:06d}_ckpt.pt")
                     else:
-                        torch.save(checkpoint, os.path.join(out_dir, "ckpt.pt"))
+                        save_checkpoint("ckpt.pt")
         if iter_num == 0 and eval_only:
             break
+
+        # save the scheduled, evenly-spaced step-based checkpoints
+        if master_process and iter_num in checkpoint_iters:
+            save_checkpoint(f"{iter_num:06d}_ckpt.pt")
 
         # forward backward update, with optional gradient accumulation to simulate larger batch size
         # and using the GradScaler if data type is float16
