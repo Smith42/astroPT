@@ -622,6 +622,8 @@ class GPT(nn.Module):
         attention_mask=None,
     ):
         if self.backbone == "native":
+            if self.config.objective == "mae":
+                return self._forward_mae(inputs, targets)
             return self._forward_native(
                 inputs, targets, prefix_len, target_modality, attention_mask
             )
@@ -758,6 +760,67 @@ class GPT(nn.Module):
                         loss += F.huber_loss(pred, target) * mod_config.loss_weight
                 current_idx += seq_len
             loss /= len(self.modality_registry.names())
+        else:
+            loss = None
+
+        return outputs, loss
+
+    def _forward_mae(self, inputs, targets=None):
+        """Masked autoencoder forward pass (He et al. 2021, arXiv:2111.06377).
+
+        A high fraction of patches is hidden from the encoder; the encoder runs
+        bidirectionally over the visible patches only, then mask tokens are
+        inserted at the hidden positions and a lightweight decoder reconstructs
+        the original patches. The loss is the reconstruction error on the hidden
+        patches only.
+
+        Returns ``(outputs, loss)`` where ``outputs[mod]`` is the full
+        reconstructed patch sequence and ``outputs[mod + "_mask"]`` is the
+        binary mask (1 = patch was hidden) so callers can composite/visualise.
+        """
+        mod = self.modality_registry.names()[0]  # single modality (enforced in __init__)
+        x_patches = inputs[mod]  # (B, N, P)
+        pos = inputs[mod + "_positions"]  # (B, N)
+        B, N, _ = x_patches.shape
+        assert N <= self.config.block_size, (
+            f"Cannot forward sequence of length {N}, block size is only {self.config.block_size}"
+        )
+
+        # encode every patch and add position embeddings, then drop the hidden ones
+        x = self.encoders[mod](x_patches) + self.embedders[mod](pos)
+        x_vis, mask, ids_restore = random_masking(x, self.config.mae_mask_ratio)
+
+        # encoder: bidirectional attention over the visible patches only
+        x_vis = self.transformer.drop(x_vis)
+        for block in self.transformer.h:
+            x_vis = block(x_vis)
+        x_vis = self.transformer.ln_f(x_vis)
+
+        # decoder: re-insert mask tokens, un-shuffle to original order, refine
+        len_keep = x_vis.size(1)
+        mask_tokens = self.mask_token.expand(B, N - len_keep, -1)
+        x_full = torch.cat([x_vis, mask_tokens], dim=1)
+        x_full = torch.gather(
+            x_full, dim=1, index=ids_restore.unsqueeze(-1).expand(-1, -1, x_full.size(-1))
+        )
+        x_full = x_full + self.embedders[mod](pos)
+        for block in self.mae_decoder:
+            x_full = block(x_full)
+        x_full = self.mae_decoder_norm(x_full)
+        pred = self.decoders[mod](x_full)  # (B, N, P)
+
+        outputs = {mod: pred, mod + "_mask": mask}
+
+        if targets is not None:
+            target = targets[mod]
+            if self.config.norm_pix_loss:
+                mean = target.mean(dim=-1, keepdim=True)
+                var = target.var(dim=-1, keepdim=True)
+                target = (target - mean) / (var + 1e-6).sqrt()
+            # per-patch reconstruction error, averaged over hidden patches only
+            per_patch = F.huber_loss(pred, target, reduction="none").mean(dim=-1)  # (B, N)
+            loss = (per_patch * mask).sum() / mask.sum()
+            loss = loss * self.modality_registry.get_config(mod).loss_weight
         else:
             loss = None
 
