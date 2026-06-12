@@ -124,6 +124,14 @@ pre-trained model and  running a finetuning routine on them 🌝.
 
 And finally `scripts/finetune.py` has an example LoRA finetune routine.
 
+## Multi-GPU streaming
+
+When streaming the dataset from HuggingFace under DDP, `train.py` shards the
+stream across ranks with `split_dataset_by_node` so each GPU sees disjoint data
+(otherwise every rank replays the same stream and you get no data-throughput
+scaling), and applies a buffered `shuffle` (size `shuffle_buffer_size`) to the
+training stream.
+
 # Contributors
 
 <!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
