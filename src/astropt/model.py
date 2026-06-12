@@ -124,6 +124,44 @@ def generate_prefix_lm_mask(prefix_length):
     return prefix_lm_causal_mask
 
 
+def random_masking(x, mask_ratio):
+    """
+    Per-sample random masking for MAE (He et al. 2021, arXiv:2111.06377).
+
+    Shuffles the patch sequence, keeps the first ``len_keep`` patches as the
+    visible set passed to the encoder, and returns the bookkeeping needed to
+    restore the original order in the decoder.
+
+    Args:
+        x: token embeddings, shape (B, L, D)
+        mask_ratio: fraction of patches to hide from the encoder
+
+    Returns:
+        x_kept: visible tokens, shape (B, len_keep, D)
+        mask: (B, L) binary mask, 1 where a patch was hidden (to reconstruct),
+            0 where it was kept visible
+        ids_restore: (B, L) indices that un-shuffle the full sequence back to
+            its original order
+    """
+    B, L, D = x.shape
+    len_keep = max(1, int(round(L * (1.0 - mask_ratio))))
+
+    noise = torch.rand(B, L, device=x.device)  # noise in [0, 1)
+    # ascending sort: small noise is kept, large noise is masked
+    ids_shuffle = torch.argsort(noise, dim=1)
+    ids_restore = torch.argsort(ids_shuffle, dim=1)
+
+    ids_keep = ids_shuffle[:, :len_keep]
+    x_kept = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).expand(-1, -1, D))
+
+    # build the binary mask: 0 is keep, 1 is remove, then un-shuffle to original order
+    mask = torch.ones(B, L, device=x.device)
+    mask[:, :len_keep] = 0
+    mask = torch.gather(mask, dim=1, index=ids_restore)
+
+    return x_kept, mask, ids_restore
+
+
 class SelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -148,7 +186,9 @@ class SelfAttention(nn.Module):
         self.dropout = config.dropout
 
         self.attn_type = config.attn_type
-        if self.attn_type == "causal":
+        if self.attn_type in ("causal", "full"):
+            # "causal" attends only to the left (autoregressive); "full" is
+            # bidirectional and is what masked autoencoders (MAE) require.
             # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
             self.flash = hasattr(torch.nn.functional, "scaled_dot_product_attention")
             if not self.flash:
@@ -168,7 +208,7 @@ class SelfAttention(nn.Module):
             self.flex_attention = torch.compile(flex_attention)
         else:
             raise NotImplementedError(
-                "Attention type must be one of 'causal' or 'prefix'. Prefix requires PyTorch >= 2.6."
+                "Attention type must be one of 'causal', 'full', or 'prefix'. Prefix requires PyTorch >= 2.6."
             )
 
     def forward(self, x, block_mask=None):
@@ -188,8 +228,9 @@ class SelfAttention(nn.Module):
             1, 2
         )  # (B, nh, T, hs)
 
-        if self.attn_type == "causal":
-            # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
+        if self.attn_type in ("causal", "full"):
+            is_causal = self.attn_type == "causal"
+            # self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
             if self.flash:
                 # efficient attention using Flash Attention CUDA kernels
                 y = torch.nn.functional.scaled_dot_product_attention(
@@ -198,12 +239,13 @@ class SelfAttention(nn.Module):
                     v,
                     attn_mask=None,
                     dropout_p=self.dropout if self.training else 0,
-                    is_causal=True,
+                    is_causal=is_causal,
                 )
             else:
                 # manual implementation of attention
                 att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-                att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float("-inf"))
+                if is_causal:
+                    att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float("-inf"))
                 att = F.softmax(att, dim=-1)
                 att = self.attn_dropout(att)
                 y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
@@ -211,7 +253,7 @@ class SelfAttention(nn.Module):
             y = self.flex_attention(q, k, v, block_mask=block_mask)
         else:
             raise NotImplementedError(
-                "Attention type must be one of 'causal' or 'prefix'. Prefix requires PyTorch >= 2.6."
+                "Attention type must be one of 'causal', 'full', or 'prefix'. Prefix requires PyTorch >= 2.6."
             )
         y = (
             y.transpose(1, 2).contiguous().view(B, T, C)
@@ -337,8 +379,18 @@ class GPTConfig:
     n_chan: int = 1
     dropout: float = 0.0
     bias: bool = False  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-    attn_type: str = "causal"  # causal or prefix
+    attn_type: str = "causal"  # causal, full, or prefix
     tokeniser: str = "aim" # one of "aim" or "affine"
+    # objective: "ar" = autoregressive next-patch prediction (default, the
+    # original AstroPT objective), "mae" = masked autoencoder reconstruction.
+    objective: str = "ar"
+    # MAE hyperparameters (only used when objective == "mae")
+    mae_mask_ratio: float = 0.75  # fraction of patches hidden from the encoder
+    mae_decoder_n_layer: int = 4  # depth of the lightweight MAE decoder
+    # normalise each target patch before computing the reconstruction loss (as
+    # in the MAE paper). Defaults to False because the image data pipeline
+    # already applies per-patch normalisation (see normalise() in train.py).
+    norm_pix_loss: bool = False
     # LoRA params
     lora_r: int = 0  # rank, 0 disables LoRA
     lora_alpha: float = 2.0
@@ -361,6 +413,18 @@ class GPT(nn.Module):
         self.config = config
         self.modality_registry = modality_registry
         self.backbone = config.backbone
+
+        if config.objective == "mae":
+            if config.backbone != "native":
+                raise ValueError("MAE objective is only supported with the native backbone")
+            if config.attn_type == "causal":
+                raise ValueError(
+                    "MAE needs bidirectional attention; set attn_type='full' (not 'causal')"
+                )
+            if len(self.modality_registry.names()) != 1:
+                raise NotImplementedError(
+                    "MAE objective currently supports a single modality only"
+                )
 
         if self.backbone == "native":
             self._init_native_backbone(config)
@@ -434,6 +498,19 @@ class GPT(nn.Module):
         self.encoders = nn.ModuleDict(encoders)
         self.decoders = nn.ModuleDict(decoders)
         self.embedders = nn.ModuleDict(embedders)
+
+        if config.objective == "mae":
+            # Lightweight MAE decoder: a shared learnable mask token stands in
+            # for every hidden patch, then a small transformer stack refines the
+            # full sequence before the per-modality Decoder projects back to
+            # pixel space. For simplicity the decoder runs at n_embd width and
+            # reuses the per-modality position embedders (self.embedders).
+            self.mask_token = nn.Parameter(torch.zeros(1, 1, config.n_embd))
+            torch.nn.init.normal_(self.mask_token, std=0.02)
+            self.mae_decoder = nn.ModuleList(
+                [Block(config) for _ in range(config.mae_decoder_n_layer)]
+            )
+            self.mae_decoder_norm = LayerNorm(config.n_embd, bias=config.bias)
 
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
@@ -545,6 +622,8 @@ class GPT(nn.Module):
         attention_mask=None,
     ):
         if self.backbone == "native":
+            if self.config.objective == "mae":
+                return self._forward_mae(inputs, targets)
             return self._forward_native(
                 inputs, targets, prefix_len, target_modality, attention_mask
             )
@@ -681,6 +760,67 @@ class GPT(nn.Module):
                         loss += F.huber_loss(pred, target) * mod_config.loss_weight
                 current_idx += seq_len
             loss /= len(self.modality_registry.names())
+        else:
+            loss = None
+
+        return outputs, loss
+
+    def _forward_mae(self, inputs, targets=None):
+        """Masked autoencoder forward pass (He et al. 2021, arXiv:2111.06377).
+
+        A high fraction of patches is hidden from the encoder; the encoder runs
+        bidirectionally over the visible patches only, then mask tokens are
+        inserted at the hidden positions and a lightweight decoder reconstructs
+        the original patches. The loss is the reconstruction error on the hidden
+        patches only.
+
+        Returns ``(outputs, loss)`` where ``outputs[mod]`` is the full
+        reconstructed patch sequence and ``outputs[mod + "_mask"]`` is the
+        binary mask (1 = patch was hidden) so callers can composite/visualise.
+        """
+        mod = self.modality_registry.names()[0]  # single modality (enforced in __init__)
+        x_patches = inputs[mod]  # (B, N, P)
+        pos = inputs[mod + "_positions"]  # (B, N)
+        B, N, _ = x_patches.shape
+        assert N <= self.config.block_size, (
+            f"Cannot forward sequence of length {N}, block size is only {self.config.block_size}"
+        )
+
+        # encode every patch and add position embeddings, then drop the hidden ones
+        x = self.encoders[mod](x_patches) + self.embedders[mod](pos)
+        x_vis, mask, ids_restore = random_masking(x, self.config.mae_mask_ratio)
+
+        # encoder: bidirectional attention over the visible patches only
+        x_vis = self.transformer.drop(x_vis)
+        for block in self.transformer.h:
+            x_vis = block(x_vis)
+        x_vis = self.transformer.ln_f(x_vis)
+
+        # decoder: re-insert mask tokens, un-shuffle to original order, refine
+        len_keep = x_vis.size(1)
+        mask_tokens = self.mask_token.expand(B, N - len_keep, -1)
+        x_full = torch.cat([x_vis, mask_tokens], dim=1)
+        x_full = torch.gather(
+            x_full, dim=1, index=ids_restore.unsqueeze(-1).expand(-1, -1, x_full.size(-1))
+        )
+        x_full = x_full + self.embedders[mod](pos)
+        for block in self.mae_decoder:
+            x_full = block(x_full)
+        x_full = self.mae_decoder_norm(x_full)
+        pred = self.decoders[mod](x_full)  # (B, N, P)
+
+        outputs = {mod: pred, mod + "_mask": mask}
+
+        if targets is not None:
+            target = targets[mod]
+            if self.config.norm_pix_loss:
+                mean = target.mean(dim=-1, keepdim=True)
+                var = target.var(dim=-1, keepdim=True)
+                target = (target - mean) / (var + 1e-6).sqrt()
+            # per-patch reconstruction error, averaged over hidden patches only
+            per_patch = F.huber_loss(pred, target, reduction="none").mean(dim=-1)  # (B, N)
+            loss = (per_patch * mask).sum() / mask.sum()
+            loss = loss * self.modality_registry.get_config(mod).loss_weight
         else:
             loss = None
 

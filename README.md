@@ -55,6 +55,17 @@ Of course we can apply this next-token-prediction task across many modalities du
 
 Check out [our work on Euclid data](https://arxiv.org/abs/2503.15312) for an example, where we chain galaxy image tokens and spectral energy distribution data and pass them into a single, unified AstroPT model.
 
+## Masked autoencoder (MAE) objective
+
+As well as the default autoregressive objective, AstroPT can be pretrained as a
+masked autoencoder ([He et al. 2021](https://arxiv.org/abs/2111.06377)). Here a
+large fraction of image patches is hidden from the encoder, which attends
+bidirectionally over the visible patches only, and a lightweight decoder
+reconstructs the hidden patches. Switch objectives with the `objective` config
+field (`"ar"` or `"mae"`); MAE additionally requires bidirectional attention
+(`attn_type="full"`). See `scripts/train_mae.py` and `config/astropt_mae.py` for
+an example, and note that MAE currently supports a single image modality.
+
 # I just want to run it! 🗣️
 
 Okay I hear you! First you need to install the model:
