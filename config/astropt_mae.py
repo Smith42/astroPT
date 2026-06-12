@@ -20,6 +20,12 @@ mae_mask_ratio = 0.75  # fraction of patches hidden from the encoder
 mae_decoder_n_layer = 4  # depth of the lightweight MAE decoder
 norm_pix_loss = False  # image pipeline already per-patch normalises
 
+# Positional embedding. "learned" is the default 1D index embedding; set
+# "2d_sincos" for the fixed ViT/MAE 2D sine-cosine embedding (this also forces
+# raster patch order, i.e. spiral=False).
+pos_encoding = "learned"
+patch_size = 16
+
 # here we follow chinchilla and pythia
 learning_rate = 6e-4  # max learning rate
 min_lr = learning_rate / 10

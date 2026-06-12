@@ -66,6 +66,17 @@ field (`"ar"` or `"mae"`); MAE additionally requires bidirectional attention
 (`attn_type="full"`). See `scripts/train_mae.py` and `config/astropt_mae.py` for
 an example, and note that MAE currently supports a single image modality.
 
+## Positional embeddings
+
+By default AstroPT uses a 1D learned positional embedding over the patch
+sequence (which is why patch ordering, e.g. the spiral order, matters). For a
+more standard vision-transformer setup you can instead use the fixed 2D
+sine-cosine positional embedding of [ViT](https://arxiv.org/abs/2010.11929) /
+[MAE](https://arxiv.org/abs/2111.06377), which encodes each patch's row and
+column directly. Set `pos_encoding="2d_sincos"` on the image `ModalityConfig`
+(it needs `grid_size` and raster patch order, i.e. `spiral=False`). This works
+with both the autoregressive and MAE objectives.
+
 # I just want to run it! 🗣️
 
 Okay I hear you! First you need to install the model:
