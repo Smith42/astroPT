@@ -31,9 +31,16 @@ learning_rate = 6e-4  # max learning rate
 min_lr = learning_rate / 10
 
 init_from = "scratch"
+num_workers = 32
+
+# Full automation: probe the largest micro-batch that fits in VRAM, then derive
+# gradient_accumulation_steps so the effective batch is target_batch_size
+# (sequences/optimizer step), independent of GPU count. batch_size below is just
+# a fallback when auto_find_batch_size is off.
+auto_find_batch_size = True
+target_batch_size = 1024
 batch_size = 16
 gradient_accumulation_steps = 5 * 8
-num_workers = 32
 
 max_iters = 30000
 lr_decay_iters = 27000 * 1.1

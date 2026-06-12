@@ -46,6 +46,7 @@ except ImportError:
 
 from astropt.local_datasets import GalaxyImageDataset
 from astropt.model import GPT, GPTConfig, ModalityConfig, ModalityRegistry
+from astropt.model_utils import find_max_batch_size
 
 
 def normalise(x, use_hf=False):
@@ -92,9 +93,15 @@ if __name__ == "__main__":
     init_from = "scratch"  # 'scratch' or 'resume'
     use_hf = True  # use the huggingface dataset version of our galz
     stream_hf_dataset = True  # stream the galaxies from huggingface
+    shuffle_buffer_size = 1000  # buffered shuffle size for the streaming train set
     # data
     gradient_accumulation_steps = 5 * 8  # used to simulate larger batch sizes
     batch_size = 16  # if gradient_accumulation_steps > 1, this is the micro-batch size
+    # if > 0, gradient_accumulation_steps is auto-derived to hit this effective
+    # batch size (sequences per optimizer step), regardless of the GPU count
+    target_batch_size = 0
+    # if True, probe the largest micro-batch that fits in VRAM before training
+    auto_find_batch_size = False
     spiral = True  # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     image_size = 256
@@ -192,13 +199,33 @@ if __name__ == "__main__":
             ddp_rank == 0
         )  # this process will do logging, checkpointing etc.
         seed_offset = ddp_rank  # each process gets a different seed
-        assert gradient_accumulation_steps % torch.cuda.device_count() == 0
-        gradient_accumulation_steps //= torch.cuda.device_count()
     else:
         # if not ddp, we are running on a single gpu, and one process
         master_process = True
         seed_offset = 0
         ddp_world_size = 1
+
+    # Resolve gradient accumulation. If target_batch_size is set we derive the
+    # number of accumulation steps so the effective batch size (sequences per
+    # optimizer step) is held fixed regardless of the micro batch_size or the
+    # number of GPUs. Otherwise gradient_accumulation_steps is treated as a
+    # global count and split evenly across ranks (the original behaviour).
+    if target_batch_size:
+        gradient_accumulation_steps = max(
+            1, round(target_batch_size / (batch_size * ddp_world_size))
+        )
+        if master_process:
+            eff = batch_size * gradient_accumulation_steps * ddp_world_size
+            print(
+                f"auto gradient_accumulation_steps={gradient_accumulation_steps} "
+                f"(target_batch_size={target_batch_size} -> effective {eff} "
+                f"sequences/step across {ddp_world_size} rank(s))"
+            )
+    elif ddp:
+        assert gradient_accumulation_steps % ddp_world_size == 0, (
+            "gradient_accumulation_steps must be divisible by the number of ranks"
+        )
+        gradient_accumulation_steps //= ddp_world_size
     tokens_per_iter = (
         gradient_accumulation_steps
         * ddp_world_size
@@ -276,6 +303,24 @@ if __name__ == "__main__":
             partial(process_galaxy_wrapper, func=tds.process_galaxy)
         )
         vds_hf = vds_hf.remove_columns("image")
+
+        # Shard the stream across DDP ranks so each GPU sees disjoint data.
+        # Without this every rank iterates the identical stream, so e.g. 8 GPUs
+        # would all train on the same galaxies (no data-throughput scaling).
+        if ddp:
+            from datasets.distributed import split_dataset_by_node
+
+            tds_hf = split_dataset_by_node(
+                tds_hf, rank=ddp_rank, world_size=ddp_world_size
+            )
+            vds_hf = split_dataset_by_node(
+                vds_hf, rank=ddp_rank, world_size=ddp_world_size
+            )
+        # Buffered shuffle of the (otherwise in-order) streaming training set.
+        if stream_hf_dataset:
+            tds_hf = tds_hf.shuffle(
+                seed=1337 + seed_offset, buffer_size=shuffle_buffer_size
+            )
 
     tdl = iter(
         DataLoader(
@@ -373,6 +418,42 @@ if __name__ == "__main__":
         )
     model.to(device)
 
+    # Optionally probe the largest micro-batch that fits in VRAM, then rebuild
+    # the loaders and (if a target is set) re-derive gradient accumulation. Runs
+    # on the raw model before compile/DDP so the measurement is representative.
+    if auto_find_batch_size:
+        _sample = tds.process_modes(
+            next(tdl), modality_registry, device, objective=objective
+        )
+        batch_size = find_max_batch_size(
+            model, _sample, device, ctx, ddp=ddp, master_process=master_process
+        )
+        tdl = iter(
+            DataLoader(
+                tds_hf if use_hf else tds,
+                batch_size=batch_size,
+                num_workers=num_workers,
+                pin_memory=True,
+            )
+        )
+        vdl = iter(
+            DataLoader(
+                vds_hf if use_hf else vds,
+                batch_size=batch_size,
+                num_workers=num_workers,
+                pin_memory=True,
+            )
+        )
+        if target_batch_size:
+            gradient_accumulation_steps = max(
+                1, round(target_batch_size / (batch_size * ddp_world_size))
+            )
+        if master_process:
+            print(
+                f"using batch_size={batch_size}, "
+                f"gradient_accumulation_steps={gradient_accumulation_steps}"
+            )
+
     # initialize a GradScaler. If enabled=False scaler is a no-op
     scaler = torch.amp.GradScaler(enabled=(dtype == "float16"))
 
@@ -396,9 +477,10 @@ if __name__ == "__main__":
         if master_process:
             print("Wrapping in DDP")
         torch._dynamo.config.optimize_ddp = False
-        # MAE has parameters (e.g. the mask token) that only some forward passes
-        # touch, so allow unused parameters to be safe.
-        model = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=True)
+        # MAE is single-modality and every parameter (incl. the mask token) is
+        # used on every forward pass, so find_unused_parameters is not needed
+        # and only adds overhead.
+        model = DDP(model, device_ids=[ddp_local_rank])
 
     # helps estimate an arbitrarily accurate loss over either split using many batches
     @torch.no_grad()

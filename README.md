@@ -77,6 +77,21 @@ column directly. Set `pos_encoding="2d_sincos"` on the image `ModalityConfig`
 (it needs `grid_size` and raster patch order, i.e. `spiral=False`). This works
 with both the autoregressive and MAE objectives.
 
+## Batch size automation
+
+The training scripts can size the batch for you so you don't hand-tune it per
+GPU:
+
+- `target_batch_size` (sequences per optimizer step): when set,
+  `gradient_accumulation_steps` is derived automatically so the effective batch
+  size stays fixed regardless of the micro-batch or the number of GPUs.
+- `auto_find_batch_size=True`: before training, probe the largest micro-batch
+  that fits in VRAM (doubling until OOM, with a safety margin) and use that as
+  the micro-batch. Under DDP all ranks agree on the smallest fitting size.
+
+With both set you only specify the effective batch you want; the scripts pick
+the micro-batch and accumulation steps to match the hardware.
+
 # I just want to run it! 🗣️
 
 Okay I hear you! First you need to install the model:
