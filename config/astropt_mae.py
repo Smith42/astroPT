@@ -52,3 +52,8 @@ eval_iters = 200
 log_interval = 100
 log_via_wandb = True
 out_dir = "logs/astropt_mae"
+
+# save 11 checkpoints evenly spaced over the run (0, 3000, ..., 30000),
+# always including the random-init and final steps. NB each checkpoint also
+# stores optimizer state, so budget the disk (~1.5 GB per checkpoint at 123M).
+num_checkpoints = 11
