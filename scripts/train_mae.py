@@ -114,19 +114,11 @@ if __name__ == "__main__":
     mae_mask_ratio = 0.75  # fraction of patches hidden from the encoder
     mae_decoder_n_layer = 4  # depth of the lightweight MAE decoder
     norm_pix_loss = False  # data pipeline already per-patch normalises (see normalise)
-    # Define modalities configuration
-    modalities = [
-        ModalityConfig(
-            name="images",
-            input_size=16 * 16 * n_chan,
-            patch_size=16,
-            loss_weight=1.0,
-            embed_pos=True,
-            pos_input_size=1,
-        ),
-    ]
-    # Create modality registry
-    modality_registry = ModalityRegistry(modalities)
+    patch_size = 16  # side length of a square image patch
+    # positional embedding: "learned" (1D index, default) or "2d_sincos" (fixed
+    # ViT/MAE 2D sine-cosine). "2d_sincos" needs raster patch order, so it forces
+    # spiral=False below.
+    pos_encoding = "learned"
     # Choose tokenisers from "affine" and "aim"
     tokeniser = "aim"
     # adamw optimizer
@@ -163,8 +155,29 @@ if __name__ == "__main__":
     exec(
         open("src/astropt/configurator.py").read()
     )  # overrides from command line or config file
+    # 2D sin-cos positions are tied to grid geometry, so patches must be in
+    # raster order. Reconcile before snapshotting config so the log is accurate.
+    if pos_encoding == "2d_sincos" and spiral:
+        print("pos_encoding='2d_sincos' requires raster patch order; setting spiral=False")
+        spiral = False
     config = {k: globals()[k] for k in config_keys}  # will be useful for logging
     # -----------------------------------------------------------------------------
+
+    # Build modalities after config overrides so they reflect e.g. patch_size,
+    # n_chan and pos_encoding set from the command line or a config file.
+    modalities = [
+        ModalityConfig(
+            name="images",
+            input_size=patch_size * patch_size * n_chan,
+            patch_size=patch_size,
+            loss_weight=1.0,
+            embed_pos=True,
+            pos_input_size=1,
+            pos_encoding=pos_encoding,
+            grid_size=image_size // patch_size,
+        ),
+    ]
+    modality_registry = ModalityRegistry(modalities)
 
     # various inits, derived attributes, I/O setup
     ddp = int(os.environ.get("RANK", -1)) != -1  # is this a ddp run?

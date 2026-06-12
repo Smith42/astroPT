@@ -48,6 +48,13 @@ class ModalityConfig:
     embed_pos: bool
     vocab_size: int = 0
     loss_weight: float = 1.0
+    # positional embedding scheme:
+    #   "learned"   -> existing behaviour, selected by embed_pos (1D learned
+    #                  index, or a continuous-position MLP when embed_pos=False)
+    #   "2d_sincos" -> fixed ViT/MAE 2D sine-cosine embedding (requires
+    #                  grid_size and raster patch order, i.e. spiral=False)
+    pos_encoding: str = "learned"
+    grid_size: int = None  # patches per side; required for pos_encoding="2d_sincos"
 
 
 class ModalityRegistry:
@@ -370,6 +377,61 @@ class Embedder(nn.Module):
         return self.wpe(pos)
 
 
+def build_2d_sincos_pos_embed(embed_dim, grid_size):
+    """Fixed 2D sine-cosine positional embedding table (ViT / MAE style).
+
+    Reference: He et al. 2021 (arXiv:2111.06377), util/pos_embed.py. Half the
+    channels encode a patch's row and half encode its column, so the table
+    carries explicit 2D geometry (unlike the 1D learned index embedding).
+
+    Args:
+        embed_dim: embedding dimension (must be divisible by 4)
+        grid_size: number of patches per side of the (square) patch grid
+
+    Returns:
+        (grid_size * grid_size, embed_dim) tensor in raster (row-major) order,
+        so row-major patch index i maps to grid cell (i // grid, i % grid).
+    """
+    assert embed_dim % 4 == 0, (
+        f"2D sin-cos positional embedding needs embed_dim divisible by 4, got {embed_dim}"
+    )
+    dim_each = embed_dim // 2  # half the channels per spatial axis
+    omega = torch.arange(dim_each // 2, dtype=torch.float32) / (dim_each / 2.0)
+    omega = 1.0 / (10000**omega)  # (dim_each // 2,)
+
+    coords = torch.arange(grid_size, dtype=torch.float32)
+    grid_row, grid_col = torch.meshgrid(coords, coords, indexing="ij")
+    grid_row = grid_row.reshape(-1)  # (grid_size**2,), row-major
+    grid_col = grid_col.reshape(-1)
+
+    def axis_embed(pos):
+        out = torch.einsum("m,d->md", pos, omega)  # outer product (M, dim_each // 2)
+        return torch.cat([torch.sin(out), torch.cos(out)], dim=1)  # (M, dim_each)
+
+    return torch.cat([axis_embed(grid_row), axis_embed(grid_col)], dim=1)
+
+
+class SinCos2dEmbedder(nn.Module):
+    """Fixed (non-learned) 2D sine-cosine positional embedding, ViT / MAE style.
+
+    The embedding is a registered buffer (never trained, not saved in the
+    checkpoint since it is deterministic). Patches must be supplied in raster
+    order so that a patch's integer position equals its row-major cell in a
+    grid_size x grid_size grid -- i.e. use spiral=False with this embedder.
+    """
+
+    def __init__(self, config, grid_size):
+        super().__init__()
+        table = build_2d_sincos_pos_embed(config.n_embd, grid_size)
+        # persistent=False: deterministic, so rebuilt on construction rather
+        # than carried in the state dict.
+        self.register_buffer("pos_table", table, persistent=False)
+
+    def forward(self, pos):
+        # pos: (..., N) long raster indices -> (..., N, n_embd)
+        return self.pos_table[pos]
+
+
 @dataclass
 class GPTConfig:
     block_size: int = 1024
@@ -485,11 +547,18 @@ class GPT(nn.Module):
         for name, mod_config in self.modality_registry.modalities.items():
             if mod_config.vocab_size > 0:
                 # for e.g. if you have a list of integers to process a la AION
-                # if we define a vocab size 
+                # if we define a vocab size
                 encoders[name] = Embedder(config, vocab_size=mod_config.vocab_size)
             else:
                 encoders[name] = Encoder(config, mod_config.input_size)
-            if mod_config.embed_pos:
+            # getattr keeps old pickled ModalityConfigs (no pos_encoding) working
+            if getattr(mod_config, "pos_encoding", "learned") == "2d_sincos":
+                grid_size = getattr(mod_config, "grid_size", None)
+                assert grid_size is not None, (
+                    f"modality '{name}': pos_encoding='2d_sincos' requires grid_size"
+                )
+                embedders[name] = SinCos2dEmbedder(config, grid_size)
+            elif mod_config.embed_pos:
                 embedders[name] = Embedder(config)
             else:
                 embedders[name] = Encoder(config, mod_config.pos_input_size)
