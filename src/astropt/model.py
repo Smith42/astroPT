@@ -547,11 +547,18 @@ class GPT(nn.Module):
         for name, mod_config in self.modality_registry.modalities.items():
             if mod_config.vocab_size > 0:
                 # for e.g. if you have a list of integers to process a la AION
-                # if we define a vocab size 
+                # if we define a vocab size
                 encoders[name] = Embedder(config, vocab_size=mod_config.vocab_size)
             else:
                 encoders[name] = Encoder(config, mod_config.input_size)
-            if mod_config.embed_pos:
+            # getattr keeps old pickled ModalityConfigs (no pos_encoding) working
+            if getattr(mod_config, "pos_encoding", "learned") == "2d_sincos":
+                grid_size = getattr(mod_config, "grid_size", None)
+                assert grid_size is not None, (
+                    f"modality '{name}': pos_encoding='2d_sincos' requires grid_size"
+                )
+                embedders[name] = SinCos2dEmbedder(config, grid_size)
+            elif mod_config.embed_pos:
                 embedders[name] = Embedder(config)
             else:
                 embedders[name] = Encoder(config, mod_config.pos_input_size)
