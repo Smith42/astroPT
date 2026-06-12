@@ -48,6 +48,13 @@ class ModalityConfig:
     embed_pos: bool
     vocab_size: int = 0
     loss_weight: float = 1.0
+    # positional embedding scheme:
+    #   "learned"   -> existing behaviour, selected by embed_pos (1D learned
+    #                  index, or a continuous-position MLP when embed_pos=False)
+    #   "2d_sincos" -> fixed ViT/MAE 2D sine-cosine embedding (requires
+    #                  grid_size and raster patch order, i.e. spiral=False)
+    pos_encoding: str = "learned"
+    grid_size: int = None  # patches per side; required for pos_encoding="2d_sincos"
 
 
 class ModalityRegistry:
