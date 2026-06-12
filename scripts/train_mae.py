@@ -264,6 +264,7 @@ if __name__ == "__main__":
         objective=objective,
         mae_mask_ratio=mae_mask_ratio,
         norm_pix_loss=norm_pix_loss,
+        tokeniser=tokeniser,
     )
 
     if init_from == "scratch":
