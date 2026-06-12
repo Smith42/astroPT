@@ -341,8 +341,18 @@ class GPTConfig:
     n_chan: int = 1
     dropout: float = 0.0
     bias: bool = False  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-    attn_type: str = "causal"  # causal or prefix
+    attn_type: str = "causal"  # causal, full, or prefix
     tokeniser: str = "aim" # one of "aim" or "affine"
+    # objective: "ar" = autoregressive next-patch prediction (default, the
+    # original AstroPT objective), "mae" = masked autoencoder reconstruction.
+    objective: str = "ar"
+    # MAE hyperparameters (only used when objective == "mae")
+    mae_mask_ratio: float = 0.75  # fraction of patches hidden from the encoder
+    mae_decoder_n_layer: int = 4  # depth of the lightweight MAE decoder
+    # normalise each target patch before computing the reconstruction loss (as
+    # in the MAE paper). Defaults to False because the image data pipeline
+    # already applies per-patch normalisation (see normalise() in train.py).
+    norm_pix_loss: bool = False
     # LoRA params
     lora_r: int = 0  # rank, 0 disables LoRA
     lora_alpha: float = 2.0
