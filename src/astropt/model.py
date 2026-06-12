@@ -148,7 +148,9 @@ class SelfAttention(nn.Module):
         self.dropout = config.dropout
 
         self.attn_type = config.attn_type
-        if self.attn_type == "causal":
+        if self.attn_type in ("causal", "full"):
+            # "causal" attends only to the left (autoregressive); "full" is
+            # bidirectional, as needed for BERT-style masked autoencoding.
             # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
             self.flash = hasattr(torch.nn.functional, "scaled_dot_product_attention")
             if not self.flash:
@@ -168,7 +170,7 @@ class SelfAttention(nn.Module):
             self.flex_attention = torch.compile(flex_attention)
         else:
             raise NotImplementedError(
-                "Attention type must be one of 'causal' or 'prefix'. Prefix requires PyTorch >= 2.6."
+                "Attention type must be one of 'causal', 'full', or 'prefix'. Prefix requires PyTorch >= 2.6."
             )
 
     def forward(self, x, block_mask=None):
@@ -188,8 +190,9 @@ class SelfAttention(nn.Module):
             1, 2
         )  # (B, nh, T, hs)
 
-        if self.attn_type == "causal":
-            # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
+        if self.attn_type in ("causal", "full"):
+            is_causal = self.attn_type == "causal"
+            # self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
             if self.flash:
                 # efficient attention using Flash Attention CUDA kernels
                 y = torch.nn.functional.scaled_dot_product_attention(
@@ -198,12 +201,13 @@ class SelfAttention(nn.Module):
                     v,
                     attn_mask=None,
                     dropout_p=self.dropout if self.training else 0,
-                    is_causal=True,
+                    is_causal=is_causal,
                 )
             else:
                 # manual implementation of attention
                 att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-                att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float("-inf"))
+                if is_causal:
+                    att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float("-inf"))
                 att = F.softmax(att, dim=-1)
                 att = self.attn_dropout(att)
                 y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
@@ -211,7 +215,7 @@ class SelfAttention(nn.Module):
             y = self.flex_attention(q, k, v, block_mask=block_mask)
         else:
             raise NotImplementedError(
-                "Attention type must be one of 'causal' or 'prefix'. Prefix requires PyTorch >= 2.6."
+                "Attention type must be one of 'causal', 'full', or 'prefix'. Prefix requires PyTorch >= 2.6."
             )
         y = (
             y.transpose(1, 2).contiguous().view(B, T, C)
