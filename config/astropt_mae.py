@@ -33,11 +33,11 @@ min_lr = learning_rate / 10
 init_from = "scratch"
 num_workers = 32
 
-# Full automation: probe the largest micro-batch that fits in VRAM, then derive
-# gradient_accumulation_steps so the effective batch is target_batch_size
-# (sequences/optimizer step), independent of GPU count. batch_size below is just
-# a fallback when auto_find_batch_size is off.
-auto_find_batch_size = True
+# Fixed batch size, identical across model sizes (no VRAM probing) so it is not
+# a confound in scaling/probing comparisons. target_batch_size pins the effective
+# batch (sequences/optimizer step); gradient_accumulation_steps is derived from
+# it and the micro batch_size, so the effective batch is also constant across GPU
+# counts.
 target_batch_size = 1024
 batch_size = 16
 gradient_accumulation_steps = 5 * 8
@@ -53,7 +53,8 @@ log_interval = 100
 log_via_wandb = True
 out_dir = "logs/astropt_mae"
 
-# save 11 checkpoints evenly spaced over the run (0, 3000, ..., 30000),
-# always including the random-init and final steps. NB each checkpoint also
-# stores optimizer state, so budget the disk (~1.5 GB per checkpoint at 123M).
-num_checkpoints = 11
+# save 16 checkpoints log-spaced over the run (dense early, to capture emergence,
+# Pythia-style), always including the random-init and final steps. NB each
+# checkpoint stores optimizer state too, so budget disk (~1.5 GB each at 123M).
+num_checkpoints = 16
+checkpoint_schedule = "log"

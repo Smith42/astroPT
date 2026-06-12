@@ -46,7 +46,6 @@ except ImportError:
 
 from astropt.local_datasets import GalaxyImageDataset
 from astropt.model import GPT, GPTConfig, ModalityConfig, ModalityRegistry
-from astropt.model_utils import find_max_batch_size
 
 
 def normalise(x, use_hf=False):
@@ -90,9 +89,11 @@ if __name__ == "__main__":
     always_save_checkpoint = (
         False  # if True, always save a checkpoint at each checkpoint_interval
     )
-    # save num_checkpoints evenly spaced checkpoints across the whole run,
-    # always including the first (step 0) and last (max_iters) step. 0 disables.
+    # save num_checkpoints checkpoints across the whole run (0 disables), always
+    # including the first (step 0) and last (max_iters) step. checkpoint_schedule
+    # is "even" (evenly spaced) or "log" (geometric, dense early for emergence).
     num_checkpoints = 0
+    checkpoint_schedule = "even"
     init_from = "scratch"  # 'scratch' or 'resume'
     use_hf = True  # use the huggingface dataset version of our galz
     stream_hf_dataset = True  # stream the galaxies from huggingface
@@ -103,8 +104,6 @@ if __name__ == "__main__":
     # if > 0, gradient_accumulation_steps is auto-derived to hit this effective
     # batch size (sequences per optimizer step), regardless of the GPU count
     target_batch_size = 0
-    # if True, probe the largest micro-batch that fits in VRAM before training
-    auto_find_batch_size = False
     spiral = True  # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     image_size = 256
@@ -421,42 +420,6 @@ if __name__ == "__main__":
         )
     model.to(device)
 
-    # Optionally probe the largest micro-batch that fits in VRAM, then rebuild
-    # the loaders and (if a target is set) re-derive gradient accumulation. Runs
-    # on the raw model before compile/DDP so the measurement is representative.
-    if auto_find_batch_size:
-        _sample = tds.process_modes(
-            next(tdl), modality_registry, device, objective=objective
-        )
-        batch_size = find_max_batch_size(
-            model, _sample, device, ctx, ddp=ddp, master_process=master_process
-        )
-        tdl = iter(
-            DataLoader(
-                tds_hf if use_hf else tds,
-                batch_size=batch_size,
-                num_workers=num_workers,
-                pin_memory=True,
-            )
-        )
-        vdl = iter(
-            DataLoader(
-                vds_hf if use_hf else vds,
-                batch_size=batch_size,
-                num_workers=num_workers,
-                pin_memory=True,
-            )
-        )
-        if target_batch_size:
-            gradient_accumulation_steps = max(
-                1, round(target_batch_size / (batch_size * ddp_world_size))
-            )
-        if master_process:
-            print(
-                f"using batch_size={batch_size}, "
-                f"gradient_accumulation_steps={gradient_accumulation_steps}"
-            )
-
     # initialize a GradScaler. If enabled=False scaler is a no-op
     scaler = torch.amp.GradScaler(enabled=(dtype == "float16"))
 
@@ -616,13 +579,18 @@ if __name__ == "__main__":
         if master_process:
             print(f"saving checkpoint to {os.path.join(out_dir, filename)}")
 
-    # step-based checkpoint schedule: num_checkpoints iters evenly spaced over
-    # [0, max_iters] inclusive, so the first (random init) and last (final) steps
-    # are always captured. Independent of eval_interval / best-val checkpointing.
+    # step-based checkpoint schedule. "even": num_checkpoints iters evenly spaced
+    # over [0, max_iters]. "log": geometric spacing (dense early, to capture
+    # emergence) plus step 0. Both always include the first (random init) and
+    # last (final) step. Independent of eval_interval / best-val checkpointing.
     if num_checkpoints >= 2:
-        checkpoint_iters = {
-            int(round(x)) for x in np.linspace(0, max_iters, num_checkpoints)
-        }
+        if checkpoint_schedule == "log":
+            geo = np.geomspace(1, max_iters, num_checkpoints - 1)
+            checkpoint_iters = {0} | {int(round(x)) for x in geo}
+        else:
+            checkpoint_iters = {
+                int(round(x)) for x in np.linspace(0, max_iters, num_checkpoints)
+            }
     elif num_checkpoints == 1:
         checkpoint_iters = {max_iters}
     else:
