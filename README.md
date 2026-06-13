@@ -64,9 +64,9 @@ patches is replaced by a learnable mask token, the full patch sequence is
 processed by the bidirectional encoder, and the masked patches are
 reconstructed. Switch objectives with the `objective` config field (`"ar"` or
 `"mae"`); MAE additionally requires bidirectional attention (`attn_type="full"`)
-and uses AstroPT's existing learned (BERT-style) positional embeddings. See
-`scripts/train_mae.py` and `config/astropt_mae.py` for an example. MAE currently
-supports a single image modality.
+and uses AstroPT's existing learned (BERT-style) positional embeddings. The same
+`scripts/train.py` runs both objectives — see `config/astropt_mae.py` for an
+example. MAE currently supports a single image modality.
 
 # I just want to run it! 🗣️
 

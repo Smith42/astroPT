@@ -1,7 +1,7 @@
 # Example config for BERT-style masked-autoencoder (MAE) pretraining.
 #
 # launch as (e.g. in a tmux session):
-# $ OMP_NUM_THREADS=32 torchrun --standalone --nproc_per_node=8 scripts/train_mae.py config/astropt_mae.py
+# $ OMP_NUM_THREADS=32 torchrun --standalone --nproc_per_node=8 scripts/train.py config/astropt_mae.py
 #
 # don't forget to $(mkdir logs) !
 
