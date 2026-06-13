@@ -1,4 +1,13 @@
 """
+Unified pretraining loop for AstroPT (single image modality). Handles both
+objectives via the `objective` config field:
+  - "ar"  : autoregressive next-patch prediction (the original AstroPT)
+  - "mae" : BERT-style masked autoencoder (needs bidirectional attention; attn_type
+            is auto-upgraded to "full" below if left as the AR default of "causal")
+
+It also folds in DDP stream sharding, step-based checkpointing, and the tokeniser
+(aim/affine) choice. The LLM / AION / multimodal variants remain separate scripts.
+
 This training script can be run both on a single gpu in debug mode,
 and also in a larger training run with distributed data parallel (ddp).
 
@@ -80,7 +89,7 @@ def process_galaxy_wrapper(galdict, func):
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a 100M parameter model on DESI galaxy imagery
-    # look at `config/astropt*.py` for a prod run example
+    # look at `config/astropt*.py` and `config/study/*.py` for prod run examples
     out_dir = "logs/astropt0100M"
     eval_interval = 1000
     log_interval = 100
@@ -108,6 +117,7 @@ if __name__ == "__main__":
     spiral = True  # do we want to process the galaxy patches in spiral order?
     block_size = 1024
     image_size = 256
+    patch_size = 16  # side length of a square image patch
     num_workers = 32  # 64
     # astroPT model
     n_layer = 12
@@ -117,20 +127,14 @@ if __name__ == "__main__":
     dropout = 0.0  # for pretraining 0 is good, for finetuning try 0.1+
     # NB dropout is NOT implemented for flex attention
     bias = False  # do we use bias inside LayerNorm and Linear layers?
-    # Define modalities configuration
-    modalities = [
-        ModalityConfig(
-            name="images",
-            input_size=16 * 16 * n_chan,
-            patch_size=16,
-            loss_weight=1.0,
-            embed_pos=True,
-            pos_input_size=1,
-        ),
-    ]
-    # Create modality registry
-    modality_registry = ModalityRegistry(modalities)
-    # Choose tokenisers from "affine" and "aim"
+    # objective: "ar" (autoregressive, default) or "mae" (BERT-style masked
+    # autoencoder). MAE needs bidirectional attention; attn_type is auto-upgraded
+    # to "full" after the configurator if it is left as the AR default of "causal".
+    objective = "ar"
+    attn_type = "causal"
+    mae_mask_ratio = 0.15  # MAE: fraction of patches replaced by the mask token
+    norm_pix_loss = False  # MAE: normalise each target patch before the loss
+    # Choose tokenisers from "affine" (single linear, ViT/BERT-style) and "aim" (MLP)
     tokeniser = "aim"
     # adamw optimizer
     # we follow the same schedule here as Chinchilla
@@ -149,7 +153,6 @@ if __name__ == "__main__":
     min_lr = (
         learning_rate / 10
     )  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
-    attn_type = "causal"
     # DDP settings
     backend = "nccl"  # 'nccl', 'gloo', etc.
     # system
@@ -167,8 +170,26 @@ if __name__ == "__main__":
     exec(
         open("src/astropt/configurator.py").read()
     )  # overrides from command line or config file
+    # MAE needs bidirectional attention; upgrade silently if left as the AR default.
+    if objective == "mae" and attn_type == "causal":
+        attn_type = "full"
     config = {k: globals()[k] for k in config_keys}  # will be useful for logging
     # -----------------------------------------------------------------------------
+
+    # Define modalities configuration. Built after the configurator so patch_size /
+    # n_chan overrides apply. embed_pos=True gives learned (BERT-style) positions.
+    modalities = [
+        ModalityConfig(
+            name="images",
+            input_size=patch_size * patch_size * n_chan,
+            patch_size=patch_size,
+            loss_weight=1.0,
+            embed_pos=True,
+            pos_input_size=1,
+        ),
+    ]
+    # Create modality registry
+    modality_registry = ModalityRegistry(modalities)
 
     # various inits, derived attributes, I/O setup
     ddp = int(os.environ.get("RANK", -1)) != -1  # is this a ddp run?
@@ -202,6 +223,7 @@ if __name__ == "__main__":
             print("wandb detected, gonna log to that")
         if log_emissions:
             print("codecarbon detected, will log emissions")
+        print(f"objective={objective}, tokeniser={tokeniser}, attn_type={attn_type}")
         print(f"tokens per iteration will be: {tokens_per_iter:,}")
 
     if master_process:
@@ -317,6 +339,9 @@ if __name__ == "__main__":
         dropout=dropout,
         modalities=modalities,
         attn_type=attn_type,
+        objective=objective,
+        mae_mask_ratio=mae_mask_ratio,
+        norm_pix_loss=norm_pix_loss,
         tokeniser=tokeniser,
     )
 
@@ -357,7 +382,7 @@ if __name__ == "__main__":
     if log_via_wandb and master_process:
         if wandb_project is None:
             wandb.init(
-                project=f"AstroPT-{model.get_num_params() / 1e6:06.1f}M",
+                project=f"AstroPT-{objective}-{model.get_num_params() / 1e6:06.1f}M",
                 config=config,
             )
         else:
@@ -367,7 +392,7 @@ if __name__ == "__main__":
             )
     # write config and important information to log file
     with open(f"{out_dir}/hparams.txt", "w") as fi:
-        fi.write(f"AstroPT-{model.get_num_params() / 1e6:06.1f}M\n")
+        fi.write(f"AstroPT-{objective}-{model.get_num_params() / 1e6:06.1f}M\n")
         fi.write(f"time: {int(time.time())}\n")
         for k, v in config.items():
             fi.write(f"{k}: {v}\n")
@@ -425,7 +450,9 @@ if __name__ == "__main__":
             out[split] = {}
             losses = torch.zeros(eval_iters)
             for k in range(eval_iters):
-                B = tds.process_modes(next(dl), modality_registry, device)
+                B = tds.process_modes(
+                    next(dl), modality_registry, device, objective=objective
+                )
                 with ctx:
                     logits, loss = model(B["X"], targets=B["Y"])
                 losses[k] = loss.item()
@@ -435,55 +462,84 @@ if __name__ == "__main__":
 
     @torch.no_grad()
     def validate(iter_num, out_dir):
+        """Save reconstruction previews. AR: target | next-patch prediction.
+        MAE: masked-input | reconstruction | target (predicted patches at masked
+        positions composited over the visible patches)."""
         model.eval()
+        im_patch = modality_registry.get_config("images").patch_size
+        grid = image_size // im_patch
+
+        def to_image(seq):
+            # antispiralise (if needed) and fold patches back into an image
+            if spiral:
+                seq = torch.stack([vds.antispiralise(s) for s in seq])
+            return einops.rearrange(
+                seq,
+                "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
+                p1=im_patch,
+                p2=im_patch,
+                h=grid,
+                w=grid,
+            )
+
         for dl, split in zip([tdl, vdl], ["train", "val"]):
-            f, axs = plt.subplots(8, 2, figsize=(3, 12), constrained_layout=True)
-            B = vds.process_modes(next(vdl), modality_registry, device)
+            B = vds.process_modes(
+                next(dl), modality_registry, device, objective=objective
+            )
             with ctx:
                 P, loss = model(B["X"], B["Y"])
-                if "images" in modality_registry.names():
-                    Yim = B["Y"]["images"].to(device)
-                    b, t, c = Yim.size()
-                    zero_block = torch.zeros((b, 1, c)).to(device)
-                    Yim = torch.cat((zero_block, Yim), dim=1)
-                    if spiral:
-                        Yim = torch.stack([vds.antispiralise(yy) for yy in Yim])
-                    im_patch = modality_registry.get_config("images").patch_size
-                    Yim = einops.rearrange(
-                        Yim,
-                        "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
-                        p1=im_patch,
-                        p2=im_patch,
-                        h=image_size // im_patch,
-                        w=image_size // im_patch,
-                    )
-                    Pim = torch.cat((zero_block, P["images"]), dim=1)
-                    if spiral:
-                        Pim = torch.stack([vds.antispiralise(pp) for pp in Pim])
-                    Pim = einops.rearrange(
-                        Pim,
-                        "b (h w) (p1 p2 c) -> b (h p1) (w p2) c",
-                        p1=im_patch,
-                        p2=im_patch,
-                        h=image_size // im_patch,
-                        w=image_size // im_patch,
-                    )
 
-                    for ax, p, y in zip(
-                        axs, Pim.to(float).cpu().numpy(), Yim.to(float).cpu().numpy()
-                    ):
-                        ax[0].imshow(np.clip(y, 0, 1))
-                        ax[1].imshow(np.clip(p, 0, 1))
-                        ax[0].axis("off")
-                        ax[1].axis("off")
-
-                    if log_via_wandb:
-                        wandb.log(
-                            {
-                                "Y": [wandb.Image(np.clip(yy.swapaxes(0, -1).cpu(), 0, 1)) for yy in Yim],
-                                "P": [wandb.Image(np.clip(pp.swapaxes(0, -1).cpu(), 0, 1)) for pp in Pim],
-                            }
-                        )
+            if objective == "mae":
+                # masked-input | reconstruction | target; the reconstruction
+                # composites predicted patches at masked positions over the
+                # visible patches
+                f, axs = plt.subplots(8, 3, figsize=(4.5, 12), constrained_layout=True)
+                axs[0, 0].set_title("masked")
+                axs[0, 1].set_title("recon")
+                axs[0, 2].set_title("target")
+                Yim = B["Y"]["images"].to(device).float()
+                Pim = P["images"].float()
+                mask = P["images_mask"].unsqueeze(-1).float()  # 1 = masked
+                masked_img = to_image(Yim * (1 - mask)).cpu().numpy()
+                recon_img = to_image(Yim * (1 - mask) + Pim * mask).cpu().numpy()
+                target_img = to_image(Yim).cpu().numpy()
+                for ax, mi, ri, ti in zip(axs, masked_img, recon_img, target_img):
+                    ax[0].imshow(np.clip(mi, 0, 1))
+                    ax[1].imshow(np.clip(ri, 0, 1))
+                    ax[2].imshow(np.clip(ti, 0, 1))
+                    for a in ax:
+                        a.axis("off")
+                if log_via_wandb:
+                    wandb.log(
+                        {
+                            f"{split}_masked": [wandb.Image(np.clip(mi, 0, 1)) for mi in masked_img],
+                            f"{split}_recon": [wandb.Image(np.clip(ri, 0, 1)) for ri in recon_img],
+                            f"{split}_target": [wandb.Image(np.clip(ti, 0, 1)) for ti in target_img],
+                        }
+                    )
+            else:
+                # autoregressive: the target is the input shifted by one patch, so
+                # prepend a zero block to realign before folding back into an image
+                f, axs = plt.subplots(8, 2, figsize=(3, 12), constrained_layout=True)
+                Yim = B["Y"]["images"].to(device)
+                b, t, c = Yim.size()
+                zero_block = torch.zeros((b, 1, c)).to(device)
+                Yim = to_image(torch.cat((zero_block, Yim), dim=1))
+                Pim = to_image(torch.cat((zero_block, P["images"]), dim=1))
+                for ax, p, y in zip(
+                    axs, Pim.to(float).cpu().numpy(), Yim.to(float).cpu().numpy()
+                ):
+                    ax[0].imshow(np.clip(y, 0, 1))
+                    ax[1].imshow(np.clip(p, 0, 1))
+                    ax[0].axis("off")
+                    ax[1].axis("off")
+                if log_via_wandb:
+                    wandb.log(
+                        {
+                            "Y": [wandb.Image(np.clip(yy.swapaxes(0, -1).cpu(), 0, 1)) for yy in Yim],
+                            "P": [wandb.Image(np.clip(pp.swapaxes(0, -1).cpu(), 0, 1)) for pp in Pim],
+                        }
+                    )
 
             f.savefig(
                 os.path.join(out_dir, f"{iter_num:06d}_{split}.jpg"),
@@ -511,7 +567,7 @@ if __name__ == "__main__":
     if master_process:
         print("starting training...")
     B = tds.process_modes(
-        next(tdl), modality_registry, device
+        next(tdl), modality_registry, device, objective=objective
     )  # fetch the very first batch
     t0 = time.time()
     dts = []
@@ -543,9 +599,9 @@ if __name__ == "__main__":
             checkpoint_iters = {
                 int(round(x)) for x in np.linspace(0, max_iters, num_checkpoints)
             }
-        else:  # "log" (default): geometric spacing, dense early, plus step 0
+        else:  # "log": geometric spacing, dense early; always pin first and last
             geo = np.geomspace(1, max_iters, num_checkpoints - 1)
-            checkpoint_iters = {0} | {int(round(x)) for x in geo}
+            checkpoint_iters = {0, max_iters} | {int(round(x)) for x in geo}
     elif num_checkpoints == 1:
         checkpoint_iters = {max_iters}
     else:
@@ -605,6 +661,7 @@ if __name__ == "__main__":
                     figsize=(12, 4),
                     constrained_layout=True,
                 )
+                axs = np.atleast_1d(axs)
                 axs.ravel()[0].set_title("mean")
                 axs.ravel()[0].plot(
                     loss_df["iter_num"],
@@ -659,8 +716,8 @@ if __name__ == "__main__":
                 logits, loss = model(B["X"], targets=B["Y"])
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
             B = tds.process_modes(
-                next(tdl), modality_registry, device
-            )  # fetch the very first batch
+                next(tdl), modality_registry, device, objective=objective
+            )  # fetch the next batch
             # backward pass, with gradient scaling if training in fp16
             scaler.scale(loss).backward()
 
