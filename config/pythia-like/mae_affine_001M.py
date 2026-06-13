@@ -29,7 +29,7 @@ gradient_accumulation_steps = 5 * 8
 max_iters = 30000
 lr_decay_iters = 27000 * 1.1
 weight_decay = 1e-1
-num_workers = 32
+num_workers = 8  # pinned + identical across all configs for reproducible data order
 
 # --- 64 log-spaced checkpoints, for probing physics emergence across training ---
 # (pure log over 30k steps yields ~57 *distinct* steps due to early integer
