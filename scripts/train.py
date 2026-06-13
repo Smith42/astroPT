@@ -111,6 +111,10 @@ if __name__ == "__main__":
     use_hf = True  # use the huggingface dataset version of our galz
     stream_hf_dataset = True  # stream the galaxies from huggingface
     shuffle_buffer_size = 1000  # buffered shuffle size for the streaming train set
+    # Seed for the streaming-data shuffle. Fixed (and independent of the per-rank model
+    # seed) so every run sees the IDENTICAL global example order regardless of GPU count
+    # -- important when comparing configs in a scaling study.
+    data_seed = 1337
     # data
     gradient_accumulation_steps = 5 * 8  # used to simulate larger batch sizes
     batch_size = 16  # if gradient_accumulation_steps > 1, this is the micro-batch size
@@ -294,9 +298,17 @@ if __name__ == "__main__":
         )
         vds_hf = vds_hf.remove_columns("image")
 
-        # Shard the stream across DDP ranks so each GPU sees disjoint data.
-        # Without this every rank iterates the identical stream, so e.g. 8 GPUs
-        # would all train on the same galaxies (no data-throughput scaling).
+        # Shuffle the FULL stream with a fixed data_seed BEFORE sharding, so the global
+        # example order depends only on data_seed -- not on the GPU count or the per-rank
+        # model seed. Every config therefore trains on the identical example order, and
+        # each rank below takes a deterministic, disjoint slice of that one canonical order.
+        if stream_hf_dataset:
+            tds_hf = tds_hf.shuffle(
+                seed=data_seed, buffer_size=shuffle_buffer_size
+            )
+        # Shard the stream across DDP ranks so each GPU sees disjoint data. Without this
+        # every rank iterates the identical stream, so e.g. 8 GPUs would all train on the
+        # same galaxies (no data-throughput scaling).
         if ddp:
             from datasets.distributed import split_dataset_by_node
 
@@ -305,11 +317,6 @@ if __name__ == "__main__":
             )
             vds_hf = split_dataset_by_node(
                 vds_hf, rank=ddp_rank, world_size=ddp_world_size
-            )
-        # Buffered shuffle of the (otherwise in-order) streaming training set.
-        if stream_hf_dataset:
-            tds_hf = tds_hf.shuffle(
-                seed=1337 + seed_offset, buffer_size=shuffle_buffer_size
             )
 
     tdl = iter(
