@@ -1,6 +1,6 @@
 # Scaling-study run: BERT-style MAE objective, aim tokeniser, 021M model.
 # Run (all runs use the unified loop):
-#   python scripts/train.py config/study/mae_aim_021M.py
+#   python scripts/train.py config/pythia-like/mae_aim_021M.py
 
 # --- model size: 021M ---
 n_layer = 6
@@ -43,4 +43,4 @@ eval_iters = 200
 log_interval = 100
 log_via_wandb = True
 
-out_dir = "logs/study/mae_aim_021M"
+out_dir = "logs/pythia-like/mae_aim_021M"

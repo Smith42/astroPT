@@ -1,24 +1,24 @@
-# Scaling-study run: AUTOREGRESSIVE objective, aim tokeniser, 001M model.
+# Scaling-study run: AUTOREGRESSIVE objective, affine tokeniser, 100M model.
 # Run (all runs use the unified loop):
-#   python scripts/train.py config/study/ar_aim_001M.py
+#   python scripts/train.py config/pythia-like/ar_affine_100M.py
 
-# --- model size: 001M ---
-n_layer = 4
-n_head = 8
-n_embd = 128
+# --- model size: 100M ---
+n_layer = 12
+n_head = 12
+n_embd = 768
 n_chan = 3
 block_size = 1024
 patch_size = 16
 
 # --- tokeniser axis ---
-tokeniser = "aim"
+tokeniser = "affine"
 
 # --- objective axis ---
 objective = "ar"
 attn_type = "causal"
 
 # --- learning rate (Pythia-style: scaled with model size) ---
-learning_rate = 0.001
+learning_rate = 0.0006
 min_lr = learning_rate / 10
 
 # --- fixed across all 12 runs (only size/objective/tokeniser/LR vary) ---
@@ -41,4 +41,4 @@ eval_iters = 200
 log_interval = 100
 log_via_wandb = True
 
-out_dir = "logs/study/ar_aim_001M"
+out_dir = "logs/pythia-like/ar_affine_100M"

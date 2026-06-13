@@ -1,6 +1,6 @@
 # Scaling-study run: AUTOREGRESSIVE objective, affine tokeniser, 021M model.
 # Run (all runs use the unified loop):
-#   python scripts/train.py config/study/ar_affine_021M.py
+#   python scripts/train.py config/pythia-like/ar_affine_021M.py
 
 # --- model size: 021M ---
 n_layer = 6
@@ -41,4 +41,4 @@ eval_iters = 200
 log_interval = 100
 log_via_wandb = True
 
-out_dir = "logs/study/ar_affine_021M"
+out_dir = "logs/pythia-like/ar_affine_021M"

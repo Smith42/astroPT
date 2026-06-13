@@ -1,11 +1,11 @@
-# Scaling-study run: AUTOREGRESSIVE objective, aim tokeniser, 021M model.
+# Scaling-study run: BERT-style MAE objective, aim tokeniser, 001M model.
 # Run (all runs use the unified loop):
-#   python scripts/train.py config/study/ar_aim_021M.py
+#   python scripts/train.py config/pythia-like/mae_aim_001M.py
 
-# --- model size: 021M ---
-n_layer = 6
+# --- model size: 001M ---
+n_layer = 4
 n_head = 8
-n_embd = 512
+n_embd = 128
 n_chan = 3
 block_size = 1024
 patch_size = 16
@@ -14,8 +14,10 @@ patch_size = 16
 tokeniser = "aim"
 
 # --- objective axis ---
-objective = "ar"
-attn_type = "causal"
+objective = "mae"
+attn_type = "full"
+mae_mask_ratio = 0.5
+norm_pix_loss = False
 
 # --- learning rate (Pythia-style: scaled with model size) ---
 learning_rate = 0.001
@@ -41,4 +43,4 @@ eval_iters = 200
 log_interval = 100
 log_via_wandb = True
 
-out_dir = "logs/study/ar_aim_021M"
+out_dir = "logs/pythia-like/mae_aim_001M"

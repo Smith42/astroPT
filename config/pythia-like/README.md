@@ -18,9 +18,9 @@ checkpoints** for probing how representations emerge across training, and uses a
 ## Running
 
 ```bash
-python scripts/train.py config/study/<obj>_<tok>_<size>.py
+python scripts/train.py config/pythia-like/<obj>_<tok>_<size>.py
 # or, multi-GPU:
-torchrun --standalone --nproc_per_node=N scripts/train.py config/study/<name>.py
+torchrun --standalone --nproc_per_node=N scripts/train.py config/pythia-like/<name>.py
 ```
 
 ## What varies vs. what's fixed

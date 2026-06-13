@@ -89,7 +89,7 @@ def process_galaxy_wrapper(galdict, func):
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     # default config values designed to test run a 100M parameter model on DESI galaxy imagery
-    # look at `config/astropt*.py` and `config/study/*.py` for prod run examples
+    # look at `config/astropt*.py` and `config/pythia-like/*.py` for prod run examples
     out_dir = "logs/astropt0100M"
     eval_interval = 1000
     log_interval = 100
@@ -170,8 +170,13 @@ if __name__ == "__main__":
     exec(
         open("src/astropt/configurator.py").read()
     )  # overrides from command line or config file
-    # MAE needs bidirectional attention; upgrade silently if left as the AR default.
+    # MAE needs bidirectional attention. If the config left attn_type as the AR
+    # default, upgrade it to "full" -- but say so loudly rather than silently.
     if objective == "mae" and attn_type == "causal":
+        print(
+            "WARNING: objective='mae' requires bidirectional attention; "
+            "overriding attn_type='causal' -> 'full'"
+        )
         attn_type = "full"
     config = {k: globals()[k] for k in config_keys}  # will be useful for logging
     # -----------------------------------------------------------------------------
