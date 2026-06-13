@@ -170,14 +170,13 @@ if __name__ == "__main__":
     exec(
         open("src/astropt/configurator.py").read()
     )  # overrides from command line or config file
-    # MAE needs bidirectional attention. If the config left attn_type as the AR
-    # default, upgrade it to "full" -- but say so loudly rather than silently.
-    if objective == "mae" and attn_type == "causal":
-        print(
-            "WARNING: objective='mae' requires bidirectional attention; "
-            "overriding attn_type='causal' -> 'full'"
+    # MAE needs bidirectional attention -- require it explicitly rather than
+    # silently overriding the configured attn_type.
+    if objective == "mae" and attn_type != "full":
+        raise ValueError(
+            f"objective='mae' requires attn_type='full' (got attn_type={attn_type!r}); "
+            "set attn_type='full' in your config."
         )
-        attn_type = "full"
     config = {k: globals()[k] for k in config_keys}  # will be useful for logging
     # -----------------------------------------------------------------------------
 
