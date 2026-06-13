@@ -26,8 +26,8 @@ min_lr = learning_rate / 10
 # --- fixed across all 12 runs (only size/objective/tokeniser/LR vary) ---
 batch_size = 16
 gradient_accumulation_steps = 5 * 8
-max_iters = 30000
-lr_decay_iters = 27000 * 1.1
+max_iters = 13241  # exactly one pass over the 8,474,566-galaxy train set at eff. batch 640
+lr_decay_iters = 13241.0  # decay LR to min over the single epoch
 weight_decay = 1e-1
 num_workers = 32
 
