@@ -163,6 +163,7 @@ training stream.
     </tr>
     <tr>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/sogolsnj"><img src="https://avatars.githubusercontent.com/u/88580847?v=4?s=100" width="100px;" alt="SogolSanjaripour"/><br /><sub><b>SogolSanjaripour</b></sub></a><br /><a href="https://github.com/Smith42/astroPT/commits?author=sogolsnj" title="Code">💻</a> <a href="#ideas-sogolsnj" title="Ideas, Planning, & Feedback">🤔</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="http://ksd3.github.io"><img src="https://avatars.githubusercontent.com/u/89213519?v=4?s=100" width="100px;" alt="ksd3"/><br /><sub><b>ksd3</b></sub></a><br /><a href="#ideas-ksd3" title="Ideas, Planning, & Feedback">🤔</a> <a href="https://github.com/Smith42/astroPT/commits?author=ksd3" title="Code">💻</a></td>
     </tr>
   </tbody>
   <tfoot>

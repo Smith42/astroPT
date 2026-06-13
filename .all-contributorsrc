@@ -92,6 +92,16 @@
         "code",
         "ideas"
       ]
+    },
+    {
+      "login": "ksd3",
+      "name": "ksd3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/89213519?v=4",
+      "profile": "http://ksd3.github.io",
+      "contributions": [
+        "ideas",
+        "code"
+      ]
     }
   ],
   "contributorsPerLine": 7,
