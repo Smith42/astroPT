@@ -25,9 +25,9 @@ min_lr = learning_rate / 10
 
 # --- fixed across all 12 runs (only size/objective/tokeniser/LR vary) ---
 batch_size = 16
-gradient_accumulation_steps = 5 * 8
+gradient_accumulation_steps = 5 * 4  # effective batch = batch_size(16) * 20 = 320
 max_iters = 30000
-lr_decay_iters = 27000 * 1.1
+lr_decay_iters = 26500  # cosine reaches min_lr at ~one epoch (floor(N=8,474,566 / 320) = 26483)
 weight_decay = 1e-1
 num_workers = 32
 

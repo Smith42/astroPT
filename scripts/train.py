@@ -307,9 +307,12 @@ if __name__ == "__main__":
                 vds_hf, rank=ddp_rank, world_size=ddp_world_size
             )
         # Buffered shuffle of the (otherwise in-order) streaming training set.
+        # Use a fixed, rank-independent seed so every config sees the same data
+        # order. (At world_size 1 seed_offset is already 0; this guard keeps the
+        # order reproducible if these configs are ever run under torchrun/DDP.)
         if stream_hf_dataset:
             tds_hf = tds_hf.shuffle(
-                seed=1337 + seed_offset, buffer_size=shuffle_buffer_size
+                seed=1337, buffer_size=shuffle_buffer_size
             )
 
     tdl = iter(
@@ -453,14 +456,22 @@ if __name__ == "__main__":
         ):
             out[split] = {}
             losses = torch.zeros(eval_iters)
+            n = 0
             for k in range(eval_iters):
+                try:
+                    nxt = next(dl)
+                except StopIteration:
+                    # stream exhausted mid-eval (near end of the one-epoch run);
+                    # average over whatever batches we did manage to fetch
+                    break
                 B = tds.process_modes(
-                    next(dl), modality_registry, device, objective=objective
+                    nxt, modality_registry, device, objective=objective
                 )
                 with ctx:
                     logits, loss = model(B["X"], targets=B["Y"])
                 losses[k] = loss.item()
-            out[split]["dummy"] = losses.mean()
+                n += 1
+            out[split]["dummy"] = losses[:n].mean() if n > 0 else torch.tensor(float("nan"))
         model.train()
         return out
 
@@ -487,8 +498,13 @@ if __name__ == "__main__":
             )
 
         for dl, split in zip([tdl, vdl], ["train", "val"]):
+            try:
+                nxt = next(dl)
+            except StopIteration:
+                # stream exhausted near end of the one-epoch run; skip the preview
+                continue
             B = vds.process_modes(
-                next(dl), modality_registry, device, objective=objective
+                nxt, modality_registry, device, objective=objective
             )
             with ctx:
                 P, loss = model(B["X"], B["Y"])
@@ -706,6 +722,7 @@ if __name__ == "__main__":
 
         # forward backward update, with optional gradient accumulation to simulate larger batch size
         # and using the GradScaler if data type is float16
+        stream_exhausted = False
         for micro_step in range(gradient_accumulation_steps):
             if ddp:
                 # in DDP training we only need to sync gradients at the last micro step.
@@ -719,9 +736,16 @@ if __name__ == "__main__":
             with ctx:
                 logits, loss = model(B["X"], targets=B["Y"])
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
-            B = tds.process_modes(
-                next(tdl), modality_registry, device, objective=objective
-            )  # fetch the next batch
+            try:
+                B = tds.process_modes(
+                    next(tdl), modality_registry, device, objective=objective
+                )  # fetch the next batch
+            except StopIteration:
+                # end of the streamed epoch: still apply this micro-step's grads,
+                # then finish the optimizer step and stop after this iteration.
+                stream_exhausted = True
+                scaler.scale(loss).backward()
+                break
             # backward pass, with gradient scaling if training in fp16
             scaler.scale(loss).backward()
 
@@ -769,6 +793,21 @@ if __name__ == "__main__":
 
         # termination conditions
         if iter_num > max_iters:
+            if log_emissions:
+                emissions: float = tracker.stop()
+                if master_process:
+                    print(emissions)
+            break
+        # graceful end of the streamed one-epoch run: the data stream ran out
+        # before reaching max_iters. Save a final checkpoint and stop cleanly
+        # rather than letting StopIteration crash the run.
+        if stream_exhausted:
+            if master_process:
+                print(
+                    f"data stream exhausted at iter {iter_num}; "
+                    "stopping cleanly (one epoch complete)"
+                )
+                save_checkpoint(f"{iter_num:06d}_ckpt.pt")
             if log_emissions:
                 emissions: float = tracker.stop()
                 if master_process:
