@@ -185,3 +185,6 @@ __pycache__/
 src/astropt/_version.py
 
 wandb/
+
+# Local AstroPTv3 docs preview from the earlier submodule build
+docs/source/astropt3/

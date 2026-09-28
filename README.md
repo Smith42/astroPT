@@ -37,6 +37,19 @@ Read the docs here: [astropt.readthedocs.io](https://astropt.readthedocs.io)
 
 There is some [deep lore about our logo](https://doi.org/10.4000/12m9y)
 
+# AstroPTv3: the multimodal sister line
+
+Active development on the multimodal foundation-model programme (a
+SmolLM3 body fed continuous image/spectrum patch tokens with
+exact-likelihood (JetFormer/GIVT) heads, pretrained on a live-streamed
+Multimodal Universe corpus) happens in
+[AstroPTv3](https://github.com/Smith42/AstroPTv3). This repository
+remains the home of the nanoGPT-lineage models, the AION tokeniser
+experiments, and the scaling/probing programme; the two co-evolve and
+share findings, not code. See
+[the AstroPTv3 docs page](https://astropt.readthedocs.io) for the
+side-by-side.
+
 # How does AstroPT work?
 
 AstroPT is an autoregressive transformer under the hood.

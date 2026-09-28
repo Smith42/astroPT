@@ -76,3 +76,5 @@ autodoc_default_options = {
 
 # Support for markdown
 source_suffix = ['.rst', '.md']
+
+
