@@ -40,6 +40,7 @@ Check out the `UniverseTBD <https://universetbd.org/>`_ Discord for updates:
    quickstart
    walkthrough
    aion_tokeniser
+   astropt3
    contributing
 ..
    model
