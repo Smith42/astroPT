@@ -186,5 +186,5 @@ src/astropt/_version.py
 
 wandb/
 
-# AstroPTv3 corpus, copied out of the submodule by docs/source/conf.py
+# Local AstroPTv3 docs preview from the earlier submodule build
 docs/source/astropt3/

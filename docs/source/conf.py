@@ -1,30 +1,7 @@
 # Configuration file for the Sphinx documentation builder.
 
 import os
-import shutil
 import sys
-from pathlib import Path
-
-# --- AstroPTv3 mount -------------------------------------------------
-# Copy the AstroPTv3 docs corpus out of the git submodule into this
-# source tree at build time (single source of truth: the AstroPTv3 repo,
-# pinned by the submodule; update the pin to refresh). Code and env
-# directories are ignored -- only the prose trees are mounted.
-_here = Path(__file__).resolve().parent
-_v3_src = _here.parent.parent / "astroPTv3" / "astro"
-_v3_dst = _here / "astropt3"
-if _v3_src.exists():
-    shutil.copytree(
-        _v3_src,
-        _v3_dst,
-        dirs_exist_ok=True,
-        ignore=shutil.ignore_patterns(
-            ".venv", ".pytest_cache", "src", "tests", "configs",
-            "scripts", "wandb", "conf.py", "index.md",
-        ),
-    )
-# ----------------------------------------------------------------------
-
 sys.path.insert(0, os.path.abspath('../../src'))
 
 # Project information
@@ -100,6 +77,4 @@ autodoc_default_options = {
 # Support for markdown
 source_suffix = ['.rst', '.md']
 
-# The mounted AstroPTv3 corpus uses GitHub-style repo-relative links
-# that are not Sphinx document targets
-suppress_warnings = ['myst.xref_missing']
+

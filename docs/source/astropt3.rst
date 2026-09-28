@@ -33,25 +33,14 @@ work on ``sogol_branch``.
 Where to go next
 ----------------
 
-The full AstroPTv3 documentation corpus -- README, phase plan,
-experiments log, guides, and architecture decision records -- is mounted
-below (copied from the `AstroPTv3 submodule`_ at build time; that
-repository is the source of truth).
+The complete and evolving AstroPTv3 documentation lives in its
+repository:
 
-.. _AstroPTv3 submodule: https://github.com/Smith42/AstroPTv3
+* `Project README <https://github.com/Smith42/AstroPTv3/blob/main/astro/README.md>`_
+* `Phase plan <https://github.com/Smith42/AstroPTv3/blob/main/astro/PLAN.md>`_
+* `Training guide <https://github.com/Smith42/AstroPTv3/blob/main/astro/docs/training.md>`_
+* `Architecture decisions <https://github.com/Smith42/AstroPTv3/tree/main/astro/docs/adr>`_
+* `Experiments and benchmarks <https://github.com/Smith42/AstroPTv3/blob/main/astro/EXPERIMENTS.md>`_
 
-.. toctree::
-   :maxdepth: 1
-   :glob:
-
-   astropt3/README
-   astropt3/PLAN
-   astropt3/EXPERIMENTS
-   astropt3/docs/*
-   astropt3/docs/adr/*
-
-.. toctree::
-   :hidden:
-   :glob:
-
-   astropt3/docs/evidence/*/*
+This Read the Docs page is a short introduction; the AstroPTv3 repository
+is the source of truth for its implementation and full documentation.
