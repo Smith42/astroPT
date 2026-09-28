@@ -33,8 +33,25 @@ work on ``sogol_branch``.
 Where to go next
 ----------------
 
-* The `AstroPTv3 repository <https://github.com/Smith42/AstroPTv3>`_ —
-  see its README, ``astro/PLAN.md`` (phase plan) and ``astro/docs/adr/``
-  (architecture decision records).
-* ``astro/EXPERIMENTS.md`` in that repository records the measured
-  loader/throughput evidence behind its data pipeline.
+The full AstroPTv3 documentation corpus -- README, phase plan,
+experiments log, guides, and architecture decision records -- is mounted
+below (copied from the `AstroPTv3 submodule`_ at build time; that
+repository is the source of truth).
+
+.. _AstroPTv3 submodule: https://github.com/Smith42/AstroPTv3
+
+.. toctree::
+   :maxdepth: 1
+   :glob:
+
+   astropt3/README
+   astropt3/PLAN
+   astropt3/EXPERIMENTS
+   astropt3/docs/*
+   astropt3/docs/adr/*
+
+.. toctree::
+   :hidden:
+   :glob:
+
+   astropt3/docs/evidence/*/*

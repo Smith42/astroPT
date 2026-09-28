@@ -185,3 +185,6 @@ __pycache__/
 src/astropt/_version.py
 
 wandb/
+
+# AstroPTv3 corpus, copied out of the submodule by docs/source/conf.py
+docs/source/astropt3/
