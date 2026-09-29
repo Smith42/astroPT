@@ -37,7 +37,7 @@ The complete and evolving AstroPTv3 documentation lives in its
 repository:
 
 * `Project README <https://github.com/Smith42/AstroPTv3/blob/main/astro/README.md>`_
-* `Phase plan <https://github.com/Smith42/AstroPTv3/blob/main/astro/PLAN.md>`_
+* `Lab book: charter/roadmap, plan, phase history, experiments <https://github.com/Smith42/AstroPTv3/blob/main/astro/EXPERIMENTS.md>`_
 * `Training guide <https://github.com/Smith42/AstroPTv3/blob/main/astro/docs/training.md>`_
 * `Architecture decisions <https://github.com/Smith42/AstroPTv3/tree/main/astro/docs/adr>`_
 * `Experiments and benchmarks <https://github.com/Smith42/AstroPTv3/blob/main/astro/EXPERIMENTS.md>`_
