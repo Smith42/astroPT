@@ -13,8 +13,8 @@ To load and run a pre-trained AstroPT model from Hugging Face 🤗, use the ``lo
    from astropt.model_utils import load_astropt
 
    model, model_args = load_astropt(
-       repo_id="smith42/astropt_sparse",
-       path="astropt/p16k10",
+       repo_id="smith42/astropt_v2.0",
+       path="astropt/095M",
        weights_filename="ckpt.pt",
    )
    model = model.to("cuda")  # Move to GPU if available
@@ -35,7 +35,7 @@ Below are some pre-trained models you can load with the code snippet above:
 **DESI Legacy Survey Model (v2.0)**
 
 - **Modalities:** JPG galaxy imagery (cropped and zoomed)
-- **AstroPT version:** v2.0.4
+- **AstroPT version:** v2.0.5
 - **Model weights:** `AstroPT v2.0 <https://huggingface.co/Smith42/astroPT_v2.0>`_
 - **Dataset:** `Galaxies Dataset <https://huggingface.co/datasets/Smith42/galaxies>`_
 - **Paper:** `arXiv:2405.14930 <https://arxiv.org/abs/2405.14930>`_
@@ -60,8 +60,8 @@ Here's a simple example of how to use the model for inference:
    
    # Load the model
    model, model_args = load_astropt(
-       repo_id="smith42/astropt_sparse",
-       path="astropt/p16k10",
+       repo_id="smith42/astropt_v2.0",
+       path="astropt/095M",
        weights_filename="ckpt.pt",
    )
    model = model.to("cuda")

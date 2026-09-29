@@ -6,7 +6,7 @@ Welcome to AstroPT's documentation!
    :alt: AstroPT logo
    :align: center
 
-|ICML| |arXiv1| |arXiv2| |License|
+|ICML| |arXiv1| |arXiv2| |arXiv3| |arXiv4| |arXiv5| |License|
 
 .. |ICML| image:: https://img.shields.io/badge/AI4Science@ICML-2024---?logo=https%3A%2F%2Fneurips.cc%2Fstatic%2Fcore%2Fimg%2FNeurIPS-logo.svg&labelColor=68448B&color=b3b3b3
    :target: https://openreview.net/forum?id=aOLuuLxqav
@@ -16,6 +16,15 @@ Welcome to AstroPT's documentation!
 
 .. |arXiv2| image:: https://img.shields.io/badge/arXiv-2503.15312---?logo=arXiv&labelColor=b31b1b&color=grey
    :target: https://arxiv.org/abs/2503.15312
+
+.. |arXiv3| image:: https://img.shields.io/badge/arXiv-2509.19453---?logo=arXiv&labelColor=b31b1b&color=grey
+   :target: https://arxiv.org/abs/2509.19453
+
+.. |arXiv4| image:: https://img.shields.io/badge/arXiv-2606.25610---?logo=arXiv&labelColor=b31b1b&color=grey
+   :target: https://arxiv.org/abs/2606.25610
+
+.. |arXiv5| image:: https://img.shields.io/badge/arXiv-2608.22614---?logo=arXiv&labelColor=b31b1b&color=grey
+   :target: https://arxiv.org/abs/2608.22614
 
 .. |License| image:: https://img.shields.io/badge/License-AGPLv3-green.svg
    :target: https://www.gnu.org/licenses/agpl-3.0.html

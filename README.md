@@ -16,6 +16,7 @@
 
 [![arXiv](https://img.shields.io/badge/arXiv-2509.19453---?logo=arXiv&labelColor=b31b1b&color=grey)](https://arxiv.org/abs/2509.19453)
 [![arXiv](https://img.shields.io/badge/arXiv-2606.25610---?logo=arXiv&labelColor=b31b1b&color=grey)](https://arxiv.org/abs/2606.25610)
+[![arXiv](https://img.shields.io/badge/arXiv-2608.22614---?logo=arXiv&labelColor=b31b1b&color=grey)](https://arxiv.org/abs/2608.22614)
 
 [![Model on HF](https://huggingface.co/datasets/huggingface/badges/resolve/main/model-on-hf-sm.svg)](https://huggingface.co/Smith42/astroPT_v2.0)
 [![Dataset on HF](https://huggingface.co/datasets/huggingface/badges/resolve/main/dataset-on-hf-sm.svg)](https://huggingface.co/datasets/Smith42/galaxies)
