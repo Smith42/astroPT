@@ -111,6 +111,13 @@ if __name__ == "__main__":
     use_hf = True  # use the huggingface dataset version of our galz
     stream_hf_dataset = True  # stream the galaxies from huggingface
     shuffle_buffer_size = 1000  # buffered shuffle size for the streaming train set
+    # Exact one-epoch mode. If data_dir is set, the galaxies are loaded map-style from
+    # local parquet (download them once -- streaming cannot do an exact, length-aware
+    # epoch) and trained for exactly one pass via astropt.exact_epoch: every example is
+    # seen exactly once, no drop, no duplicate. data_seed fixes the sampler order (and the
+    # streaming shuffle) so every config sees the identical example order.
+    data_dir = ""
+    data_seed = 1337
     # data
     gradient_accumulation_steps = 5 * 8  # used to simulate larger batch sizes
     batch_size = 16  # if gradient_accumulation_steps > 1, this is the micro-batch size
@@ -269,7 +276,69 @@ if __name__ == "__main__":
         modality_registry=modality_registry,
     )
 
-    if use_hf:
+    exact_mode = bool(data_dir)
+    if exact_mode:
+        # Exact one-epoch: load the galaxies map-style from local parquet and shard them
+        # with the padding-free ExactDistributedSampler (one pass = every example once).
+        import glob as _glob
+
+        from datasets import load_dataset
+
+        from astropt.exact_epoch import ExactDistributedSampler
+
+        tr_files = sorted(
+            _glob.glob(os.path.join(data_dir, "**", "train-*.parquet"), recursive=True)
+        )
+        va_files = sorted(
+            _glob.glob(os.path.join(data_dir, "**", "test-*.parquet"), recursive=True)
+        )
+        if not tr_files:
+            raise FileNotFoundError(f"no train-*.parquet found under data_dir={data_dir!r}")
+        train_hf = load_dataset(
+            "parquet", data_files=tr_files, split="train"
+        ).select_columns("image")
+        val_hf = load_dataset(
+            "parquet", data_files=va_files, split="train"
+        ).select_columns("image")
+        _proc1 = partial(process_galaxy_wrapper, func=tds.process_galaxy)
+
+        class _LocalGalaxies(torch.utils.data.Dataset):
+            def __init__(self, hf):
+                self.hf = hf
+
+            def __len__(self):
+                return len(self.hf)
+
+            def __getitem__(self, i):
+                return _proc1(self.hf[i])
+
+        train_ds_local = _LocalGalaxies(train_hf)
+        val_ds_local = _LocalGalaxies(val_hf)
+        train_sampler = ExactDistributedSampler(
+            len(train_ds_local), ddp_world_size, ddp_rank if ddp else 0, seed=data_seed
+        )
+        tdl = DataLoader(
+            train_ds_local,
+            batch_size=batch_size,
+            sampler=train_sampler,
+            num_workers=num_workers,
+            pin_memory=True,
+            drop_last=False,
+        )
+        eval_vdl = DataLoader(
+            val_ds_local,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=True,
+            drop_last=True,
+        )
+        if master_process:
+            print(
+                f"exact one-epoch: {len(train_ds_local):,} train galaxies "
+                f"({len(train_sampler):,} on this rank)"
+            )
+    elif use_hf:
         from datasets import load_dataset
 
         tds_hf = load_dataset(
@@ -314,23 +383,33 @@ if __name__ == "__main__":
             tds_hf = tds_hf.shuffle(
                 seed=1337, buffer_size=shuffle_buffer_size
             )
-
-    tdl = iter(
-        DataLoader(
-            tds_hf if use_hf else tds,
-            batch_size=batch_size,
-            num_workers=num_workers,
-            pin_memory=True,
+        tdl = iter(
+            DataLoader(
+                tds_hf,
+                batch_size=batch_size,
+                num_workers=num_workers,
+                pin_memory=True,
+            )
         )
-    )
-    vdl = iter(
-        DataLoader(
-            vds_hf if use_hf else vds,
-            batch_size=batch_size,
-            num_workers=num_workers,
-            pin_memory=True,
+        vdl = iter(
+            DataLoader(
+                vds_hf,
+                batch_size=batch_size,
+                num_workers=num_workers,
+                pin_memory=True,
+            )
         )
-    )
+    else:
+        tdl = iter(
+            DataLoader(
+                tds, batch_size=batch_size, num_workers=num_workers, pin_memory=True
+            )
+        )
+        vdl = iter(
+            DataLoader(
+                vds, batch_size=batch_size, num_workers=num_workers, pin_memory=True
+            )
+        )
 
     # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
     iter_num = 0
@@ -586,9 +665,10 @@ if __name__ == "__main__":
     # training loop
     if master_process:
         print("starting training...")
-    B = tds.process_modes(
-        next(tdl), modality_registry, device, objective=objective
-    )  # fetch the very first batch
+    if not exact_mode:
+        B = tds.process_modes(
+            next(tdl), modality_registry, device, objective=objective
+        )  # fetch the very first batch
     t0 = time.time()
     dts = []
     local_iter_num = 0  # number of iterations in the lifetime of this process
@@ -639,7 +719,77 @@ if __name__ == "__main__":
             on_csv_write="update",
         )
         tracker.start()
-    while True:
+
+    if exact_mode:
+        from astropt.exact_epoch import one_epoch_loop
+
+        _mod0 = modality_registry.names()[0]
+
+        def _process_exact(raw):
+            return tds.process_modes(raw, modality_registry, device, objective=objective)
+
+        def _on_checkpoint_exact(it):
+            save_checkpoint(f"{it:06d}_ckpt.pt")
+
+        @torch.no_grad()
+        def _on_eval_exact(it):
+            global best_val_loss
+            model.eval()
+            vlosses = []
+            ev = iter(eval_vdl)
+            for _ in range(eval_iters):
+                try:
+                    raw = next(ev)
+                except StopIteration:
+                    break
+                Bv = _process_exact(raw)
+                with ctx:
+                    _, vl = model(Bv["X"], targets=Bv["Y"])
+                vlosses.append(vl.item())
+            model.train()
+            vloss = float(np.mean(vlosses)) if vlosses else float("nan")
+            print(f"iter {it}: val loss {vloss:.4f}")
+            with open(os.path.join(out_dir, "loss.txt"), "a") as fi:
+                fi.write(f"{it},{vloss}\n")
+            if it > 0 and vloss < best_val_loss:
+                best_val_loss = vloss
+                save_checkpoint("ckpt.pt")
+
+        iter_num, examples_seen = one_epoch_loop(
+            model=model,
+            loader=tdl,
+            optimizer=optimizer,
+            scaler=scaler,
+            ctx=ctx,
+            process_batch=_process_exact,
+            grad_accum_per_rank=gradient_accumulation_steps,
+            grad_clip=grad_clip,
+            get_lr=(get_lr if decay_lr else (lambda it: learning_rate)),
+            count_examples=lambda B: B["X"][_mod0].shape[0],
+            log_interval=log_interval,
+            eval_interval=eval_interval,
+            checkpoint_iters=checkpoint_iters,
+            on_eval=_on_eval_exact,
+            on_checkpoint=_on_checkpoint_exact,
+            master=master_process,
+            start_iter=iter_num,
+        )
+        if master_process:
+            save_checkpoint(f"{iter_num:06d}_ckpt.pt")
+        _seen = torch.tensor([examples_seen], device=device)
+        if ddp:
+            torch.distributed.all_reduce(_seen)
+        if master_process:
+            total = int(_seen.item())
+            print(
+                f"exact one-epoch done at iter {iter_num}: saw {total:,} examples "
+                f"(dataset has {len(train_ds_local):,})"
+            )
+            assert total == len(train_ds_local), (
+                f"exact-epoch coverage mismatch: {total} != {len(train_ds_local)}"
+            )
+
+    while not exact_mode:
         # determine and set the learning rate for this iteration
         lr = get_lr(iter_num) if decay_lr else learning_rate
         for param_group in optimizer.param_groups:
